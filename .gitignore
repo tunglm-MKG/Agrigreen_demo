@@ -1,0 +1,20 @@
+# Cơ sở dữ liệu SQLite — tái tạo được bằng `npm run seed` hoặc `npm run demo`.
+# Không đưa vào git: là tệp nhị phân vài MB, đổi ở mọi lần chạy, và làm phình
+# lịch sử repo mà không mang lại thông tin gì đọc được.
+data/*.db
+data/*.db-shm
+data/*.db-wal
+
+# Thư mục làm việc tạm của quá trình phát triển.
+tmp/
+
+# Node (dự án không có dependency nào, nhưng giữ để an toàn khi thêm về sau).
+node_modules/
+npm-debug.log*
+
+# Hệ điều hành và trình soạn thảo.
+.DS_Store
+Thumbs.db
+*.swp
+.vscode/
+.idea/

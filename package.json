@@ -1,0 +1,19 @@
+{
+  "name": "mekong-green-platform",
+  "version": "1.0.0",
+  "description": "AgriGreen Platform (GIS dùng chung, App Khuyến nông, App Hợp tác xã, Bản đồ số & Sàn cơ giới hóa) và ERP nội bộ Mekong Green (mô phỏng mạng lưới Hub, hoạch định chi phí logistics, kho vận, mua/bán, tài chính, MRV).",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.6.0"
+  },
+  "scripts": {
+    "start": "node src/main.ts",
+    "dev": "node --watch src/main.ts",
+    "seed": "node scripts/seed.ts",
+    "demo": "node scripts/demo.ts",
+    "test": "node --test \"tests/*.test.ts\""
+  },
+  "dependencies": {},
+  "devDependencies": {}
+}
