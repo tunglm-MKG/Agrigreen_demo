@@ -405,6 +405,15 @@ muốn giữ những gì người xem nhập vào.
 
 Cả hai tệp cấu hình đều có hướng dẫn từng bước ghi ngay trong phần chú thích đầu tệp.
 
+**Xem và đổi mã truy cập sau khi đã triển khai:**
+
+| Nền tảng | Đường đi |
+| --- | --- |
+| Render | Dashboard → dịch vụ → `Environment` → dòng `DEMO_ACCESS_CODE` → biểu tượng con mắt để xem, `Edit` để đổi |
+| Fly.io | `fly secrets set DEMO_ACCESS_CODE=ma-moi` (secret không đọc lại được, chỉ đặt đè) |
+
+Cả hai nền tảng đều tự khởi động lại dịch vụ sau khi đổi, mất khoảng một phút.
+
 ---
 
 ## 2. Kiến trúc

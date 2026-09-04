@@ -37,10 +37,17 @@ services:
     envVars:
       - key: NODE_VERSION
         value: '24'
-      # Mã truy cập bản trình diễn. Render sinh ngẫu nhiên ở lần tạo đầu tiên;
-      # đổi giá trị này là thu hồi quyền xem của mọi người đã có link.
+      # Mã truy cập bản trình diễn.
+      #
+      # `sync: false` = Render HỎI bạn nhập giá trị khi tạo dịch vụ, thay vì tự
+      # sinh một chuỗi ngẫu nhiên. Đây là mã mà người thật phải đọc cho nhau, nên
+      # để người dùng tự chọn một mã dễ nhớ; chuỗi ngẫu nhiên 40 ký tự chỉ hợp
+      # với khoá bí mật máy dùng với nhau.
+      #
+      # Đổi giá trị này trong tab Environment là thu hồi quyền xem của mọi người
+      # đã có link.
       - key: DEMO_ACCESS_CODE
-        generateValue: true
+        sync: false
 
     # Bỏ chú thích để giữ dữ liệu qua các lần khởi động lại (cần gói trả phí).
     # disk:
