@@ -1,0 +1,44 @@
+# Cấu hình triển khai Fly.io — https://fly.io
+#
+# CÁCH DÙNG
+#   1. Cài flyctl: https://fly.io/docs/flyctl/install/
+#   2. fly auth login
+#   3. fly launch --no-deploy --copy-config      (đổi `app` bên dưới nếu trùng tên)
+#   4. fly secrets set DEMO_ACCESS_CODE=ma-cua-ban
+#   5. fly volumes create agrigreen_data --size 1 --region sin
+#   6. fly deploy
+#
+# Khác Render ở chỗ có volume nên dữ liệu SQLite giữ được qua các lần khởi động.
+
+app = "agrigreen-demo"
+primary_region = "sin"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  PORT = "8080"
+
+[[mounts]]
+  source = "agrigreen_data"
+  destination = "/app/data"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  # Để 0 thì máy ngủ khi không có truy cập (tiết kiệm); lần truy cập kế tiếp
+  # mất vài giây để đánh thức. Đặt 1 nếu muốn phản hồi tức thì.
+  min_machines_running = 0
+
+  [[http_service.checks]]
+    interval = "30s"
+    timeout = "5s"
+    grace_period = "20s"
+    method = "GET"
+    path = "/health"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"

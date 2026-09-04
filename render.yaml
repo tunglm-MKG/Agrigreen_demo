@@ -1,0 +1,49 @@
+# Cấu hình triển khai Render — https://render.com
+#
+# Dự án không có dependency npm nào và chạy thẳng bằng Node, nên không cần bước
+# build. Chỉ cần Node đủ mới để hỗ trợ hai thứ: cơ chế type-stripping cho tệp
+# .ts (Node ≥ 22.6, mặc định bật từ 23.6) và module node:sqlite.
+#
+# CÁCH DÙNG
+#   1. Vào https://dashboard.render.com → New → Blueprint
+#   2. Chọn repo tunglm-MKG/Agrigreen_demo
+#   3. Render đọc tệp này và tạo dịch vụ; đặt giá trị cho DEMO_ACCESS_CODE khi
+#      được hỏi (Render sinh sẵn một chuỗi ngẫu nhiên, đổi được thành mã dễ đọc).
+#
+# LƯU Ý VỀ DỮ LIỆU
+#   Gói miễn phí không có đĩa lưu trữ bền: tệp SQLite mất mỗi lần khởi động lại.
+#   Với bản trình diễn thì không sao — `seedIfEmpty()` tự nạp lại dữ liệu mẫu khi
+#   khởi động, nên dịch vụ tự phục hồi. Muốn giữ dữ liệu người xem nhập vào thì
+#   bỏ chú thích phần `disk` bên dưới (cần gói trả phí).
+#
+#   Gói miễn phí cũng ngủ sau 15 phút không có truy cập; lần truy cập kế tiếp
+#   mất khoảng 30–60 giây để đánh thức. Nói trước với người xem để họ không
+#   tưởng là hỏng.
+
+services:
+  - type: web
+    name: agrigreen-demo
+    runtime: node
+    plan: free
+    region: singapore
+    branch: main
+
+    # Không có dependency nào để cài; lệnh này chỉ để Render không tự đoán.
+    buildCommand: 'echo "Khong co buoc build - du an chay truc tiep bang Node"'
+    startCommand: npm start
+
+    healthCheckPath: /health
+
+    envVars:
+      - key: NODE_VERSION
+        value: '24'
+      # Mã truy cập bản trình diễn. Render sinh ngẫu nhiên ở lần tạo đầu tiên;
+      # đổi giá trị này là thu hồi quyền xem của mọi người đã có link.
+      - key: DEMO_ACCESS_CODE
+        generateValue: true
+
+    # Bỏ chú thích để giữ dữ liệu qua các lần khởi động lại (cần gói trả phí).
+    # disk:
+    #   name: agrigreen-data
+    #   mountPath: /opt/render/project/src/data
+    #   sizeGB: 1

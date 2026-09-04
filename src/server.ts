@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { migrate } from './platform/db/schema.ts';
 import { HttpError, sendJson } from './platform/http/router.ts';
 import { buildApi } from './api.ts';
+import { gateEnabled, handleGate } from './platform/http/accessGate.ts';
 import { seedIfEmpty } from './seed.ts';
 
 const HERE = fileURLToPath(new URL('.', import.meta.url));
@@ -32,6 +33,10 @@ export async function start(port = Number(process.env.PORT ?? 4173)): Promise<vo
   const server = createServer(async (req, res) => {
     const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
     try {
+      // Cổng mã truy cập đứng TRƯỚC mọi thứ khác: chưa nhập đúng mã thì không
+      // thấy giao diện lẫn API. Tắt hoàn toàn khi không đặt DEMO_ACCESS_CODE.
+      if (handleGate(req, res, url.pathname)) return;
+
       if (url.pathname === '/health') {
         sendJson(res, 200, { ok: true, service: 'mekong-green', time: new Date().toISOString() });
         return;
@@ -57,6 +62,9 @@ export async function start(port = Number(process.env.PORT ?? 4173)): Promise<vo
 
   await new Promise<void>((resolveStart) => server.listen(port, resolveStart));
   console.log(`\n  Mekong Green Platform đang chạy: http://localhost:${port}\n`);
+  if (gateEnabled()) {
+    console.log('  Cong ma truy cap DANG BAT (bien DEMO_ACCESS_CODE) - nguoi xem phai nhap ma truoc.');
+  }
   console.log('  Tài khoản mẫu (mật khẩu: 123456):');
   console.log('    admin      — Quản trị nền tảng (toàn quyền)');
   console.log('    supplychain— Supply Chain / Kế hoạch (mô phỏng Hub)');

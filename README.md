@@ -366,6 +366,47 @@ Mã nguồn: [`vessels.ts`](src/platform/geo/vessels.ts) ·
 
 ---
 
+## 1G. Chia sẻ bản trình diễn cho người khác xem
+
+### Cổng mã truy cập
+
+Mọi tài khoản demo đều dùng mật khẩu `123456` và màn hình đăng nhập liệt kê sẵn danh sách —
+trên máy thì tiện, đưa lên Internet thì ai có link cũng vào được quyền quản trị. Vì vậy có một
+**cổng mã truy cập** đứng trước toàn bộ hệ thống:
+
+```bash
+DEMO_ACCESS_CODE=ma-cua-ban npm start
+```
+
+- **Không đặt biến này thì cổng tắt hoàn toàn** — chạy trên máy không phải nhập gì thêm.
+- Cổng chặn **cả API**, không chỉ giao diện. Một cổng chỉ che màn hình đăng nhập mà để
+  `/api/...` mở thì lấy dữ liệu bằng một lệnh `curl` là xong.
+- `/health` luôn mở, nếu không nền tảng triển khai sẽ coi dịch vụ là hỏng và khởi động lại liên tục.
+- Cookie chứa **dấu vân** của mã chứ không chứa mã gốc, nên người xem cookie không suy ngược ra
+  mã để chia sẻ tiếp. **Đổi `DEMO_ACCESS_CODE` là thu hồi quyền xem của mọi người đã có link.**
+- Sai quá 8 lần trong 10 phút thì IP đó bị chặn tạm — mã ngắn không có giới hạn này thì dò ra
+  trong vài phút.
+
+Đây là rào chắn cho bản trình diễn, **không phải** cơ chế xác thực người dùng: ai có mã cũng
+thấy được mọi thứ. Phân quyền thật vẫn nằm ở màn hình đăng nhập phía sau.
+
+### Triển khai
+
+| | Render | Fly.io |
+| --- | --- | --- |
+| Tệp cấu hình | `render.yaml` | `fly.toml` + `Dockerfile` |
+| Bước chuẩn bị | Không | Cài `flyctl` |
+| Dữ liệu SQLite | Mất khi khởi động lại (gói miễn phí) | Giữ được nhờ volume |
+| Khi không có truy cập | Ngủ sau 15 phút, đánh thức mất 30–60 giây | Ngủ, đánh thức vài giây |
+
+Dữ liệu mất khi khởi động lại **không phải vấn đề với bản trình diễn**: `seedIfEmpty()` tự nạp
+lại toàn bộ dữ liệu mẫu khi khởi động, nên dịch vụ tự phục hồi. Chỉ cần đĩa lưu trữ bền khi
+muốn giữ những gì người xem nhập vào.
+
+Cả hai tệp cấu hình đều có hướng dẫn từng bước ghi ngay trong phần chú thích đầu tệp.
+
+---
+
 ## 2. Kiến trúc
 
 ```
@@ -732,7 +773,7 @@ Hai tham số #48/#49 để `null` là cố ý: đó là cách hệ thống th�
 
 ## 8. Kiểm thử
 
-`npm test` chạy 138 test viết theo đúng Acceptance Criteria của BRD, ví dụ:
+`npm test` chạy 144 test viết theo đúng Acceptance Criteria của BRD, ví dụ:
 
 - `FN-01 AC-03` — danh mục đúng 49 tham số, 23 thị trường / 24 giả định / 2 khác, không trùng/thiếu STT.
 - `FN-05 AC-03` — vùng phục vụ chồng lấn: mỗi HTX chỉ xuất hiện ở đúng một Hub.
@@ -783,6 +824,8 @@ Hai tham số #48/#49 để `null` là cố ý: đó là cách hệ thống th�
 - Khe hở nhỏ nối được tự động, khe hở lớn bị bỏ qua **kèm lý do**, không nối bừa.
 - Sà lan không được định tuyến qua tuyến nó không lọt, dù tuyến đó ngắn hơn.
 - Phương tiện càng lớn thì số tuyến đi được càng ít — bất biến của bảng tổng hợp năng lực.
+- Cổng mã truy cập chặn **cả API** chứ không chỉ giao diện; `/health` vẫn mở.
+- Cookie cổng không chứa mã gốc; đổi mã là vô hiệu hoá mọi cookie đã phát.
 - `QT-03` — bản ghi đã khoá không nhận đồng bộ từ App HTX.
 - Quy đổi địa giới 2025 đúng cho cả 12 tỉnh cũ; huyện trùng tên chọn đúng tỉnh khai báo.
 - Phát hiện huyện bị xếp nhầm tỉnh và gợi ý tỉnh đúng.
