@@ -117,6 +117,9 @@ export function listUsers(): User[] {
 export function setUserStatus(id: string, status: 'active' | 'locked', actor = {}): void {
   const before = getUser(id);
   update('users', id, { status, updated_at: nowIso() });
+  // Khoá tài khoản là huỷ luôn quyền truy cập hiện tại, không chỉ chặn lần đăng
+  // nhập sau. Xem thêm `admin.setStatus` để biết số phiên đã bị huỷ.
+  if (status === 'locked') run('DELETE FROM sessions WHERE user_id = ?', [id]);
   logEvent(
     { module: 'admin', entityType: 'users', entityId: id, action: 'update', before, after: getUser(id) },
     actor,
@@ -180,7 +183,16 @@ export function userFromToken(token: string | null | undefined): User | null {
     run('DELETE FROM sessions WHERE token = ?', [token]);
     return null;
   }
-  return getUser(session.user_id);
+
+  const user = getUser(session.user_id);
+  // Tài khoản bị khoá SAU khi phiên đã mở thì phiên đó phải chết theo. Không
+  // kiểm tra ở đây thì người bị khoá vẫn dùng hệ thống bình thường tới khi
+  // phiên hết hạn — tức là việc khoá gần như vô tác dụng đúng lúc cần nó nhất.
+  if (!user || user.status !== 'active') {
+    run('DELETE FROM sessions WHERE token = ?', [token]);
+    return null;
+  }
+  return user;
 }
 
 export function describeUser(user: User): Record<string, unknown> {

@@ -47,7 +47,7 @@ npm test
 
 - `npm run seed -- --reset` — xoá và nạp lại dữ liệu nền (26 HTX ĐBSCL, 3 mùa vụ, 378 máy cơ giới, 7 tuyến đường thuỷ, nhà máy VFT, 49 tham số).
 - `npm run demo` — chạy trọn vẹn nghiệp vụ trên dòng lệnh: đặt 5 Hub ứng viên → dựng 3 kịch bản → mô phỏng → so sánh → khuyến nghị → độ nhạy → phê duyệt tham số → kết xuất Hub sang kho → nhập kho → định tuyến TMS → cân đối cơ giới hoá.
-- `npm test` — 48 test kiểm chứng các Acceptance Criteria trong BRD và luồng nhập Excel.
+- `npm test` — 164 test kiểm chứng các Acceptance Criteria trong BRD và luồng nhập Excel.
 
 ### Tài khoản mẫu (mật khẩu `123456`)
 
@@ -416,6 +416,58 @@ Cả hai nền tảng đều tự khởi động lại dịch vụ sau khi đổ
 
 ---
 
+## 1H. Quản trị hệ thống: tài khoản, nhóm, phân quyền
+
+Ma trận RBAC ban đầu nằm cứng trong mã nguồn. Điều đó ổn khi hệ thống mới có một
+nhóm người dùng, nhưng khi đã có 13 nhóm trên 5 cổng thì mỗi lần một sở muốn cán
+bộ xã xem thêm một báo cáo lại thành một lần sửa mã và triển khai lại. Nên ma
+trận giờ có hai tầng:
+
+- **Mặc định trong mã nguồn** — `ROLE_PERMISSIONS` tại [`rbac.ts`](src/platform/auth/rbac.ts), vẫn là nguồn chuẩn.
+- **Ghi đè do quản trị viên đặt** — bảng `group_permissions`, cấp thêm (`granted = 1`) hoặc thu hồi (`granted = 0`) từng quyền.
+
+Quyền hiệu lực = mặc định, rồi áp ghi đè. Giao diện luôn hiện **cả hai**: ô nào
+lệch mặc định thì viền vàng kèm chú thích "Mặc định: có / không" và một nút trả
+về mặc định. Không có dòng đó thì sau vài tháng không ai còn biết cấu hình đã bị
+sửa ở đâu và vì sao.
+
+`permissionsFor()` chạy trên mọi yêu cầu HTTP, nên phần ghi đè được giữ trong bộ
+nhớ và chỉ nạp lại khi có thay đổi (`invalidatePermissionCache`) — truy vấn CSDL
+mỗi request sẽ biến phân quyền thành nút thắt cổ chai của cả hệ thống.
+
+### Bảy chốt chặn an toàn
+
+| Mã | Chốt chặn | Vì sao |
+| --- | --- | --- |
+| SA-01 | Không thu hồi quyền của nhóm quản trị nền tảng | Một thao tác nhầm là khoá cứng cả hệ thống, không còn ai vào sửa lại |
+| SA-02 | Không hạ cấp / khoá / tự xoá nhóm của **chính mình** | Tránh tự nhốt mình ra ngoài |
+| SA-03 | Luôn còn ít nhất một quản trị nền tảng đang hoạt động | Chặn ở tầng nghiệp vụ, không chỉ cảnh báo trên giao diện |
+| SA-04 | Tài khoản phải thuộc ít nhất một nhóm | Không nhóm = không vào được cổng nào, tài khoản thành rác |
+| SA-05 | Không xoá nhóm hệ thống, không xoá nhóm còn người dùng | Xoá nhóm đang dùng là âm thầm tước quyền một loạt người |
+| SA-06 | Khoá tài khoản là **xoá luôn phiên đang mở** | Khoá mà phiên cũ vẫn chạy thì việc khoá vô nghĩa |
+| SA-07 | Mật khẩu tạm chỉ hiện **một lần**, buộc đổi ở lần đăng nhập đầu | Mật khẩu tạm còn đọc lại được thì không còn là tạm |
+
+SA-06 đóng hai lỗ hổng thật: `userFromToken` trước đây không kiểm tra trạng thái
+tài khoản, nên một tài khoản bị khoá **sau khi** đã đăng nhập vẫn dùng được phiên
+cũ cho tới khi hết hạn. Nay phiên bị xoá ngay tại thời điểm khoá, và mọi phiên
+còn sót cũng chết ở lần dùng kế tiếp.
+
+### Hai màn hình
+
+| Màn hình | Làm được gì |
+| --- | --- |
+| 👤 Tài khoản người dùng | Tạo tài khoản (sinh mật khẩu tạm), sửa hồ sơ, đổi nhóm, khoá/mở, đặt lại mật khẩu, thu hồi phiên. Mỗi tài khoản có bảng **"quyền đến từ nhóm nào"** — trả lời câu hỏi hay gặp nhất khi phân quyền: vì sao người này vào được màn hình đó |
+| 🛡️ Nhóm & phân quyền | 13 nhóm, ma trận 40 quyền chia 7 mảng, tick trực tiếp và có hiệu lực ngay. Tạo được nhóm tuỳ chỉnh (bắt đầu từ rỗng, không kế thừa) |
+
+Mọi thao tác đều ghi vào nhật ký truy vết dùng chung
+([`audit.ts`](src/platform/audit/audit.ts)) kèm người thực hiện và giá trị trước/sau.
+
+Mã nguồn: [`admin.ts`](src/platform/auth/admin.ts) ·
+[`rbac.ts`](src/platform/auth/rbac.ts) · [`users.ts`](src/platform/auth/users.ts) ·
+[`sysadmin.js`](src/web/pages/sysadmin.js)
+
+---
+
 ## 2. Kiến trúc
 
 ```
@@ -751,6 +803,9 @@ Hai tham số #48/#49 để `null` là cố ý: đó là cách hệ thống th�
 | Sàn cơ giới hoá | Dùng chung Cổng CGH ↔ Cổng HTX | `web/pages/rental.js` |
 | Cấu hình cổng | Đường dẫn, nhận diện, nav từng cổng | `web/portals.js` |
 | Quyền vào cổng | `portal.kn/htx/cgh/gis/erp` tách khỏi quyền dữ liệu | `platform/auth/rbac.ts` |
+| Quản trị SA-01→07 | Tài khoản, nhóm, ma trận quyền chỉnh trực tiếp | `platform/auth/admin.ts` |
+| Phân quyền động | Mặc định mã nguồn + ghi đè `group_permissions`, cache trong bộ nhớ | `platform/auth/rbac.ts::permissionsFor` |
+| Màn hình quản trị | Tài khoản · Nhóm & phân quyền | `web/pages/sysadmin.js` |
 | KN FN-03 | Cây tổ chức khuyến nông 3 cấp | `khuyennong/service.ts::orgTree` |
 | KN FN-05 | Vẽ ranh giới thửa, hệ thống tự tính diện tích | `mdm/service.ts::createPlot` |
 | KN FN-10→17 | Thư viện, nhiệm vụ, danh bạ, giá, đào tạo | `khuyennong/service.ts` |
@@ -782,7 +837,7 @@ Hai tham số #48/#49 để `null` là cố ý: đó là cách hệ thống th�
 
 ## 8. Kiểm thử
 
-`npm test` chạy 144 test viết theo đúng Acceptance Criteria của BRD, ví dụ:
+`npm test` chạy 164 test viết theo đúng Acceptance Criteria của BRD, ví dụ:
 
 - `FN-01 AC-03` — danh mục đúng 49 tham số, 23 thị trường / 24 giả định / 2 khác, không trùng/thiếu STT.
 - `FN-05 AC-03` — vùng phục vụ chồng lấn: mỗi HTX chỉ xuất hiện ở đúng một Hub.
@@ -798,6 +853,10 @@ Hai tham số #48/#49 để `null` là cố ý: đó là cách hệ thống th�
 - Chi phí băm/nén chỉ áp cho phần rơm **đi qua Hub**.
 - Sửa một ô cấu hình Hub **không** reset các ô còn lại về mặc định (lỗi hồi quy đã sửa).
 - Mỗi cổng được gác bằng quyền `portal.*` riêng, không dùng quyền đọc dữ liệu làm cửa vào.
+- `SA-01` — không thu hồi được quyền của nhóm quản trị nền tảng, kể cả khi ghi thẳng vào bảng ghi đè.
+- `SA-03` — hạ cấp quản trị nền tảng cuối cùng bị chặn; hạ cấp khi còn người thứ hai thì cho qua.
+- `SA-06` — khoá tài khoản xoá luôn phiên đang mở, và phiên còn sót không dùng lại được.
+- Ghi đè quyền có hiệu lực **ngay** ở request kế tiếp, không cần khởi động lại.
 - Ba app nghiệp vụ đã tách cổng và mỗi cổng có ≥ 7 màn hình chức năng theo BRD.
 - Ban quản lý HTX đọc được nội dung khuyến nông nhưng **không** vào được Cổng Khuyến nông.
 - Mọi trang khai báo trong `portals.js` đều thực sự được đăng ký ở một module trang.

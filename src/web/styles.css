@@ -382,6 +382,26 @@ a.brand.small { text-decoration: none; color: inherit; }
 .model-card.active { border-color: var(--brand); background: var(--surface); }
 .model-card p { margin: 0; font-size: 12.5px; }
 
+/* =====================================================================
+   Ma trận phân quyền
+   ===================================================================== */
+
+.perm-section { margin-top: 14px; }
+.perm-section h4 { margin: 0 0 6px; font-size: 13px; color: var(--ink-soft); }
+.perm-grid {
+  display: grid; gap: 6px;
+  grid-template-columns: repeat(auto-fit, minmax(min(300px, 100%), 1fr));
+}
+.perm-cell {
+  border: 1px solid var(--hairline); border-radius: 8px;
+  padding: 6px 8px; background: var(--surface-2); min-width: 0;
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+}
+/* Ô đã chỉnh khác mặc định trong mã nguồn. */
+.perm-cell.overridden { border-color: #B0791C; background: #FDF6E9; }
+.perm-code { display: block; font-size: 11px; font-family: ui-monospace, monospace; }
+tr.muted-row td { opacity: .55; }
+
 @media (max-width: 900px) {
   .shell { grid-template-columns: 1fr; }
   .sidebar { position: static; height: auto; }

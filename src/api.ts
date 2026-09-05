@@ -6,8 +6,9 @@
  * là endpoint công khai (đăng nhập, health-check).
  */
 import { Router, badRequest, notFound, type Context } from './platform/http/router.ts';
-import { PERMISSIONS as P, ROLE_LABELS, ROLE_PERMISSIONS } from './platform/auth/rbac.ts';
+import { PERMISSION_GROUPS, PERMISSIONS as P, ROLE_LABELS, ROLE_PERMISSIONS } from './platform/auth/rbac.ts';
 import * as users from './platform/auth/users.ts';
+import * as sysadmin from './platform/auth/admin.ts';
 import * as audit from './platform/audit/audit.ts';
 import * as sync from './platform/sync/sync.ts';
 import * as mdm from './mdm/service.ts';
@@ -82,6 +83,41 @@ export function buildApi(): Router {
     })),
     permissions: Object.values(P),
   }));
+
+  // ---- Quản trị hệ thống: tài khoản, nhóm người dùng, phân quyền ----
+  api.get('/admin/dashboard', () => sysadmin.adminDashboard(), P.ADMIN_USERS);
+  api.get('/admin/user-views', () => sysadmin.listUserViews(), P.ADMIN_USERS);
+  api.get('/admin/users/:id', (ctx) => sysadmin.userDetail(ctx.params.id), P.ADMIN_USERS);
+  api.put('/admin/users/:id', (ctx) =>
+    sysadmin.updateProfile(ctx.params.id, body(ctx) as never, ctx.actor), P.ADMIN_USERS);
+  api.put('/admin/users/:id/roles', (ctx) =>
+    sysadmin.setUserRoles(ctx.params.id, body(ctx).roles ?? [], ctx.actor), P.ADMIN_USERS);
+  api.post('/admin/users/:id/set-status', (ctx) =>
+    sysadmin.setStatus(ctx.params.id, body(ctx).status, ctx.actor), P.ADMIN_USERS);
+  api.post('/admin/users/:id/reset-pw', (ctx) =>
+    sysadmin.resetUserPassword(ctx.params.id, ctx.actor), P.ADMIN_USERS);
+  api.post('/admin/users/:id/revoke-sessions', (ctx) => ({
+    revokedSessions: sysadmin.revokeSessions(ctx.params.id, ctx.actor),
+  }), P.ADMIN_USERS);
+
+  api.get('/admin/permissions', () => ({
+    groups: PERMISSION_GROUPS,
+  }), P.ADMIN_USERS);
+  api.get('/admin/groups', () => sysadmin.listGroups(), P.ADMIN_USERS);
+  api.post('/admin/groups', (ctx) => sysadmin.createGroup(body(ctx) as never, ctx.actor), P.ADMIN_USERS);
+  api.put('/admin/groups/:code', (ctx) =>
+    sysadmin.updateGroup(ctx.params.code, body(ctx) as never, ctx.actor), P.ADMIN_USERS);
+  api.delete('/admin/groups/:code', (ctx) => {
+    sysadmin.deleteGroup(ctx.params.code, ctx.actor);
+    return { ok: true };
+  }, P.ADMIN_USERS);
+  api.put('/admin/groups/:code/permission', (ctx) => sysadmin.setGroupPermission(
+    ctx.params.code, body(ctx).permission,
+    body(ctx).granted === null ? null : Boolean(body(ctx).granted),
+    ctx.actor,
+  ), P.ADMIN_USERS);
+  api.post('/admin/groups/:code/reset', (ctx) =>
+    sysadmin.resetGroupPermissions(ctx.params.code, ctx.actor), P.ADMIN_USERS);
 
   api.get('/admin/users', () => users.listUsers(), P.ADMIN_USERS);
   api.post('/admin/users', (ctx) => users.createUser(body(ctx) as never, ctx.actor), P.ADMIN_USERS);

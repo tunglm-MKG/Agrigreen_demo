@@ -243,10 +243,12 @@ export const PORTALS = [
         ],
       },
       {
-        group: 'Quản trị nền tảng',
+        group: 'Quản trị hệ thống',
         items: [
+          { id: 'sys-users', label: '👤 Tài khoản người dùng', permission: 'admin.users' },
+          { id: 'sys-groups', label: '🛡️ Nhóm & phân quyền', permission: 'admin.users' },
           { id: 'masterdata', label: '🗄️ Master Data', permission: 'mdm.read' },
-          { id: 'admin', label: '🔐 Tài khoản & Nhật ký', permission: 'gis.read' },
+          { id: 'admin', label: '📜 Nhật ký & đồng bộ', permission: 'gis.read' },
         ],
       },
     ],

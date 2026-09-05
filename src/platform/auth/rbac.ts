@@ -3,9 +3,13 @@
  *
  * ERP Product Vision v1.2 ghi nhận "RBAC chưa hợp nhất" là rủi ro mức Cao:
  * mỗi BRD/PRD tự định nghĩa vai trò riêng nên khi ghép phân hệ sẽ mâu thuẫn.
- * File này là nguồn duy nhất định nghĩa vai trò và quyền cho cả 5 nhóm đối
- * tượng (HTX, doanh nghiệp, cơ quan quản lý, tổ chức kiểm định, nội bộ).
+ * File này là nguồn duy nhất định nghĩa vai trò và quyền MẶC ĐỊNH cho cả 5 nhóm
+ * đối tượng (HTX, doanh nghiệp, cơ quan quản lý, tổ chức kiểm định, nội bộ).
+ *
+ * Quản trị viên điều chỉnh được ma trận này từ giao diện mà không phải sửa mã;
+ * phần ghi đè lưu ở bảng `group_permissions`, xem `permissionsFor` bên dưới.
  */
+import { all } from '../db/db.ts';
 
 export const ROLES = {
   PLATFORM_ADMIN: 'platform_admin',
@@ -106,6 +110,94 @@ export const PERMISSIONS = {
 
 export type Permission = (typeof PERMISSIONS)[keyof typeof PERMISSIONS];
 
+/** Danh sách quyền kèm nhãn tiếng Việt, để giao diện phân quyền đọc được. */
+export const PERMISSION_GROUPS: { group: string; permissions: { code: string; label: string }[] }[] = [
+  {
+    group: 'Dữ liệu dùng chung & GIS',
+    permissions: [
+      { code: 'mdm.read', label: 'Xem dữ liệu dùng chung' },
+      { code: 'mdm.write', label: 'Sửa dữ liệu dùng chung' },
+      { code: 'gis.read', label: 'Xem bản đồ và tuyến' },
+      { code: 'gis.write', label: 'Số hoá và sửa tuyến' },
+      { code: 'gis.admin', label: 'Quản trị GIS (snapshot, replay)' },
+    ],
+  },
+  {
+    group: 'App Khuyến nông',
+    permissions: [
+      { code: 'khuyennong.read', label: 'Xem nội dung khuyến nông' },
+      { code: 'khuyennong.write', label: 'Soạn nội dung, xử lý nhiệm vụ' },
+      { code: 'khuyennong.publish', label: 'Xuất bản và phát chỉ đạo' },
+    ],
+  },
+  {
+    group: 'App Hợp tác xã & Cơ giới hoá',
+    permissions: [
+      { code: 'htx.read', label: 'Xem dữ liệu HTX' },
+      { code: 'htx.write', label: 'Ghi nhật ký, khai báo sản lượng' },
+      { code: 'cgh.read', label: 'Xem bản đồ cơ giới hoá' },
+      { code: 'cgh.write', label: 'Quản lý máy móc, định mức' },
+      { code: 'rental.read', label: 'Xem sàn cho thuê' },
+      { code: 'rental.write', label: 'Đăng tin, đặt lệnh thuê' },
+      { code: 'rental.resolve', label: 'Xử lý tranh chấp' },
+    ],
+  },
+  {
+    group: 'Mô phỏng đầu tư',
+    permissions: [
+      { code: 'simulation.read', label: 'Xem kịch bản mô phỏng' },
+      { code: 'simulation.write', label: 'Dựng và chạy kịch bản' },
+      { code: 'simulation.param_approve', label: 'Phê duyệt tham số giả định' },
+      { code: 'simulation.mark_official', label: 'Đánh dấu kịch bản Chính thức' },
+      { code: 'simulation.threshold', label: 'Chốt ngưỡng khuyến nghị đầu tư' },
+    ],
+  },
+  {
+    group: 'Vận hành ERP',
+    permissions: [
+      { code: 'warehouse.read', label: 'Xem kho' },
+      { code: 'warehouse.write', label: 'Nhập xuất kho' },
+      { code: 'procurement.read', label: 'Xem mua hàng' },
+      { code: 'procurement.write', label: 'Tạo đơn mua' },
+      { code: 'sales.read', label: 'Xem bán hàng' },
+      { code: 'sales.write', label: 'Tạo đơn bán' },
+      { code: 'tms.read', label: 'Xem vận tải' },
+      { code: 'tms.write', label: 'Điều phối vận tải' },
+      { code: 'finance.read', label: 'Xem tài chính' },
+      { code: 'finance.write', label: 'Ghi sổ tài chính' },
+      { code: 'mrv.read', label: 'Xem hồ sơ MRV' },
+      { code: 'mrv.write', label: 'Ghi dữ liệu MRV' },
+      { code: 'reporting.read', label: 'Xem báo cáo' },
+    ],
+  },
+  {
+    group: 'Cổng truy cập',
+    permissions: [
+      { code: 'portal.kn', label: 'Vào Cổng Khuyến nông' },
+      { code: 'portal.htx', label: 'Vào Cổng Hợp tác xã' },
+      { code: 'portal.cgh', label: 'Vào Cổng Cơ giới hoá' },
+      { code: 'portal.gis', label: 'Vào Nền tảng GIS' },
+      { code: 'portal.erp', label: 'Vào ERP nội bộ' },
+    ],
+  },
+  {
+    group: 'Quản trị hệ thống',
+    permissions: [
+      { code: 'admin.users', label: 'Quản lý tài khoản và phân quyền' },
+      { code: 'admin.config', label: 'Cấu hình hệ thống' },
+    ],
+  },
+];
+
+/** Nhãn tiếng Việt của một quyền; trả về chính mã khi chưa có nhãn. */
+export function permissionLabel(code: string): string {
+  for (const group of PERMISSION_GROUPS) {
+    const found = group.permissions.find((item) => item.code === code);
+    if (found) return found.label;
+  }
+  return code;
+}
+
 const P = PERMISSIONS;
 
 const READ_ONLY_ALL: Permission[] = [
@@ -184,13 +276,76 @@ export const ROLE_PERMISSIONS: Record<string, Permission[] | ['*']> = {
   [ROLES.VVB_AUDITOR]: [P.PORTAL_ERP, P.GIS_READ, P.MRV_READ, P.REPORT_READ],
 };
 
-export function permissionsFor(roles: string[]): Set<string> {
+/**
+ * QUYỀN MẶC ĐỊNH THEO MÃ NGUỒN — baseline, không đọc CSDL.
+ *
+ * Tách riêng khỏi `permissionsFor` để giao diện quản trị so sánh được đâu là
+ * mặc định và đâu là phần đã bị ghi đè.
+ */
+export function defaultPermissionsFor(roles: string[]): Set<string> {
   const result = new Set<string>();
   for (const role of roles) {
     const granted = ROLE_PERMISSIONS[role];
     if (!granted) continue;
     if (granted[0] === '*') return new Set(['*']);
     for (const permission of granted as Permission[]) result.add(permission);
+  }
+  return result;
+}
+
+/**
+ * Ghi đè quyền do quản trị viên đặt, nạp từ bảng `group_permissions`.
+ *
+ * Được gọi trên MỌI yêu cầu nên phải rẻ: giữ trong bộ nhớ và chỉ nạp lại khi có
+ * thay đổi (`invalidatePermissionCache`). Truy vấn CSDL mỗi lần sẽ biến phân
+ * quyền thành nút thắt cổ chai của cả hệ thống.
+ */
+let overrideCache: Map<string, Map<string, boolean>> | null = null;
+
+export function invalidatePermissionCache(): void {
+  overrideCache = null;
+}
+
+function overrides(): Map<string, Map<string, boolean>> {
+  if (overrideCache) return overrideCache;
+  const map = new Map<string, Map<string, boolean>>();
+  try {
+    const rows = all<{ group_code: string; permission: string; granted: number }>(
+      'SELECT group_code, permission, granted FROM group_permissions',
+    );
+    for (const row of rows) {
+      const entry = map.get(row.group_code) ?? new Map<string, boolean>();
+      entry.set(row.permission, row.granted === 1);
+      map.set(row.group_code, entry);
+    }
+  } catch {
+    // Bảng chưa tồn tại (CSDL cũ chưa migrate) — dùng mặc định trong mã nguồn.
+  }
+  overrideCache = map;
+  return map;
+}
+
+/**
+ * Quyền HIỆU LỰC của một tập vai trò: mặc định trong mã nguồn, rồi áp ghi đè.
+ *
+ * Vai trò có `*` (quản trị nền tảng) vẫn là toàn quyền và KHÔNG chịu ghi đè —
+ * nếu cho phép thu hồi quyền của quản trị nền tảng thì một thao tác nhầm là
+ * khoá cứng cả hệ thống, không còn ai vào sửa lại được.
+ */
+export function permissionsFor(roles: string[]): Set<string> {
+  for (const role of roles) {
+    if (ROLE_PERMISSIONS[role]?.[0] === '*') return new Set(['*']);
+  }
+
+  const table = overrides();
+  const result = new Set<string>();
+  for (const role of roles) {
+    // Vai trò hệ thống lấy mặc định từ mã nguồn; nhóm tuỳ chỉnh bắt đầu từ rỗng.
+    for (const permission of (ROLE_PERMISSIONS[role] ?? []) as Permission[]) result.add(permission);
+    for (const [permission, granted] of table.get(role) ?? []) {
+      if (granted) result.add(permission);
+      else result.delete(permission);
+    }
   }
   return result;
 }

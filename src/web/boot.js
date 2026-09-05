@@ -14,6 +14,7 @@ import '/pages/gis.js';
 import '/pages/waterway-network.js';
 import '/pages/import.js';
 import '/pages/admin.js';
+import '/pages/sysadmin.js';
 
 // Cổng Khuyến nông
 import '/pages/kn.js';

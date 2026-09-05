@@ -81,6 +81,44 @@ CREATE TABLE IF NOT EXISTS user_roles (
   FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
+-- =====================================================================
+-- NHÓM NGƯỜI DÙNG VÀ PHÂN QUYỀN ĐỘNG
+--
+-- Ma trận RBAC gốc nằm trong mã nguồn (rbac.ts) và là baseline. Hai bảng dưới
+-- đây cho phép quản trị viên điều chỉnh mà không phải sửa mã và triển khai lại:
+--
+--   user_groups        Nhóm do quản trị viên tạo thêm, ngoài các vai trò hệ thống.
+--   group_permissions  Ghi đè quyền cho MỘT nhóm: cấp thêm hoặc thu hồi bớt.
+--
+-- Lưu dạng GHI ĐÈ thay vì lưu trọn bộ quyền hiệu lực là có chủ đích: khi mã
+-- nguồn bổ sung quyền mới cho một vai trò hệ thống, vai trò đó nhận được ngay,
+-- thay vì đứng yên ở ảnh chụp cũ. Bù lại, giao diện phải chỉ rõ ô nào là mặc
+-- định và ô nào đã bị ghi đè — nếu không người dùng sẽ không hiểu vì sao quyền
+-- tự đổi sau một lần cập nhật hệ thống.
+-- =====================================================================
+
+CREATE TABLE IF NOT EXISTS user_groups (
+  code        TEXT PRIMARY KEY,
+  label       TEXT NOT NULL,
+  description TEXT,
+  -- Nhóm hệ thống (định nghĩa trong rbac.ts) không xoá và không đổi tên được;
+  -- chỉ được ghi đè quyền. Nhóm tuỳ chỉnh thì sửa xoá thoải mái.
+  is_system   INTEGER NOT NULL DEFAULT 0,
+  created_by  TEXT,
+  created_at  TEXT NOT NULL,
+  updated_at  TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS group_permissions (
+  group_code  TEXT NOT NULL,
+  permission  TEXT NOT NULL,
+  -- 1 = cấp thêm so với mặc định; 0 = thu hồi so với mặc định.
+  granted     INTEGER NOT NULL,
+  changed_by  TEXT,
+  changed_at  TEXT NOT NULL,
+  PRIMARY KEY (group_code, permission)
+);
+
 CREATE TABLE IF NOT EXISTS sessions (
   token       TEXT PRIMARY KEY,
   user_id     TEXT NOT NULL,
