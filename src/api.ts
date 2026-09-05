@@ -39,6 +39,7 @@ import * as sales from './erp/sales/service.ts';
 import * as tms from './erp/tms/service.ts';
 import * as finance from './erp/finance/service.ts';
 import * as reporting from './erp/reporting/service.ts';
+import * as field from './erp/field/service.ts';
 
 const body = (ctx: Context) => (ctx.body ?? {}) as Record<string, any>;
 const num = (value: unknown, fallback?: number): number => {
@@ -85,6 +86,49 @@ export function buildApi(): Router {
   }));
 
   // ---- Quản trị hệ thống: tài khoản, nhóm người dùng, phân quyền ----
+  // ===================== Quản lý hiện trường (đội thu gom rơm) =====================
+  api.get('/field/lookups', () => field.fieldLookups(), P.FIELD_READ);
+  api.get('/field/dashboard', (ctx) => field.fieldDashboard(ctx.query.get('date') || undefined), P.FIELD_READ);
+  api.get('/field/teams', () => field.listTeams(), P.FIELD_READ);
+  api.post('/field/teams', (ctx) => field.createTeam(body(ctx) as never, ctx.actor), P.FIELD_MANAGE);
+  api.put('/field/teams/:id', (ctx) => field.updateTeam(ctx.params.id, body(ctx), ctx.actor), P.FIELD_MANAGE);
+  api.post('/field/teams/:id/members', (ctx) => field.addMember(ctx.params.id, body(ctx) as never, ctx.actor), P.FIELD_MANAGE);
+  api.post('/field/members/:id/status', (ctx) => {
+    field.setMemberStatus(ctx.params.id, body(ctx).status, ctx.actor);
+    return { ok: true };
+  }, P.FIELD_MANAGE);
+  api.get('/field/vehicles', (ctx) => field.listVehicles({
+    teamId: ctx.query.get('teamId') || undefined, kind: ctx.query.get('kind') || undefined, unassigned: ctx.query.get('unassigned') === '1',
+  }), P.FIELD_READ);
+  api.post('/field/vehicles', (ctx) => field.createVehicle(body(ctx) as never, ctx.actor), P.FIELD_MANAGE);
+  api.put('/field/vehicles/:id', (ctx) => field.updateVehicle(ctx.params.id, body(ctx), ctx.actor), P.FIELD_MANAGE);
+
+  api.get('/field/jobs', (ctx) => field.listJobs({
+    status: ctx.query.get('status') || undefined, teamId: ctx.query.get('teamId') || undefined,
+    from: ctx.query.get('from') || undefined, to: ctx.query.get('to') || undefined, htxId: ctx.query.get('htxId') || undefined,
+    onlyOverdue: ctx.query.get('overdue') === '1', limit: ctx.query.get('limit') ? num(ctx.query.get('limit')) : undefined,
+  }), P.FIELD_READ);
+  api.get('/field/jobs/:id', (ctx) => field.jobDetail(ctx.params.id), P.FIELD_READ);
+  api.post('/field/jobs', (ctx) => field.createJob(body(ctx) as never, ctx.actor), P.FIELD_MANAGE);
+  api.post('/field/jobs/:id/assign', (ctx) => field.assignJob(ctx.params.id, body(ctx) as never, ctx.actor), P.FIELD_MANAGE);
+  api.post('/field/jobs/:id/unassign', (ctx) => field.unassignJob(ctx.params.id, ctx.actor), P.FIELD_MANAGE);
+  api.post('/field/jobs/:id/cancel', (ctx) => field.cancelJob(ctx.params.id, String(body(ctx).reason ?? ''), ctx.actor), P.FIELD_MANAGE);
+  api.post('/field/jobs/:id/stages/:stage/start', (ctx) =>
+    field.startStage(ctx.params.id, ctx.params.stage as never, body(ctx), ctx.actor), P.FIELD_WRITE);
+  api.post('/field/jobs/:id/stages/:stage/complete', (ctx) =>
+    field.completeStage(ctx.params.id, ctx.params.stage as never, body(ctx) as never, ctx.actor), P.FIELD_WRITE);
+  api.post('/field/jobs/:id/loadings', (ctx) => field.recordLoading(ctx.params.id, body(ctx) as never, ctx.actor), P.FIELD_WRITE);
+
+  api.get('/field/calendar', (ctx) => field.harvestCalendar(
+    ctx.query.get('from') || undefined, ctx.query.get('days') ? num(ctx.query.get('days')) : undefined), P.FIELD_READ);
+  api.post('/field/calendar/sync', (ctx) => field.syncHarvestCalendar(
+    body(ctx).fromDate, body(ctx).days ? num(body(ctx).days) : undefined, ctx.actor), P.FIELD_MANAGE);
+  api.post('/field/auto-assign', (ctx) => field.autoAssign(body(ctx) as never, ctx.actor), P.FIELD_MANAGE);
+  api.get('/field/report', (ctx) => {
+    if (!ctx.query.get('from') || !ctx.query.get('to')) throw badRequest('Thiếu khoảng thời gian from / to');
+    return field.productivityReport(ctx.query.get('from'), ctx.query.get('to'));
+  }, P.FIELD_READ);
+
   api.get('/admin/dashboard', () => sysadmin.adminDashboard(), P.ADMIN_USERS);
   api.get('/admin/user-views', () => sysadmin.listUserViews(), P.ADMIN_USERS);
   api.get('/admin/users/:id', (ctx) => sysadmin.userDetail(ctx.params.id), P.ADMIN_USERS);

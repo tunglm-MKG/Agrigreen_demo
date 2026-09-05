@@ -10,6 +10,7 @@
  *   /htx/  — Cổng Hợp tác xã          (Ban quản lý HTX, nông dân)
  *   /cgh/  — Cổng Cơ giới hoá         (Chi cục PTNT, chủ máy, HTX thuê máy)
  *   /erp/  — ERP nội bộ Mekong Green  (Supply Chain, Kho, TMS, Tài chính)
+ *   /field/ — Cổng Hiện trường        (đội thu gom rơm của Mekong Green, đội trưởng dùng trên điện thoại)
  *   /gis/  — Nền tảng GIS dùng chung  (dữ liệu nền cho cả bốn cổng trên)
  *
  * Bốn cổng nghiệp vụ dùng CHUNG một phiên đăng nhập, một CSDL và một nền GIS —
@@ -208,6 +209,46 @@ export const PORTALS = [
   },
 
   // -------------------------------------------------------------------------
+  // Cổng Hiện trường — đội thu gom rơm của Mekong Green
+  //
+  // Người dùng chính là đội trưởng đứng giữa ruộng với điện thoại: ít mục,
+  // mục đầu là "Ghi nhận tại ruộng". Điều hành hiện trường vào cả đây và ERP.
+  // -------------------------------------------------------------------------
+  {
+    id: 'field',
+    path: '/field',
+    name: 'Cổng Hiện trường',
+    short: 'Hiện trường',
+    tagline: 'Đội thu gom rơm: cuộn – gom – xuống ghe, theo thời gian thực',
+    mark: '🌾',
+    accent: '#8A5A19',
+    permission: 'portal.field',
+    audience: 'Đội trưởng thu gom · Điều hành hiện trường',
+    nav: [
+      {
+        group: 'Tại ruộng',
+        items: [{ id: 'field-record', label: '📱 Ghi nhận tại ruộng', permission: 'field.read' }],
+      },
+      {
+        group: 'Điều hành',
+        items: [
+          { id: 'field-dashboard', label: '🛰️ Bảng điều hành', permission: 'field.read' },
+          { id: 'field-plan', label: '📅 Kế hoạch thu gom', permission: 'field.read' },
+          { id: 'field-teams', label: '👷 Đội & phương tiện', permission: 'field.read' },
+          { id: 'field-report', label: '📈 Năng suất', permission: 'field.read' },
+        ],
+      },
+      {
+        group: 'Liên phân hệ',
+        items: [
+          { id: 'tms', label: '🚛 Chuyến ghe (TMS)', permission: 'tms.read' },
+          { id: 'gis', label: '🗺️ Bản đồ dùng chung', permission: 'gis.read' },
+        ],
+      },
+    ],
+  },
+
+  // -------------------------------------------------------------------------
   // ERP nội bộ Mekong Green
   // -------------------------------------------------------------------------
   {
@@ -239,6 +280,7 @@ export const PORTALS = [
           { id: 'warehouse', label: '🏭 Kho & Giám sát môi trường', permission: 'warehouse.read' },
           { id: 'trade', label: '📦 Mua hàng / Bán hàng', permission: 'procurement.read' },
           { id: 'tms', label: '🚛 Vận tải (TMS)', permission: 'tms.read' },
+          { id: 'field-dashboard', label: '🌾 Hiện trường thu gom', permission: 'field.read' },
           { id: 'finance', label: '💰 Tài chính & MRV', permission: 'finance.read' },
         ],
       },

@@ -24,6 +24,7 @@ import {
   publishTemplate as publishSurveyTemplate,
 } from './agrigreen/khuyennong/survey.ts';
 import { createUser } from './platform/auth/users.ts';
+import * as field from './erp/field/service.ts';
 import { ROLES } from './platform/auth/rbac.ts';
 import { captureSnapshot } from './platform/audit/audit.ts';
 
@@ -492,6 +493,9 @@ export function seedAll(): void {
   // ---------- Công trình vượt sông + suy ra tải trọng lưu thông ----------
   seedWaterwayStructures();
 
+  // ---------- Đội thu gom rơm của Mekong Green ----------
+  seedFieldTeams();
+
   // ---------- Tài khoản mẫu ----------
   const firstHtxId = [...htxIds.values()][0];
   const accounts: { username: string; fullName: string; roles: string[]; htxId?: string }[] = [
@@ -501,6 +505,8 @@ export function seedAll(): void {
     { username: 'banlanhdao', fullName: 'Ban lãnh đạo Mekong Green', roles: [ROLES.EXECUTIVE] },
     { username: 'khonhap', fullName: 'Nhân viên vận hành kho', roles: [ROLES.WAREHOUSE_OP] },
     { username: 'dieuphoi', fullName: 'Điều phối vận tải', roles: [ROLES.LOGISTICS] },
+    { username: 'hientruong', fullName: 'Điều hành hiện trường', roles: [ROLES.FIELD_MANAGER] },
+    { username: 'doitruong', fullName: 'Đội trưởng Đội 1 — Long Xuyên', roles: [ROLES.FIELD_CREW] },
     { username: 'canbo_tw', fullName: 'Cán bộ Khuyến nông Trung ương', roles: [ROLES.KN_TRUNG_UONG] },
     { username: 'canbo_xa', fullName: 'Cán bộ Khuyến nông xã', roles: [ROLES.KN_XA] },
     { username: 'htx01', fullName: 'Ban quản lý HTX Vĩnh Bình', roles: [ROLES.HTX_MANAGER], htxId: firstHtxId },
@@ -514,6 +520,113 @@ export function seedAll(): void {
 
   // Snapshot ngày đầu tiên để chức năng replay (GIS FN-19) có dữ liệu gốc.
   captureSnapshot();
+}
+
+/**
+ * Đội thu gom rơm của Mekong Green — dữ liệu mẫu để Cổng Hiện trường có việc
+ * ngay khi mở: bốn đội đóng ở bốn cụm ruộng, máy cuộn khai báo năng lực, việc
+ * lập từ lịch gặt sẵn có (crop_status), một việc đã làm xong hôm qua để báo cáo
+ * năng suất có số, một việc quá hạn để dashboard hiện cờ rủi ro.
+ *
+ * Mốc thời gian neo theo NGÀY CHẠY SEED, không hard-code — bản trình diễn mở
+ * tháng sau vẫn thấy "hôm nay", "hôm qua" đúng nghĩa.
+ */
+export function seedFieldTeams(): void {
+  const seedActor = { name: 'seed' };
+  const day = (offset: number) => new Date(Date.now() + offset * 86_400_000).toISOString().slice(0, 10);
+  const at = (offset: number, hour: number) => `${day(offset)}T${String(hour).padStart(2, '0')}:00:00.000Z`;
+
+  const TEAMS = [
+    { name: 'Đội 1 — Long Xuyên', leader: 'Trần Văn Bảy', phone: '0913 220 118', lat: 10.3860, lng: 105.4350, label: 'Bến Long Xuyên, sông Hậu', balers: [45, 40], extra: ['may_keo', 'may_xuc'] },
+    { name: 'Đội 2 — Thoại Sơn', leader: 'Lê Minh Tâm', phone: '0918 445 902', lat: 10.2670, lng: 105.2620, label: 'Thoại Sơn, An Giang', balers: [40, 35], extra: ['may_keo', 'xe_tai'] },
+    { name: 'Đội 3 — Vị Thanh', leader: 'Nguyễn Hữu Lộc', phone: '0939 771 265', lat: 9.7840, lng: 105.4700, label: 'Vị Thanh, Hậu Giang (cũ)', balers: [40, 35], extra: ['may_keo', 'may_xuc', 'ghe'] },
+    { name: 'Đội 4 — Cao Lãnh', leader: 'Phạm Thị Hồng', phone: '0907 118 334', lat: 10.4600, lng: 105.6330, label: 'Cao Lãnh, Đồng Tháp', balers: [35, 35], extra: ['may_keo'] },
+  ];
+  const teamIds: string[] = [];
+  TEAMS.forEach((spec, teamIndex) => {
+    const team = field.createTeam({
+      name: spec.name, leaderName: spec.leader, leaderPhone: spec.phone,
+      baseLat: spec.lat, baseLng: spec.lng, baseLabel: spec.label,
+    }, seedActor);
+    const teamId = String(team.id);
+    teamIds.push(teamId);
+    field.addMember(teamId, { fullName: spec.leader, phone: spec.phone, role: 'doi_truong' }, seedActor);
+    ['Lái máy', 'Công nhân', 'Công nhân', 'Công nhân'].forEach((role, index) => {
+      field.addMember(teamId, {
+        fullName: `${['Võ', 'Huỳnh', 'Đặng', 'Bùi'][index]} Văn ${['Sang', 'Được', 'Lợi', 'Kha'][(index + teamIndex) % 4]}`,
+        role: role === 'Lái máy' ? 'lai_may' : 'cong_nhan',
+      }, seedActor);
+    });
+    spec.balers.forEach((capacity, index) => {
+      field.createVehicle({
+        name: `Máy cuộn rơm ${capacity >= 40 ? 'Kubota' : 'Claas'} #${teamIndex + 1}.${index + 1}`, kind: 'may_cuon',
+        teamId, capacityValue: capacity, plateNumber: `MC-${teamIndex + 1}${index + 1}`,
+      }, seedActor);
+    });
+    spec.extra.forEach((kind, index) => {
+      const label = { may_keo: 'Máy kéo', xe_tai: 'Xe tải 3.5 tấn', may_xuc: 'Máy xúc lật', ghe: 'Ghe 100 tấn' }[kind] ?? kind;
+      field.createVehicle({
+        name: `${label} #${teamIndex + 1}.${index + 1}`, kind,
+        teamId, capacityValue: kind === 'ghe' ? 90 : kind === 'xe_tai' ? 3.5 : null,
+        plateNumber: kind === 'xe_tai' ? `67C-${120 + teamIndex}.${45 + index}` : undefined,
+      }, seedActor);
+    });
+  });
+  // Một máy cuộn dự phòng chưa gán đội và một máy đang bảo dưỡng — để màn hình
+  // điều phối phương tiện có gì để điều chuyển.
+  field.createVehicle({ name: 'Máy cuộn rơm dự phòng', kind: 'may_cuon', capacityValue: 40 }, seedActor);
+  const maintenance = field.createVehicle({ name: 'Máy kéo #3.9 (bảo dưỡng)', kind: 'may_keo', teamId: teamIds[2] }, seedActor);
+  field.updateVehicle(String(maintenance.id), { status: 'bao_duong', note: 'Thay dây curoa, dự kiến xong tuần sau' }, seedActor);
+
+  // ---- Việc đã hoàn thành hôm qua: HTX Vĩnh Bình, gặt 2 ngày trước ----
+  const vinhBinh = one<{ id: string }>(`SELECT id FROM cooperatives WHERE name = 'HTX Nông nghiệp Vĩnh Bình'`);
+  if (vinhBinh) {
+    const done = field.createJob({
+      sourceType: 'manual', htxId: vinhBinh.id, harvestDate: day(-2), expectedStrawTons: 120, areaHa: 42,
+      locationLabel: 'HTX Nông nghiệp Vĩnh Bình — cánh đồng số 3', harvestConfirmed: true,
+    }, seedActor);
+    const doneId = String(done.id);
+    field.assignJob(doneId, { teamId: teamIds[0], plannedDate: day(-2), mode: 'manual' }, seedActor);
+    const baler = one<{ id: string }>(`SELECT id FROM field_vehicles WHERE team_id = ? AND kind = 'may_cuon' ORDER BY code LIMIT 1`, [teamIds[0]])!;
+    field.startStage(doneId, 'cuon_rom', { vehicleId: baler.id, lat: 10.452, lng: 105.341, at: at(-2, 1) }, seedActor);
+    field.completeStage(doneId, 'cuon_rom', { quantityTons: 116, bales: 4640, at: at(-1, 3), lat: 10.452, lng: 105.341,
+      evidence: [{ kind: 'photo', note: 'Ảnh kiện rơm trên ruộng, 16:00' }] }, seedActor);
+    field.startStage(doneId, 'gom_rom', { at: at(-2, 6) }, seedActor);
+    field.completeStage(doneId, 'gom_rom', { quantityTons: 114, bales: 4560, at: at(-1, 6) }, seedActor);
+    field.recordLoading(doneId, { vesselCode: 'AG-12345', vesselKind: 'ghe', tons: 88, bales: 3520, at: at(-1, 8), driverName: 'Lê Văn Cường' }, seedActor);
+    field.recordLoading(doneId, { vesselCode: 'AG-10088', vesselKind: 'ghe', tons: 26, bales: 1040, at: at(-1, 10), driverName: 'Trần Hữu Nghĩa' }, seedActor);
+    field.completeStage(doneId, 'xuong_ghe', { quantityTons: 0, at: at(-1, 10) }, seedActor);
+  }
+
+  // ---- Việc quá hạn: gặt 5 ngày trước, đã phân công nhưng chưa ai cuộn (FM-02) ----
+  const thoaiSon = one<{ id: string }>(`SELECT id FROM cooperatives WHERE name = 'HTX Dịch vụ NN Thoại Sơn'`);
+  if (thoaiSon) {
+    const overdue = field.createJob({
+      sourceType: 'manual', htxId: thoaiSon.id, harvestDate: day(-5), expectedStrawTons: 60, areaHa: 21,
+      locationLabel: 'HTX Dịch vụ NN Thoại Sơn — khu B', harvestConfirmed: true,
+      note: 'Máy cuộn Đội 2 hỏng 3 ngày, đang chờ điều máy dự phòng',
+    }, seedActor);
+    field.assignJob(String(overdue.id), { teamId: teamIds[1], plannedDate: day(-4), mode: 'manual' }, seedActor);
+  }
+
+  // ---- Việc đang làm hôm nay: gặt hôm qua, đang cuộn ----
+  const chauPhu = one<{ id: string }>(`SELECT id FROM cooperatives WHERE name = 'HTX Châu Phú Tiến Lên'`);
+  if (chauPhu) {
+    const running = field.createJob({
+      sourceType: 'manual', htxId: chauPhu.id, harvestDate: day(-1), expectedStrawTons: 95, areaHa: 33,
+      locationLabel: 'HTX Châu Phú Tiến Lên — ấp Mỹ Phú', harvestConfirmed: true,
+    }, seedActor);
+    field.assignJob(String(running.id), { teamId: teamIds[3], plannedDate: day(0), mode: 'manual' }, seedActor);
+    const baler = one<{ id: string }>(`SELECT id FROM field_vehicles WHERE team_id = ? AND kind = 'may_cuon' LIMIT 1`, [teamIds[3]])!;
+    field.startStage(String(running.id), 'cuon_rom', { vehicleId: baler.id, lat: 10.581, lng: 105.208, at: at(0, 0) }, seedActor);
+  }
+
+  // ---- Lịch gặt 14 ngày tới từ crop_status → việc chờ phân công, rồi phân công tự động một nửa ----
+  field.syncHarvestCalendar(day(0), 14, seedActor);
+  const pending = all<{ id: string }>(`SELECT id FROM field_jobs WHERE status = 'cho_phan_cong' ORDER BY harvest_date`);
+  pending.slice(0, Math.ceil(pending.length / 2)).forEach((job, index) => {
+    field.assignJob(job.id, { teamId: teamIds[index % teamIds.length], mode: 'auto' }, seedActor);
+  });
 }
 
 /**

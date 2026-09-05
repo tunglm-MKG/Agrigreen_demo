@@ -28,6 +28,9 @@ export const ROLES = {
   WAREHOUSE_OP: 'warehouse_op',
   LOGISTICS: 'logistics',
   EXECUTIVE: 'executive',
+  // Hiện trường — đội thu gom rơm của Mekong Green
+  FIELD_MANAGER: 'field_manager',
+  FIELD_CREW: 'field_crew',
   // Đối tác ngoài
   VVB_AUDITOR: 'vvb_auditor',
 } as const;
@@ -47,6 +50,8 @@ export const ROLE_LABELS: Record<string, string> = {
   [ROLES.WAREHOUSE_OP]: 'Vận hành kho/bãi',
   [ROLES.LOGISTICS]: 'Điều phối vận tải',
   [ROLES.EXECUTIVE]: 'Ban lãnh đạo',
+  [ROLES.FIELD_MANAGER]: 'Điều hành hiện trường',
+  [ROLES.FIELD_CREW]: 'Đội trưởng thu gom rơm',
   [ROLES.VVB_AUDITOR]: 'Tổ chức kiểm định (VVB)',
 };
 
@@ -91,6 +96,10 @@ export const PERMISSIONS = {
   REPORT_READ: 'reporting.read',
   ADMIN_USERS: 'admin.users',
   ADMIN_CONFIG: 'admin.config',
+  // Hiện trường: xem / ghi nhận tại ruộng / lập kế hoạch và phân công.
+  FIELD_READ: 'field.read',
+  FIELD_WRITE: 'field.write',
+  FIELD_MANAGE: 'field.manage',
 
   // -------------------------------------------------------------------------
   // QUYỀN VÀO CỔNG — tách hẳn khỏi quyền đọc dữ liệu.
@@ -106,6 +115,7 @@ export const PERMISSIONS = {
   PORTAL_CGH: 'portal.cgh',
   PORTAL_GIS: 'portal.gis',
   PORTAL_ERP: 'portal.erp',
+  PORTAL_FIELD: 'portal.field',
 } as const;
 
 export type Permission = (typeof PERMISSIONS)[keyof typeof PERMISSIONS];
@@ -171,6 +181,14 @@ export const PERMISSION_GROUPS: { group: string; permissions: { code: string; la
     ],
   },
   {
+    group: 'Hiện trường thu gom rơm',
+    permissions: [
+      { code: 'field.read', label: 'Xem đội, kế hoạch, tiến độ thu gom' },
+      { code: 'field.write', label: 'Ghi nhận công đoạn tại ruộng' },
+      { code: 'field.manage', label: 'Lập kế hoạch, phân công, quản lý đội & phương tiện' },
+    ],
+  },
+  {
     group: 'Cổng truy cập',
     permissions: [
       { code: 'portal.kn', label: 'Vào Cổng Khuyến nông' },
@@ -178,6 +196,7 @@ export const PERMISSION_GROUPS: { group: string; permissions: { code: string; la
       { code: 'portal.cgh', label: 'Vào Cổng Cơ giới hoá' },
       { code: 'portal.gis', label: 'Vào Nền tảng GIS' },
       { code: 'portal.erp', label: 'Vào ERP nội bộ' },
+      { code: 'portal.field', label: 'Vào Cổng Hiện trường' },
     ],
   },
   {
@@ -203,7 +222,7 @@ const P = PERMISSIONS;
 const READ_ONLY_ALL: Permission[] = [
   P.MDM_READ, P.GIS_READ, P.KN_READ, P.HTX_READ, P.CGH_READ,
   P.RENTAL_READ, P.SIM_READ, P.WH_READ, P.PO_READ, P.SO_READ,
-  P.TMS_READ, P.FIN_READ, P.MRV_READ, P.REPORT_READ,
+  P.TMS_READ, P.FIN_READ, P.MRV_READ, P.REPORT_READ, P.FIELD_READ,
 ];
 
 export const ROLE_PERMISSIONS: Record<string, Permission[] | ['*']> = {
@@ -242,7 +261,8 @@ export const ROLE_PERMISSIONS: Record<string, Permission[] | ['*']> = {
   [ROLES.DCRD_VIEWER]: [P.PORTAL_CGH, P.MDM_READ, P.GIS_READ, P.CGH_READ, P.REPORT_READ],
 
   [ROLES.SUPPLY_CHAIN]: [
-    P.PORTAL_ERP, P.PORTAL_GIS, P.PORTAL_CGH,
+    P.PORTAL_ERP, P.PORTAL_GIS, P.PORTAL_CGH, P.PORTAL_FIELD,
+    P.FIELD_READ, P.FIELD_MANAGE,
     P.MDM_READ, P.MDM_WRITE, P.GIS_READ, P.GIS_WRITE,
     P.SIM_READ, P.SIM_WRITE, P.SIM_PARAM_APPROVE,
     P.WH_READ, P.PO_READ, P.PO_WRITE, P.SO_READ,
@@ -260,7 +280,8 @@ export const ROLE_PERMISSIONS: Record<string, Permission[] | ['*']> = {
     P.PO_READ, P.SO_READ, P.TMS_READ, P.MRV_WRITE, P.MRV_READ,
   ],
   [ROLES.LOGISTICS]: [
-    P.PORTAL_ERP, P.PORTAL_GIS,
+    P.PORTAL_ERP, P.PORTAL_GIS, P.PORTAL_FIELD,
+    P.FIELD_READ, P.FIELD_MANAGE,
     P.MDM_READ, P.GIS_READ, P.GIS_WRITE, P.TMS_READ, P.TMS_WRITE,
     P.WH_READ, P.SIM_READ, P.REPORT_READ,
   ],
@@ -268,8 +289,18 @@ export const ROLE_PERMISSIONS: Record<string, Permission[] | ['*']> = {
   // (Simulation FN-01 BR-04, AS-14 — hai quyền này tách khỏi quyền dựng kịch bản).
   [ROLES.EXECUTIVE]: [
     ...READ_ONLY_ALL, P.SIM_MARK_OFFICIAL, P.SIM_THRESHOLD,
-    P.PORTAL_ERP, P.PORTAL_KN, P.PORTAL_HTX, P.PORTAL_CGH, P.PORTAL_GIS,
+    P.PORTAL_ERP, P.PORTAL_KN, P.PORTAL_HTX, P.PORTAL_CGH, P.PORTAL_GIS, P.PORTAL_FIELD,
   ],
+
+  // Điều hành hiện trường: lập kế hoạch thu gom từ lịch gặt của App HTX, phân
+  // công đội, theo dõi ghe — nên cần đọc HTX, CGH và tạo chuyến TMS.
+  [ROLES.FIELD_MANAGER]: [
+    P.PORTAL_FIELD, P.PORTAL_ERP,
+    P.FIELD_READ, P.FIELD_WRITE, P.FIELD_MANAGE,
+    P.MDM_READ, P.GIS_READ, P.HTX_READ, P.CGH_READ, P.TMS_READ, P.TMS_WRITE, P.WH_READ, P.REPORT_READ,
+  ],
+  // Đội trưởng thu gom: chỉ ghi nhận việc của đội mình trên điện thoại.
+  [ROLES.FIELD_CREW]: [P.PORTAL_FIELD, P.FIELD_READ, P.FIELD_WRITE, P.GIS_READ, P.MDM_READ],
 
   // Kiểm định viên chỉ vào ERP để đối chiếu hồ sơ MRV, không đụng tới các cổng
   // nghiệp vụ của nông dân và cán bộ khuyến nông.

@@ -407,3 +407,12 @@ tr.muted-row td { opacity: .55; }
   .sidebar { position: static; height: auto; }
   .split { grid-template-columns: 1fr; }
 }
+
+/* Cổng Hiện trường — ghim đội trên bản đồ và dòng đang chọn trong bảng. */
+.field-team-pin-box {
+  font-size: 11px; font-weight: 700; padding: 2px 6px; border-radius: 4px;
+  background: #fff; border: 2px solid #8A5A19; color: #8A5A19; text-align: center; white-space: nowrap;
+}
+.field-team-pin-box.dang_lam { background: #2F7D32; border-color: #2F7D32; color: #fff; }
+.field-team-pin-box.cho_bat_dau { background: #2F6FB0; border-color: #2F6FB0; color: #fff; }
+.table-wrap tr.selected td { background: var(--brand-weak); }

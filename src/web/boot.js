@@ -29,6 +29,9 @@ import '/pages/htx-ops.js';
 import '/pages/cgh.js';
 import '/pages/rental.js';
 
+// Cổng Hiện trường (đội thu gom rơm)
+import '/pages/field.js';
+
 // ERP nội bộ
 import '/pages/dashboard.js';
 import '/pages/simulation.js';

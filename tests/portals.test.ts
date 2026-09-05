@@ -33,7 +33,7 @@ function declaredPortals(): DeclaredPortal[] {
 
 test('Mỗi cổng có đường dẫn riêng và được gác bằng một quyền portal.* riêng', () => {
   const portals = declaredPortals();
-  assert.equal(portals.length, 5, 'phải có đúng 5 cổng');
+  assert.equal(portals.length, 6, 'phải có đúng 6 cổng: KN, HTX, CGH, GIS, Hiện trường, ERP');
 
   const paths = portals.map((p) => p.path);
   assert.deepEqual([...new Set(paths)], paths, 'đường dẫn cổng không được trùng nhau');
@@ -63,7 +63,9 @@ test('Ba app nghiệp vụ đã tách thành cổng riêng, mỗi cổng có h�
 
   // Không cổng nghiệp vụ nào được dùng chung định danh trang với cổng khác,
   // trừ những màn hình dùng chung có chủ đích (nhập Excel, sàn cho thuê).
-  const shared = new Set(['import', 'masterdata', 'rental', 'htx-rental']);
+  // Cổng Hiện trường dùng lại màn hình TMS và GIS (đội trưởng xem chuyến ghe của
+  // mình); ERP mở được bảng điều hành hiện trường — đều là dùng chung có chủ đích.
+  const shared = new Set(['import', 'masterdata', 'rental', 'htx-rental', 'tms', 'gis', 'field-dashboard']);
   const seen = new Map<string, string>();
   for (const portal of portals) {
     for (const pageId of portal.pageIds) {

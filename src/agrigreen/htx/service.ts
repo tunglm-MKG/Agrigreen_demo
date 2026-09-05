@@ -14,6 +14,7 @@ import { all, insert, one, transaction, update } from '../../platform/db/db.ts';
 import { nowIso, sequenceCode, uuid } from '../../platform/util/ids.ts';
 import { logEvent, type AuditActor } from '../../platform/audit/audit.ts';
 import { checkPreHarvestInterval, planForCycle, planProgress } from './production.ts';
+import { syncJobFromHarvest } from '../../erp/field/service.ts';
 import { haversineKm, pointInPolygon, type LatLng } from '../../platform/geo/geo.ts';
 import { parseJson } from '../../platform/db/db.ts';
 
@@ -291,6 +292,14 @@ export function declareHarvest(
   });
 
   logEvent({ module: 'htx', entityType: 'harvest_declarations', entityId: record.id, action: 'create', after: record }, actor);
+
+  // Rơm đã có thật trên ruộng → đội thu gom của Mekong Green phải biết ngay,
+  // không chờ ai chép tay từ App HTX sang. Hàm này tự nuốt lỗi của phân hệ
+  // hiện trường để khai báo sản lượng của nông dân không bao giờ thất bại vì nó.
+  syncJobFromHarvest({
+    cropCycleId: input.cropCycleId, plotId: cycle.plot_id,
+    harvestDate: record.harvest_date, strawTons: record.straw_tons,
+  }, actor);
   return record;
 }
 

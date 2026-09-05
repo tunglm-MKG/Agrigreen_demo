@@ -47,7 +47,7 @@ npm test
 
 - `npm run seed -- --reset` — xoá và nạp lại dữ liệu nền (26 HTX ĐBSCL, 3 mùa vụ, 378 máy cơ giới, 7 tuyến đường thuỷ, nhà máy VFT, 49 tham số).
 - `npm run demo` — chạy trọn vẹn nghiệp vụ trên dòng lệnh: đặt 5 Hub ứng viên → dựng 3 kịch bản → mô phỏng → so sánh → khuyến nghị → độ nhạy → phê duyệt tham số → kết xuất Hub sang kho → nhập kho → định tuyến TMS → cân đối cơ giới hoá.
-- `npm test` — 164 test kiểm chứng các Acceptance Criteria trong BRD và luồng nhập Excel.
+- `npm test` — 192 test kiểm chứng các Acceptance Criteria trong BRD và luồng nhập Excel.
 
 ### Tài khoản mẫu (mật khẩu `123456`)
 
@@ -59,6 +59,8 @@ npm test
 | `banlanhdao` | Ban lãnh đạo | Đánh dấu kịch bản "Chính thức", chốt ngưỡng ROI/Payback |
 | `khonhap` | Vận hành kho/bãi | Cân nhập/xuất, giám sát môi trường, kiểm kê |
 | `dieuphoi` | Điều phối vận tải | TMS, số hoá tuyến |
+| `hientruong` | Điều hành hiện trường | Kế hoạch thu gom, phân công đội, bảng điều hành Cổng Hiện trường |
+| `doitruong` | Đội trưởng thu gom rơm | Ghi nhận cuộn – gom – xuống ghe tại ruộng |
 | `canbo_tw` / `canbo_xa` | Khuyến nông TW / xã | Thư viện kỹ thuật, nhiệm vụ hỗ trợ |
 | `htx01` / `nongdan` | Ban quản lý HTX / Nông dân | Vẽ lô ruộng, mở vụ, nhật ký, khai báo sản lượng |
 | `cuc_ktht` | Cục KTHT & PTNT | Chỉ xem (theo ràng buộc "Cục chỉ Xem" của BRD CGH) |
@@ -66,7 +68,7 @@ npm test
 
 ---
 
-## 1B. Năm cổng (portal) riêng biệt
+## 1B. Sáu cổng (portal) riêng biệt
 
 Hệ thống **không phải một ứng dụng gộp** mọi phân hệ vào một thanh điều hướng. Mỗi nhóm
 người dùng vào một cổng riêng, có đường dẫn riêng, nhận diện riêng và **hệ thống chức năng
@@ -78,6 +80,7 @@ riêng theo đúng BRD của app đó**.
 | 👨‍🌾 Cổng Hợp tác xã | `/htx/` | Ban quản lý HTX, tổ hợp tác, nông dân | 13 |
 | 🚜 Cổng Cơ giới hoá | `/cgh/` | Chi cục PTNT, Cục KTHT & PTNT, chủ máy | 9 |
 | 🗺️ Nền tảng GIS dùng chung | `/gis/` | Quản trị dữ liệu nền | 7 |
+| 🌾 Cổng Hiện trường | `/field/` | Đội thu gom rơm của Mekong Green, điều hành hiện trường | 7 |
 | 🏭 ERP nội bộ Mekong Green | `/erp/` | Supply Chain, Kho vận, Tài chính, Ban lãnh đạo | 10 |
 
 Trang gốc `/` là **màn hình chọn cổng**, chỉ hiển thị những cổng mà vai trò đăng nhập được
@@ -85,7 +88,7 @@ phép vào. Người dùng chỉ có một cổng (nông dân, cán bộ HTX —
 **thẳng** vào cổng của mình, không phải qua một màn hình chọn chỉ có một ô. Ai có quyền ở
 nhiều cổng thấy bộ chuyển cổng ở chân thanh bên.
 
-**Tách cổng là tách trải nghiệm và phạm vi chức năng, KHÔNG tách dữ liệu.** Cả năm cổng dùng
+**Tách cổng là tách trải nghiệm và phạm vi chức năng, KHÔNG tách dữ liệu.** Cả sáu cổng dùng
 chung một phiên đăng nhập, một CSDL và một nền GIS — đúng nguyên tắc "dữ liệu dùng chung"
 của AgriGreen Platform. Cấu hình cổng nằm ở [`src/web/portals.js`](src/web/portals.js).
 
@@ -468,6 +471,71 @@ Mã nguồn: [`admin.ts`](src/platform/auth/admin.ts) ·
 
 ---
 
+## 1I. Quản lý hiện trường — đội thu gom rơm của Mekong Green
+
+Mekong Green không mua rơm đã đóng kiện; công ty tự đưa đội xuống ruộng ngay sau khi máy
+gặt đi qua: **cuộn** rơm thành kiện → **gom** kiện ra bờ kênh → **đưa xuống ghe / sà lan**.
+Ba công đoạn này quyết định hai thứ mà mọi phân hệ khác chỉ nhận kết quả: rơm có kịp thu
+trước khi ẩm mục hay không, và ghe có hàng để chạy hay không.
+
+Module đứng giữa ba nguồn dữ liệu sẵn có, không nhập tay lại thứ đã có:
+
+| Nguồn | Cho biết | Cách nối |
+| --- | --- | --- |
+| App HTX | Ngày gặt dự kiến từng thửa; khai báo sản lượng khi gặt xong | `declareHarvest` tự tạo / cập nhật việc thu gom với cờ **rơm đã có thật** |
+| Trạng thái mùa vụ (GIS) | Ngày gặt dự kiến cấp HTX, tổng rơm cả vụ | Đồng bộ lịch gặt 14 ngày; mỗi việc là ước tính **một ngày gặt** (tổng vụ ÷ 20) |
+| CGH | Danh mục máy | Phương tiện của đội liên kết `machine_id` |
+| TMS | Chuyến ghe / sà lan | **Mỗi lượt xuống ghe sinh một chuyến đường thuỷ** tới Hub / nhà máy gần nhất, ngay lúc đội trưởng bấm ghi |
+
+### Kế hoạch từ lịch gặt — tự động hoặc tay
+
+Năng lực đội = tổng năng lực máy cuộn dùng được (tấn/ngày). Phân công tự động chạy hai lượt:
+đội gần nhất còn năng lực trong 3 ngày sau gặt; việc không vừa đội nào vẫn được xếp cho
+đội gần nhất ít tải nhất nhưng tách riêng thành nhóm **ép xếp** kèm cảnh báo. Để trống là
+cách tệ nhất — rơm vẫn nằm ruộng và không ai chịu trách nhiệm; ép xếp có cờ đỏ cho quản
+lý thấy đúng chỗ thiếu đội. Phân công tay được vượt năng lực nhưng phải thấy cảnh báo.
+
+Kế hoạch công đoạn suy từ khối lượng ÷ năng lực: 90 tấn với đội 40 tấn/ngày = 3 ngày
+cuộn, gom kéo dài thêm một ngày, xuống ghe bắt đầu từ ngày thứ hai khi đã có kiện ở bờ.
+
+### Tám chốt chặn
+
+| Mã | Chốt chặn | Vì sao |
+| --- | --- | --- |
+| FM-01 | Không cuộn rơm trước ngày gặt | Rơm chưa có thì không có gì để cuộn |
+| FM-02 | Rơm phải cuộn xong trong 3 ngày sau gặt; quá hạn gắn cờ, không chặn | Rơm vẫn phải thu, nhưng ai cũng phải thấy nó đang mục |
+| FM-03 | Chỉ **hoàn thành** công đoạn khi công đoạn trước đã hoàn thành; được **bắt đầu** khi công đoạn trước đã bắt đầu | Gom song song với cuộn là thực tế; chốt gom trước khi cuộn xong là số liệu giả |
+| FM-04 | Khối lượng không tăng qua công đoạn: gom ≤ cuộn, xuống ghe ≤ gom | Rơm không tự sinh ra giữa hai công đoạn |
+| FM-05 | Mỗi lượt xuống ghe = một chuyến TMS; TMS lỗi không chặn ghi nhận, chỉ cảnh báo | Hiện trường không được kẹt vì phân hệ khác |
+| FM-06 | Phân công tự động không xếp quá năng lực; tay được vượt nhưng có cảnh báo | Máy chỉ cuộn được bấy nhiêu tấn một ngày |
+| FM-07 | Chỉ đội đang hoạt động mới nhận việc | — |
+| FM-08 | Đồng bộ lịch gặt chạy lại không sinh việc trùng | Bấm hai lần không thành hai việc |
+
+Khối lượng xuống ghe **không nhập tay**: là tổng các lượt ghe đã ghi — mỗi lượt có số hiệu
+ghe, tài công, tấn, Hub nhận, và mã chuyến TMS để kho đối chiếu.
+
+### Màn hình
+
+| Màn hình | Ai dùng | Làm gì |
+| --- | --- | --- |
+| 📱 Ghi nhận tại ruộng | Đội trưởng (điện thoại) | Bấm bắt đầu / chốt từng công đoạn, GPS lấy tự động; ghi lượt xuống ghe → thấy ngay mã chuyến |
+| 🛰️ Bảng điều hành | Điều hành | Thời gian thực: đội ở đâu, cuộn – gom – xuống ghe hôm nay, rơm quá hạn, ghe đang chạy, bản đồ |
+| 📅 Kế hoạch thu gom | Điều hành | Lịch gặt 14 ngày × tải từng đội; đồng bộ, phân công tự động / tay, thêm việc thủ công |
+| 👷 Đội & phương tiện | Điều hành | Đội, thành viên, máy; điều chuyển máy dự phòng; trạng thái hỏng / bảo dưỡng |
+| 📈 Năng suất | Điều hành, Ban lãnh đạo | Tấn cuộn – gom – xuống ghe theo đội, tỷ lệ thu hồi, giờ từng công đoạn, gặt → ghe, mức sử dụng máy |
+
+Vai trò mới: **Điều hành hiện trường** (`field_manager`, vào cả Cổng Hiện trường và ERP) và
+**Đội trưởng thu gom rơm** (`field_crew`, chỉ Cổng Hiện trường, không vào ERP). Supply Chain và
+Điều phối vận tải có quyền lập kế hoạch; Ban lãnh đạo xem.
+
+Rà soát toàn hệ thống và các đề xuất tiếp theo (đối chiếu ghe – cân ở Hub, ảnh bằng chứng,
+thông báo Zalo, offline…): [`docs/RA-SOAT-HE-THONG.md`](docs/RA-SOAT-HE-THONG.md).
+
+Mã nguồn: [`erp/field/service.ts`](src/erp/field/service.ts) ·
+[`web/pages/field.js`](src/web/pages/field.js) · [`tests/field.test.ts`](tests/field.test.ts)
+
+---
+
 ## 2. Kiến trúc
 
 ```
@@ -830,6 +898,8 @@ Hai tham số #48/#49 để `null` là cố ý: đó là cách hệ thống th�
 | WH FN-01→39 | Nhập/giám sát/xuất/kiểm kê/báo cáo/MRV/tích hợp | `erp/warehouse/service.ts` |
 | PO / SO | Procure-to-Pay, Order-to-Cash, đối soát 3 chiều | `erp/procurement/`, `erp/sales/` |
 | TMS | Routing đa tiêu chí, ePOD/e-bill, đối chiếu chi phí | `erp/tms/service.ts` |
+| Hiện trường FM-01→08 | Đội, phương tiện, kế hoạch từ lịch gặt, phân công 2 lượt, ghi nhận 3 công đoạn, lượt ghe → chuyến TMS | `erp/field/service.ts` |
+| **Cổng Hiện trường** | 5 màn hình riêng + TMS, GIS dùng chung | `web/pages/field.js` |
 | Finance | AR/AP, Revenue Engine 3 mô hình, carbon 45/55, budget vs actual | `erp/finance/service.ts` |
 | Reporting | Dashboard hợp nhất, xếp hạng kịch bản, xuất CSV/HTML in được | `erp/reporting/service.ts` |
 
@@ -837,7 +907,7 @@ Hai tham số #48/#49 để `null` là cố ý: đó là cách hệ thống th�
 
 ## 8. Kiểm thử
 
-`npm test` chạy 164 test viết theo đúng Acceptance Criteria của BRD, ví dụ:
+`npm test` chạy 192 test viết theo đúng Acceptance Criteria của BRD, ví dụ:
 
 - `FN-01 AC-03` — danh mục đúng 49 tham số, 23 thị trường / 24 giả định / 2 khác, không trùng/thiếu STT.
 - `FN-05 AC-03` — vùng phục vụ chồng lấn: mỗi HTX chỉ xuất hiện ở đúng một Hub.
@@ -857,6 +927,10 @@ Hai tham số #48/#49 để `null` là cố ý: đó là cách hệ thống th�
 - `SA-03` — hạ cấp quản trị nền tảng cuối cùng bị chặn; hạ cấp khi còn người thứ hai thì cho qua.
 - `SA-06` — khoá tài khoản xoá luôn phiên đang mở, và phiên còn sót không dùng lại được.
 - Ghi đè quyền có hiệu lực **ngay** ở request kế tiếp, không cần khởi động lại.
+- `FM-04` — gom nhiều hơn cuộn, xuống ghe nhiều hơn gom đều bị từ chối; báo cáo phản ánh đúng thứ tự giảm.
+- `FM-05` — lượt xuống ghe sinh chuyến TMS đường thuỷ tham chiếu đúng việc, đúng số hiệu ghe, đúng tấn.
+- Khai báo sản lượng trên App HTX tự sinh việc thu gom; vụ đã có việc từ lịch dự kiến thì **cập nhật**, không tạo việc thứ hai.
+- Phân công tự động: việc 500 tấn "vừa" 85 tấn/ngày nếu chia 6 ngày — nhưng không cuộn xong trong hạn FM-02, nên đi vào nhóm ép xếp có cờ.
 - Ba app nghiệp vụ đã tách cổng và mỗi cổng có ≥ 7 màn hình chức năng theo BRD.
 - Ban quản lý HTX đọc được nội dung khuyến nông nhưng **không** vào được Cổng Khuyến nông.
 - Mọi trang khai báo trong `portals.js` đều thực sự được đăng ký ở một module trang.

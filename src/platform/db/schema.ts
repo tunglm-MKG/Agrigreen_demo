@@ -119,6 +119,123 @@ CREATE TABLE IF NOT EXISTS group_permissions (
   PRIMARY KEY (group_code, permission)
 );
 
+-- ===========================================================================
+-- QUẢN LÝ HIỆN TRƯỜNG — đội thu gom rơm của Mekong Green (erp/field)
+-- ===========================================================================
+CREATE TABLE IF NOT EXISTS field_teams (
+  id            TEXT PRIMARY KEY,
+  code          TEXT UNIQUE NOT NULL,
+  name          TEXT NOT NULL,
+  leader_name   TEXT,
+  leader_phone  TEXT,
+  leader_user_id TEXT,             -- tài khoản đội trưởng (Cổng Hiện trường)
+  base_lat      REAL,              -- điểm đóng quân, dùng để chọn đội gần ruộng nhất
+  base_lng      REAL,
+  base_label    TEXT,
+  province_id   TEXT,
+  status        TEXT NOT NULL DEFAULT 'hoat_dong',   -- hoat_dong | tam_nghi | giai_the
+  note          TEXT,
+  created_at    TEXT NOT NULL,
+  updated_at    TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS field_team_members (
+  id          TEXT PRIMARY KEY,
+  team_id     TEXT NOT NULL,
+  full_name   TEXT NOT NULL,
+  phone       TEXT,
+  role        TEXT NOT NULL DEFAULT 'cong_nhan',    -- doi_truong | lai_may | cong_nhan | lai_ghe
+  status      TEXT NOT NULL DEFAULT 'hoat_dong',
+  created_at  TEXT NOT NULL,
+  FOREIGN KEY (team_id) REFERENCES field_teams(id)
+);
+CREATE TABLE IF NOT EXISTS field_vehicles (
+  id             TEXT PRIMARY KEY,
+  code           TEXT UNIQUE NOT NULL,
+  name           TEXT NOT NULL,
+  kind           TEXT NOT NULL,     -- may_cuon | may_keo | xe_tai | may_xuc | ghe | sa_lan
+  plate_number   TEXT,
+  team_id        TEXT,
+  machine_id     TEXT,              -- liên kết danh mục máy cơ giới hoá (CGH) nếu có
+  capacity_value REAL,              -- máy cuộn: tấn/ngày — quyết định năng lực xếp việc
+  capacity_unit  TEXT,
+  status         TEXT NOT NULL DEFAULT 'san_sang',   -- san_sang | dang_dung | bao_duong | hong
+  note           TEXT,
+  created_at     TEXT NOT NULL,
+  updated_at     TEXT NOT NULL
+);
+-- Một việc thu gom = một thửa (hoặc một HTX) × một ngày gặt.
+CREATE TABLE IF NOT EXISTS field_jobs (
+  id                      TEXT PRIMARY KEY,
+  code                    TEXT UNIQUE NOT NULL,
+  source_type             TEXT NOT NULL,   -- crop_cycle | crop_status | harvest | manual
+  source_id               TEXT,
+  crop_cycle_id           TEXT,
+  plot_id                 TEXT,
+  htx_id                  TEXT,
+  location_label          TEXT,
+  lat                     REAL,
+  lng                     REAL,
+  loading_lat             REAL,            -- điểm tập kết bờ kênh
+  loading_lng             REAL,
+  destination_facility_id TEXT,            -- Hub / nhà máy nhận rơm
+  harvest_date            TEXT NOT NULL,
+  harvest_confirmed       INTEGER NOT NULL DEFAULT 0,   -- 1 = HTX đã khai báo sản lượng
+  expected_straw_tons     REAL NOT NULL DEFAULT 0,
+  area_ha                 REAL,
+  team_id                 TEXT,
+  planned_date            TEXT,
+  assignment_mode         TEXT,            -- auto | manual
+  assigned_by             TEXT,
+  assigned_at             TEXT,
+  priority                INTEGER NOT NULL DEFAULT 0,
+  status                  TEXT NOT NULL DEFAULT 'cho_phan_cong',
+  note                    TEXT,
+  created_at              TEXT NOT NULL,
+  updated_at              TEXT NOT NULL
+);
+-- Ba công đoạn cố định của mỗi việc: cuon_rom → gom_rom → xuong_ghe.
+CREATE TABLE IF NOT EXISTS field_job_stages (
+  id            TEXT PRIMARY KEY,
+  job_id        TEXT NOT NULL,
+  stage         TEXT NOT NULL,
+  sort_order    INTEGER NOT NULL,
+  planned_start TEXT,
+  planned_end   TEXT,
+  started_at    TEXT,
+  completed_at  TEXT,
+  quantity_tons REAL,
+  bales         INTEGER,
+  vehicle_id    TEXT,
+  recorded_by   TEXT,
+  lat           REAL,
+  lng           REAL,
+  note          TEXT,
+  evidence_json TEXT,
+  status        TEXT NOT NULL DEFAULT 'cho_thuc_hien',
+  UNIQUE (job_id, stage),
+  FOREIGN KEY (job_id) REFERENCES field_jobs(id)
+);
+-- Mỗi lượt xuống ghe là một chuyến TMS (trip_id) — cầu nối hiện trường ↔ vận tải.
+CREATE TABLE IF NOT EXISTS field_loadings (
+  id                      TEXT PRIMARY KEY,
+  job_id                  TEXT NOT NULL,
+  vessel_code             TEXT NOT NULL,
+  vessel_kind             TEXT,
+  tons                    REAL NOT NULL,
+  bales                   INTEGER,
+  destination_facility_id TEXT,
+  trip_id                 TEXT,
+  loaded_at               TEXT NOT NULL,
+  recorded_by             TEXT,
+  lat                     REAL,
+  lng                     REAL,
+  note                    TEXT,
+  FOREIGN KEY (job_id) REFERENCES field_jobs(id)
+);
+CREATE INDEX IF NOT EXISTS idx_field_jobs_team_status ON field_jobs(team_id, status);
+CREATE INDEX IF NOT EXISTS idx_field_jobs_harvest ON field_jobs(harvest_date);
+CREATE INDEX IF NOT EXISTS idx_field_loadings_job ON field_loadings(job_id);
+
 CREATE TABLE IF NOT EXISTS sessions (
   token       TEXT PRIMARY KEY,
   user_id     TEXT NOT NULL,
