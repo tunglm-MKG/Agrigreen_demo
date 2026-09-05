@@ -1,0 +1,376 @@
+/**
+ * THÔNG BÁO CHỦ ĐỘNG — hệ thống biết thì phải nói, không chờ ai mở đúng màn hình.
+ *
+ * Trước đây mọi cảnh báo (rơm quá hạn, vi phạm cách ly thuốc, kho quá ẩm, thiếu
+ * máy) chỉ hiện khi có người vào đúng trang. Cảnh báo không đến tay người cần thì
+ * bằng không.
+ *
+ * Kiến trúc outbox:
+ *   notify()        → ghi một dòng cho MỖI người nhận × MỖI kênh, trạng thái cho_gui
+ *   processOutbox() → tiến trình nền gửi qua adapter, thử lại tối đa 5 lần
+ *
+ * Kênh:
+ *   inapp   luôn có — chuông trên thanh đầu trang của mọi cổng, gửi xong ngay
+ *   zalo    khi người nhận có Zalo user id VÀ đã cấu hình access token Zalo OA
+ *   sms     khi người nhận có số điện thoại VÀ đã cấu hình cổng SMS; chỉ mức critical
+ *           vì SMS tốn tiền
+ *
+ * Kênh chưa cấu hình KHÔNG bị âm thầm bỏ qua: dòng thông báo mang trạng thái
+ * `cho_cau_hinh` để quản trị viên thấy đúng chỗ đang thiếu. Cấu hình đọc từ biến
+ * môi trường trước, rồi bảng system_config — đổi được từ giao diện không cần
+ * khởi động lại.
+ *
+ * Web push chưa làm: cần VAPID + mã hoá RFC 8291; khi cần sẽ thêm adapter thứ ba.
+ */
+import { all, insert, one, run, update } from '../db/db.ts';
+import { nowIso, uuid } from '../util/ids.ts';
+import { logEvent, type AuditActor } from '../audit/audit.ts';
+
+export type Severity = 'info' | 'warn' | 'critical';
+export type Channel = 'inapp' | 'zalo' | 'sms';
+
+export const MAX_ATTEMPTS = 5;
+/** Cùng khoá trùng trong khoảng này thì không báo lại — tránh dội chuông mỗi lần quét. */
+const DEDUPE_WINDOW_HOURS = 20;
+
+export interface NotifyInput {
+  title: string;
+  body: string;
+  severity?: Severity;
+  module: string;
+  link?: string;            // đường dẫn trong ứng dụng, ví dụ /field/#field-dashboard
+  userIds?: string[];
+  roles?: string[];
+  dedupeKey?: string;
+  entityType?: string;
+  entityId?: string;
+}
+
+// ---------------------------------------------------------------------------
+// Cấu hình kênh
+// ---------------------------------------------------------------------------
+
+function configValue(key: string, envName: string): string | null {
+  const env = process.env[envName];
+  if (env) return env;
+  try {
+    const row = one<{ value_json: string }>('SELECT value_json FROM system_config WHERE key = ?', [key]);
+    if (!row) return null;
+    const parsed = JSON.parse(row.value_json);
+    return typeof parsed === 'string' && parsed ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+export function channelConfig() {
+  return {
+    zaloToken: configValue('notify.zalo_access_token', 'ZALO_OA_ACCESS_TOKEN'),
+    smsUrl: configValue('notify.sms_gateway_url', 'SMS_GATEWAY_URL'),
+    smsToken: configValue('notify.sms_gateway_token', 'SMS_GATEWAY_TOKEN'),
+  };
+}
+
+export function setChannelConfig(key: string, value: string, actor: AuditActor = {}): void {
+  const allowed = ['notify.zalo_access_token', 'notify.sms_gateway_url', 'notify.sms_gateway_token'];
+  if (!allowed.includes(key)) throw new Error('Khoá cấu hình không hợp lệ.');
+  run(
+    `INSERT INTO system_config (key, value_json, updated_at, updated_by) VALUES (?, ?, ?, ?)
+     ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at, updated_by = excluded.updated_by`,
+    [key, JSON.stringify(value), nowIso(), actor.name ?? null],
+  );
+  // Không ghi giá trị token vào nhật ký — chỉ ghi rằng nó đã đổi.
+  logEvent({ module: 'notify', entityType: 'system_config', entityId: key, action: 'update', after: { set: value.length > 0 } }, actor);
+}
+
+export function channelStatus(): Record<string, unknown> {
+  const config = channelConfig();
+  const pending = all<{ channel: string; status: string; n: number }>(
+    'SELECT channel, status, COUNT(*) AS n FROM notifications GROUP BY channel, status');
+  const count = (channel: string, status: string) => pending.find((r) => r.channel === channel && r.status === status)?.n ?? 0;
+  return {
+    inapp: { configured: true, label: 'Chuông trong ứng dụng', sent: count('inapp', 'da_gui') },
+    zalo: {
+      configured: Boolean(config.zaloToken), label: 'Zalo OA',
+      sent: count('zalo', 'da_gui'), waitingConfig: count('zalo', 'cho_cau_hinh'), failed: count('zalo', 'loi'), queued: count('zalo', 'cho_gui'),
+      recipients: one<{ n: number }>('SELECT COUNT(*) AS n FROM users WHERE zalo_user_id IS NOT NULL')?.n ?? 0,
+    },
+    sms: {
+      configured: Boolean(config.smsUrl), label: 'SMS (chỉ mức nghiêm trọng)',
+      sent: count('sms', 'da_gui'), waitingConfig: count('sms', 'cho_cau_hinh'), failed: count('sms', 'loi'), queued: count('sms', 'cho_gui'),
+    },
+    webpush: { configured: false, label: 'Web push', note: 'Chưa hỗ trợ — cần khoá VAPID và mã hoá RFC 8291' },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Tạo thông báo
+// ---------------------------------------------------------------------------
+
+interface Recipient { id: string; phone: string | null; zalo_user_id: string | null }
+
+function resolveRecipients(input: NotifyInput): Recipient[] {
+  const byId = new Map<string, Recipient>();
+  if (input.userIds?.length) {
+    for (const row of all<Recipient>(
+      `SELECT id, phone, zalo_user_id FROM users WHERE status = 'active' AND id IN (${input.userIds.map(() => '?').join(',')})`,
+      input.userIds,
+    )) byId.set(row.id, row);
+  }
+  if (input.roles?.length) {
+    for (const row of all<Recipient>(
+      `SELECT DISTINCT u.id, u.phone, u.zalo_user_id FROM users u JOIN user_roles r ON r.user_id = u.id
+       WHERE u.status = 'active' AND r.role IN (${input.roles.map(() => '?').join(',')})`,
+      input.roles,
+    )) byId.set(row.id, row);
+  }
+  return [...byId.values()];
+}
+
+/** Trả về số dòng đã tạo. 0 khi không có người nhận hoặc bị khử trùng. */
+export function notify(input: NotifyInput, actor: AuditActor = {}): number {
+  const severity = input.severity ?? 'info';
+  const recipients = resolveRecipients(input);
+  if (!recipients.length) return 0;
+  const config = channelConfig();
+  const since = new Date(Date.now() - DEDUPE_WINDOW_HOURS * 3_600_000).toISOString();
+  let created = 0;
+
+  for (const user of recipients) {
+    if (input.dedupeKey) {
+      const dup = one('SELECT id FROM notifications WHERE recipient_user_id = ? AND dedupe_key = ? AND channel = ? AND created_at >= ?',
+        [user.id, input.dedupeKey, 'inapp', since]);
+      if (dup) continue;
+    }
+    const channels: { channel: Channel; status: string }[] = [{ channel: 'inapp', status: 'da_gui' }];
+    if (user.zalo_user_id) channels.push({ channel: 'zalo', status: config.zaloToken ? 'cho_gui' : 'cho_cau_hinh' });
+    if (user.phone && severity === 'critical') channels.push({ channel: 'sms', status: config.smsUrl ? 'cho_gui' : 'cho_cau_hinh' });
+
+    const groupId = uuid();
+    for (const { channel, status } of channels) {
+      insert('notifications', {
+        id: uuid(), group_id: groupId, recipient_user_id: user.id, channel, severity,
+        title: input.title, body: input.body, link: input.link ?? null, module: input.module,
+        entity_type: input.entityType ?? null, entity_id: input.entityId ?? null,
+        dedupe_key: input.dedupeKey ?? null, status, attempts: 0, last_error: null,
+        created_at: nowIso(), sent_at: status === 'da_gui' ? nowIso() : null, read_at: null,
+      });
+      created += 1;
+    }
+  }
+  return created;
+}
+
+// ---------------------------------------------------------------------------
+// Outbox
+// ---------------------------------------------------------------------------
+
+type Sender = (row: Record<string, any>, recipient: Recipient) => Promise<void>;
+
+async function sendZalo(row: Record<string, any>, recipient: Recipient): Promise<void> {
+  const token = channelConfig().zaloToken;
+  if (!token) throw new Error('Chưa cấu hình Zalo OA access token');
+  const response = await fetch('https://openapi.zalo.me/v3.0/oa/message/cs', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', access_token: token },
+    body: JSON.stringify({ recipient: { user_id: recipient.zalo_user_id }, message: { text: `${row.title}\n${row.body}` } }),
+  });
+  const payload = await response.json().catch(() => ({})) as { error?: number; message?: string };
+  if (!response.ok || (payload.error && payload.error !== 0)) {
+    throw new Error(`Zalo trả lỗi ${payload.error ?? response.status}: ${payload.message ?? ''}`.trim());
+  }
+}
+
+async function sendSms(row: Record<string, any>, recipient: Recipient): Promise<void> {
+  const { smsUrl, smsToken } = channelConfig();
+  if (!smsUrl) throw new Error('Chưa cấu hình cổng SMS');
+  const response = await fetch(smsUrl, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...(smsToken ? { Authorization: `Bearer ${smsToken}` } : {}) },
+    body: JSON.stringify({ to: recipient.phone, text: `${row.title}: ${row.body}`.slice(0, 300) }),
+  });
+  if (!response.ok) throw new Error(`Cổng SMS trả ${response.status}`);
+}
+
+const SENDERS: Record<string, Sender> = { zalo: sendZalo, sms: sendSms };
+
+/** Cho phép test thay adapter thật bằng adapter giả. */
+export function overrideSender(channel: Channel, sender: Sender | null): void {
+  if (sender) SENDERS[channel] = sender;
+  else delete SENDERS[channel];
+}
+
+export async function processOutbox(limit = 50): Promise<{ sent: number; failed: number; skipped: number }> {
+  // Kênh vừa được cấu hình thì các dòng đang chờ cấu hình phải được gửi.
+  const config = channelConfig();
+  if (config.zaloToken) run(`UPDATE notifications SET status = 'cho_gui' WHERE channel = 'zalo' AND status = 'cho_cau_hinh'`);
+  if (config.smsUrl) run(`UPDATE notifications SET status = 'cho_gui' WHERE channel = 'sms' AND status = 'cho_cau_hinh'`);
+
+  const rows = all<Record<string, any>>(
+    `SELECT n.*, u.phone, u.zalo_user_id FROM notifications n JOIN users u ON u.id = n.recipient_user_id
+     WHERE n.status = 'cho_gui' AND n.attempts < ? ORDER BY n.created_at LIMIT ?`,
+    [MAX_ATTEMPTS, limit],
+  );
+  let sent = 0;
+  let failed = 0;
+  let skipped = 0;
+  for (const row of rows) {
+    const sender = SENDERS[row.channel];
+    if (!sender) { skipped += 1; continue; }
+    try {
+      await sender(row, { id: row.recipient_user_id, phone: row.phone, zalo_user_id: row.zalo_user_id });
+      update('notifications', row.id, { status: 'da_gui', sent_at: nowIso(), attempts: row.attempts + 1, last_error: null });
+      sent += 1;
+    } catch (error) {
+      const attempts = row.attempts + 1;
+      update('notifications', row.id, {
+        attempts, last_error: (error as Error).message.slice(0, 300),
+        status: attempts >= MAX_ATTEMPTS ? 'loi' : 'cho_gui',
+      });
+      failed += 1;
+    }
+  }
+  return { sent, failed, skipped };
+}
+
+// ---------------------------------------------------------------------------
+// Đọc phía người dùng
+// ---------------------------------------------------------------------------
+
+export function listForUser(userId: string, options: { unreadOnly?: boolean; limit?: number } = {}): Record<string, unknown>[] {
+  return all(
+    `SELECT id, severity, title, body, link, module, entity_type, entity_id, created_at, read_at FROM notifications
+     WHERE recipient_user_id = ? AND channel = 'inapp' ${options.unreadOnly ? 'AND read_at IS NULL' : ''}
+     ORDER BY created_at DESC LIMIT ?`,
+    [userId, options.limit ?? 30],
+  );
+}
+
+export function unreadCount(userId: string): number {
+  return one<{ n: number }>(`SELECT COUNT(*) AS n FROM notifications WHERE recipient_user_id = ? AND channel = 'inapp' AND read_at IS NULL`, [userId])?.n ?? 0;
+}
+
+export function markRead(userId: string, ids: string[] | 'all'): number {
+  const at = nowIso();
+  if (ids === 'all') {
+    const n = unreadCount(userId);
+    run(`UPDATE notifications SET read_at = ? WHERE recipient_user_id = ? AND channel = 'inapp' AND read_at IS NULL`, [at, userId]);
+    return n;
+  }
+  if (!ids.length) return 0;
+  run(`UPDATE notifications SET read_at = ? WHERE recipient_user_id = ? AND read_at IS NULL AND id IN (${ids.map(() => '?').join(',')})`, [at, userId, ...ids]);
+  return ids.length;
+}
+
+/** Bảng theo dõi cho quản trị: dòng lỗi và dòng chờ cấu hình gần nhất. */
+export function outboxProblems(limit = 50): Record<string, unknown>[] {
+  return all(
+    `SELECT n.id, n.channel, n.status, n.attempts, n.last_error, n.title, n.created_at, u.username
+     FROM notifications n JOIN users u ON u.id = n.recipient_user_id
+     WHERE n.status IN ('loi', 'cho_cau_hinh', 'cho_gui') ORDER BY n.created_at DESC LIMIT ?`,
+    [limit],
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Quét định kỳ: các điều kiện hệ thống đã biết nhưng chưa ai được báo
+// ---------------------------------------------------------------------------
+
+/**
+ * Chạy mỗi 10 phút trong máy chủ. Mọi quy tắc đều có khoá khử trùng theo ngày
+ * nên chạy lại không dội chuông. Quy tắc theo sự kiện (lượt ghe mới, vi phạm
+ * cách ly, cân lệch) nằm ngay tại chỗ phát sinh, không ở đây.
+ */
+export function runAlertScan(): Record<string, number> {
+  const today = nowIso().slice(0, 10);
+  const result: Record<string, number> = {};
+  const safe = (name: string, fn: () => number) => {
+    try { result[name] = fn(); } catch (error) { result[name] = -1; console.error(`[notify] quét "${name}" lỗi:`, (error as Error).message); }
+  };
+
+  // FM-02: rơm nằm ruộng quá hạn chưa cuộn xong → điều hành + đội trưởng của đội đó.
+  safe('field_overdue', () => {
+    const rows = all<{ id: string; code: string; location_label: string; harvest_date: string; expected_straw_tons: number; leader_user_id: string | null; team_name: string | null }>(
+      `SELECT j.id, j.code, j.location_label, j.harvest_date, j.expected_straw_tons, t.leader_user_id, t.name AS team_name
+       FROM field_jobs j LEFT JOIN field_teams t ON t.id = j.team_id
+       JOIN field_job_stages s ON s.job_id = j.id AND s.stage = 'cuon_rom'
+       WHERE j.status NOT IN ('hoan_thanh', 'huy') AND s.completed_at IS NULL AND j.harvest_date <= date('now', '-4 day')`);
+    let n = 0;
+    for (const job of rows) {
+      const days = Math.round((Date.parse(today) - Date.parse(job.harvest_date)) / 86_400_000);
+      n += notify({
+        module: 'field', severity: days >= 6 ? 'critical' : 'warn',
+        title: `Rơm quá hạn ${days} ngày — ${job.code}`,
+        body: `${job.location_label}: gặt ${job.harvest_date}, ${Math.round(job.expected_straw_tons)} tấn chưa cuộn xong${job.team_name ? ` (${job.team_name})` : ' (chưa phân công)'}. Mỗi ngày trễ rơm ẩm thêm.`,
+        link: '/field/#field-dashboard', roles: ['field_manager'],
+        userIds: job.leader_user_id ? [job.leader_user_id] : [],
+        dedupeKey: `field.overdue.${job.id}.${today}`, entityType: 'field_job', entityId: job.id,
+      });
+    }
+    return n;
+  });
+
+  // Việc gặt trong 2 ngày tới mà chưa có đội.
+  safe('field_unassigned', () => {
+    const rows = all<{ n: number; tons: number }>(
+      `SELECT COUNT(*) AS n, COALESCE(SUM(expected_straw_tons), 0) AS tons FROM field_jobs
+       WHERE status = 'cho_phan_cong' AND harvest_date BETWEEN date('now', '-3 day') AND date('now', '+2 day')`);
+    if (!rows[0]?.n) return 0;
+    return notify({
+      module: 'field', severity: 'warn', title: `${rows[0].n} việc thu gom sắp gặt chưa có đội`,
+      body: `${Math.round(rows[0].tons)} tấn rơm gặt trong 2 ngày tới chưa được phân công. Vào Kế hoạch thu gom bấm phân công tự động.`,
+      link: '/field/#field-plan', roles: ['field_manager'], dedupeKey: `field.unassigned.${today}`,
+    });
+  });
+
+  // Máy hỏng / bảo dưỡng của đội đang có việc.
+  safe('field_vehicle_down', () => {
+    const rows = all<{ id: string; code: string; name: string; status: string; team_name: string }>(
+      `SELECT v.id, v.code, v.name, v.status, t.name AS team_name FROM field_vehicles v JOIN field_teams t ON t.id = v.team_id
+       WHERE v.status IN ('hong', 'bao_duong') AND v.kind = 'may_cuon'
+         AND EXISTS (SELECT 1 FROM field_jobs j WHERE j.team_id = v.team_id AND j.status IN ('da_phan_cong', 'dang_thuc_hien'))`);
+    let n = 0;
+    for (const v of rows) {
+      n += notify({
+        module: 'field', severity: 'warn', title: `Máy cuộn ${v.status === 'hong' ? 'hỏng' : 'bảo dưỡng'} — ${v.team_name}`,
+        body: `${v.name} (${v.code}) không dùng được trong khi đội đang có việc. Điều máy dự phòng hoặc chia việc.`,
+        link: '/field/#field-teams', roles: ['field_manager'], dedupeKey: `field.vehicle.${v.id}.${today}`, entityType: 'field_vehicle', entityId: v.id,
+      });
+    }
+    return n;
+  });
+
+  // Kho: cảnh báo môi trường chưa xác nhận → vận hành kho.
+  safe('warehouse_env', () => {
+    const rows = all<{ id: string; level: string; message: string; facility_id: string }>(
+      `SELECT id, level, message, facility_id FROM env_alerts WHERE acknowledged_at IS NULL AND raised_at >= datetime('now', '-2 day')`);
+    let n = 0;
+    for (const alert of rows) {
+      n += notify({
+        module: 'warehouse', severity: alert.level === 'nguy_hiem' ? 'critical' : 'warn',
+        title: alert.level === 'nguy_hiem' ? 'Kho vượt ngưỡng nguy hiểm' : 'Kho vượt ngưỡng cảnh báo', body: alert.message,
+        link: '/erp/#warehouse', roles: ['warehouse_op'], dedupeKey: `wh.env.${alert.id}`, entityType: 'env_alert', entityId: alert.id,
+      });
+    }
+    return n;
+  });
+
+  // Ghe đã xuống hàng quá 48 giờ mà nhà máy chưa cân → điều phối + điều hành.
+  safe('field_unweighed', () => {
+    const rows = all<{ id: string; vessel_code: string; loaded_at: string; bales: number | null; tons: number; code: string }>(
+      `SELECT l.id, l.vessel_code, l.loaded_at, l.bales, l.tons, j.code FROM field_loadings l JOIN field_jobs j ON j.id = l.job_id
+       WHERE l.weighed_at IS NULL AND l.loaded_at <= datetime('now', '-2 day')`);
+    let n = 0;
+    for (const l of rows) {
+      n += notify({
+        module: 'field', severity: 'warn', title: `Ghe ${l.vessel_code} chưa cân sau 48 giờ`,
+        body: `Xuống ghe ${l.loaded_at.slice(0, 16).replace('T', ' ')} tại việc ${l.code} (${l.bales ?? '?'} cuộn, ước ${l.tons} tấn) nhưng nhà máy chưa ghi cân. Không cân thì không đối chiếu được và không trả tiền được.`,
+        link: '/field/#field-weighing', roles: ['field_manager', 'logistics', 'warehouse_op'],
+        dedupeKey: `field.unweighed.${l.id}.${today}`, entityType: 'field_loading', entityId: l.id,
+      });
+    }
+    return n;
+  });
+
+  return result;
+}

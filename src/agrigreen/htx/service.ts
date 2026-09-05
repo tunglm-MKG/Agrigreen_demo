@@ -15,6 +15,7 @@ import { nowIso, sequenceCode, uuid } from '../../platform/util/ids.ts';
 import { logEvent, type AuditActor } from '../../platform/audit/audit.ts';
 import { checkPreHarvestInterval, planForCycle, planProgress } from './production.ts';
 import { syncJobFromHarvest } from '../../erp/field/service.ts';
+import { notify } from '../../platform/notify/service.ts';
 import { haversineKm, pointInPolygon, type LatLng } from '../../platform/geo/geo.ts';
 import { parseJson } from '../../platform/db/db.ts';
 
@@ -237,7 +238,19 @@ export function declareHarvest(
   if (plan) {
     // BR-06: thời gian cách ly sau phun thuốc (an toàn thực phẩm).
     const violation = checkPreHarvestInterval(String(plan.id), harvestDate);
-    if (violation) throw new Error(violation);
+    if (violation) {
+      // Chặn là đúng, nhưng chặn im lặng thì ban quản lý HTX không biết có người
+      // định thu hoạch sớm — báo cho họ và cán bộ khuyến nông xã.
+      const htxUsers = all<{ id: string }>(
+        'SELECT u.id FROM users u JOIN plots p ON p.htx_id = u.htx_id WHERE p.id = ?', [cycle.plot_id]);
+      notify({
+        module: 'htx', severity: 'critical', title: 'Bị chặn thu hoạch: chưa hết thời gian cách ly thuốc',
+        body: `Kế hoạch ${plan.code}: ${violation}`, link: '/htx/#production',
+        userIds: htxUsers.map((u) => u.id), roles: ['kn_xa'],
+        dedupeKey: `htx.phi.${plan.id}.${harvestDate}`, entityType: 'production_plan', entityId: String(plan.id),
+      }, actor);
+      throw new Error(violation);
+    }
 
     // Bước bắt buộc chưa xác nhận thì hồ sơ truy xuất không đầy đủ.
     const progress = planProgress(String(plan.id));

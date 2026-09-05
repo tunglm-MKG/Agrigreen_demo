@@ -517,6 +517,10 @@ export function seedAll(): void {
   for (const account of accounts) {
     createUser({ ...account, password: '123456' }, { name: 'seed' });
   }
+  // Hai tài khoản có Zalo id mẫu: khi chưa cấu hình Zalo OA, thông báo của họ nằm ở
+  // trạng thái "chờ cấu hình" — để màn hình quản trị chỉ đúng chỗ đang thiếu.
+  run(`UPDATE users SET zalo_user_id = '8421390055671234' WHERE username = 'hientruong'`);
+  run(`UPDATE users SET zalo_user_id = '8421390055675678' WHERE username = 'dieuphoi'`);
 
   // Snapshot ngày đầu tiên để chức năng replay (GIS FN-19) có dữ liệu gốc.
   captureSnapshot();
@@ -589,13 +593,18 @@ export function seedFieldTeams(): void {
     field.assignJob(doneId, { teamId: teamIds[0], plannedDate: day(-2), mode: 'manual' }, seedActor);
     const baler = one<{ id: string }>(`SELECT id FROM field_vehicles WHERE team_id = ? AND kind = 'may_cuon' ORDER BY code LIMIT 1`, [teamIds[0]])!;
     field.startStage(doneId, 'cuon_rom', { vehicleId: baler.id, lat: 10.452, lng: 105.341, at: at(-2, 1) }, seedActor);
-    field.completeStage(doneId, 'cuon_rom', { quantityTons: 116, bales: 4640, at: at(-1, 3), lat: 10.452, lng: 105.341,
+    // FM-09: đội đếm cuộn, tấn tự ước theo 20 kg/cuộn mặc định (5 800 cuộn ≈ 116 t).
+    field.completeStage(doneId, 'cuon_rom', { bales: 5800, at: at(-1, 3), lat: 10.452, lng: 105.341,
       evidence: [{ kind: 'photo', note: 'Ảnh kiện rơm trên ruộng, 16:00' }] }, seedActor);
     field.startStage(doneId, 'gom_rom', { at: at(-2, 6) }, seedActor);
-    field.completeStage(doneId, 'gom_rom', { quantityTons: 114, bales: 4560, at: at(-1, 6) }, seedActor);
-    field.recordLoading(doneId, { vesselCode: 'AG-12345', vesselKind: 'ghe', tons: 88, bales: 3520, at: at(-1, 8), driverName: 'Lê Văn Cường' }, seedActor);
-    field.recordLoading(doneId, { vesselCode: 'AG-10088', vesselKind: 'ghe', tons: 26, bales: 1040, at: at(-1, 10), driverName: 'Trần Hữu Nghĩa' }, seedActor);
-    field.completeStage(doneId, 'xuong_ghe', { quantityTons: 0, at: at(-1, 10) }, seedActor);
+    field.completeStage(doneId, 'gom_rom', { bales: 5700, at: at(-1, 6) }, seedActor);
+    // FM-09: ở ruộng đếm cuộn; tấn là ước tính (20 kg/cuộn mặc định).
+    const first = field.recordLoading(doneId, { vesselCode: 'AG-12345', vesselKind: 'ghe', bales: 4400, at: at(-1, 8), driverName: 'Lê Văn Cường' }, seedActor);
+    field.recordLoading(doneId, { vesselCode: 'AG-10088', vesselKind: 'ghe', bales: 1300, at: at(-1, 10), driverName: 'Trần Hữu Nghĩa' }, seedActor);
+    field.completeStage(doneId, 'xuong_ghe', { at: at(-1, 10) }, seedActor);
+    // Ghe thứ nhất đã cập nhà máy và cân: 4 400 cuộn → 96 800 kg (22 kg/cuộn, +10 % so với ước 88 t → gắn cờ FM-10).
+    field.recordPlantWeighing(String(first.loading.id), { grossKg: 138_400, tareKg: 41_600, plantBales: 4400, at: at(0, 1) }, seedActor);
+    // Ghe thứ hai còn đang chạy — nằm ở hàng đợi cân.
   }
 
   // ---- Việc quá hạn: gặt 5 ngày trước, đã phân công nhưng chưa ai cuộn (FM-02) ----

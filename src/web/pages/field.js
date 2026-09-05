@@ -54,12 +54,72 @@ function statusBadge(job) {
 /** Ba ô công đoạn thu gọn: ●○○ kèm số tấn. */
 function stageStrip(job) {
   return el('span', { class: 'chip-row' }, (job.stages ?? []).map((stage) =>
-    badge(`${stage.label ?? stage.stage} ${stage.quantity_tons !== null && stage.quantity_tons !== undefined ? num(stage.quantity_tons, 0) + 't' : ''}`.trim(),
+    badge(`${stage.label ?? stage.stage} ${stage.bales ? `${num(stage.bales)} cuộn` : (stage.quantity_tons !== null && stage.quantity_tons !== undefined ? num(stage.quantity_tons, 0) + 't' : '')}`.trim(),
       STAGE_TONE[stage.status] ?? 'neutral')));
 }
 
 function riskBadge(job) {
   return job.overdue ? badge(`⚠ ${job.daysOnField} ngày trên ruộng`, 'bad') : null;
+}
+
+function varianceBadge(pct) {
+  if (pct === null || pct === undefined) return null;
+  const abs = Math.abs(pct);
+  return badge(`${pct > 0 ? '+' : ''}${num(pct, 1)}%`, abs > 15 ? 'bad' : abs > 5 ? 'warn' : 'good');
+}
+
+/** Đọc tệp ảnh thành data URI để gửi JSON — máy chủ đọc EXIF từ bản gốc. */
+const readAsDataUrl = (file) => new Promise((resolve, reject) => {
+  const reader = new FileReader();
+  reader.onload = () => resolve(reader.result);
+  reader.onerror = () => reject(new Error('Không đọc được tệp'));
+  reader.readAsDataURL(file);
+});
+
+/**
+ * Khối bằng chứng ảnh của một đối tượng: ảnh đã tải (viền xanh = đúng chỗ, đúng
+ * lúc, có EXIF; viền vàng = có cờ) và nút chụp/tải thêm. Ảnh gửi nguyên bản để máy
+ * chủ đọc được toạ độ và giờ chụp trong ảnh.
+ */
+function evidenceBlock(entityType, entityId, canUpload) {
+  const list = el('div', { class: 'evidence-list' });
+  const box = el('div', { class: 'evidence' }, [list]);
+  const render = async () => {
+    const items = await api(`/files?entityType=${entityType}&entityId=${entityId}`).catch(() => []);
+    list.replaceChildren(...items.map((item) => el('a', { class: `evidence-item ${item.trusted ? 'trusted' : 'flagged'}`, href: item.url, target: '_blank', title: item.flagLabels.join('; ') || 'Bằng chứng tin được' }, [
+      item.mime.startsWith('image/') ? el('img', { src: item.url, alt: item.fileName, loading: 'lazy' }) : el('div', { class: 'meta', text: item.fileName }),
+      el('div', { class: 'meta' }, [
+        el('div', { text: item.trusted ? '✓ đúng chỗ, đúng lúc' : `⚠ ${item.flags.length} cờ` }),
+        el('div', { text: item.takenAt ? item.takenAt.slice(0, 16).replace('T', ' ') : 'không có giờ chụp' }),
+        item.distanceM !== null && item.distanceM !== undefined ? el('div', { text: `cách ${num(item.distanceM)} m` }) : null,
+      ]),
+    ])));
+    if (!items.length && !canUpload) list.replaceChildren(el('span', { class: 'muted', text: 'Chưa có ảnh bằng chứng' }));
+  };
+  if (canUpload) {
+    const input = el('input', { type: 'file', accept: 'image/*,application/pdf', capture: 'environment', multiple: true });
+    input.addEventListener('change', async () => {
+      const files = [...input.files];
+      if (!files.length) return;
+      const pos = await currentPosition();
+      let flagged = 0;
+      for (const file of files) {
+        try {
+          const saved = await api('/files', { body: {
+            entityType, entityId, fileName: file.name, mime: file.type || 'image/jpeg', data: await readAsDataUrl(file),
+            deviceLat: pos?.lat, deviceLng: pos?.lng,
+          } });
+          if (!saved.trusted) flagged += 1;
+        } catch (error) { toast(`${file.name}: ${error.message}`, true); }
+      }
+      input.value = '';
+      toast(flagged ? `Đã lưu ${files.length} ảnh — ${flagged} ảnh có cờ (xem chú thích khi rê chuột).` : `Đã lưu ${files.length} ảnh bằng chứng, đúng chỗ đúng lúc.`);
+      await render();
+    });
+    box.append(el('label', { class: 'evidence-upload' }, ['📷 Chụp / tải ảnh bằng chứng', input]));
+  }
+  render();
+  return box;
 }
 
 const JOB_COLUMNS = [
@@ -91,10 +151,10 @@ registerPage('field-dashboard', {
         kpi('Rơm đang nằm ruộng', `${num(k.strawOnField)} t`, 'Đã gặt, chưa cuộn xong'),
         kpi('Quá hạn cuộn (FM-02)', num(k.overdueJobs), `${num(k.overdueTons)} tấn có nguy cơ ẩm mục`, k.overdueJobs ? 'critical' : 'good'),
         kpi('Đội rảnh hôm nay', num(k.teamsIdle), `trên ${data.teams.length} đội hoạt động`, k.teamsIdle && k.unassigned ? 'warning' : undefined),
-        kpi('Cuộn hôm nay', `${num(k.baledTonsToday, 1)} t`, 'Công đoạn 1 đã chốt'),
-        kpi('Gom hôm nay', `${num(k.gatheredTonsToday, 1)} t`, 'Công đoạn 2 đã chốt'),
-        kpi('Xuống ghe hôm nay', `${num(k.loadedTonsToday, 1)} t`, `${num(k.loadingsToday)} lượt · ${num(k.tripsCreatedToday)} chuyến TMS`),
-        kpi('Hoàn thành hôm nay', num(k.completedToday), 'Việc đã chốt xuống ghe'),
+        kpi('Cuộn hôm nay', `${num(k.baledBalesToday)} cuộn`, `ước ${num(k.baledTonsToday, 1)} t · công đoạn 1 đã chốt`),
+        kpi('Gom hôm nay', `${num(k.gatheredBalesToday)} cuộn`, `ước ${num(k.gatheredTonsToday, 1)} t · công đoạn 2 đã chốt`),
+        kpi('Xuống ghe hôm nay', `${num(k.loadedBalesToday)} cuộn`, `${num(k.loadingsToday)} lượt · ${num(k.tripsCreatedToday)} chuyến TMS · ước ${num(k.loadedTonsToday, 1)} t`),
+        kpi('Ghe chưa cân', num(k.unweighedLoadings), `ước ${num(k.unweighedTons)} t đang trên đường · ${num(k.weighedToday)} ghe cân hôm nay`, k.unweighedLoadings ? 'warning' : 'good'),
       ]),
 
       k.overdueJobs
@@ -230,7 +290,9 @@ registerPage('field-plan', {
           ? table([
               { key: 'loaded_at', label: 'Lúc', render: (row) => dateTime(row.loaded_at) },
               { key: 'vessel_code', label: 'Ghe / sà lan' },
-              { key: 'tons', label: 'Tấn', align: 'right' },
+              { key: 'bales', label: 'Cuộn', align: 'right', render: (row) => (row.bales ? num(row.bales) : '—') },
+              { key: 'tons', label: 'Ước (t)', align: 'right', render: (row) => num(row.tons, 1) },
+              { key: 'weighed_kg', label: 'Cân (t)', align: 'right', render: (row) => (row.weighed_kg ? el('span', {}, [num(row.weighed_kg / 1000, 1), ' ', varianceBadge(row.variance_pct)]) : badge('chưa cân', 'warn')) },
               { key: 'destination_name', label: 'Về' },
               { key: 'trip_code', label: 'Chuyến TMS', render: (row) => (row.trip_code ? badge(row.trip_code, 'info') : badge('không tạo được', 'warn')) },
             ], job.loadings)
@@ -383,41 +445,42 @@ registerPage('field-record', {
           stage.completed_at ? badge(`Xong ${dateTime(stage.completed_at)} · ${tons(stage.quantity_tons)}${stage.bales ? ` · ${num(stage.bales)} kiện` : ''}`, 'good') : null,
           stage.vehicle_code ? badge(`${stage.vehicle_name}`, 'neutral') : null,
         ]));
-        if (stage.evidence?.length) {
-          body.push(el('p', { class: 'muted', text: `Bằng chứng: ${stage.evidence.map((e) => `${e.kind}${e.url ? ` ${e.url}` : ''}${e.note ? ` (${e.note})` : ''}`).join('; ')}` }));
-        }
+        body.push(evidenceBlock('field_job_stage', stage.id, write && !['huy'].includes(job.status)));
 
         if (stage.stage === 'xuong_ghe') {
           body.push(table([
             { key: 'loaded_at', label: 'Lúc', render: (row) => dateTime(row.loaded_at) },
             { key: 'vessel_code', label: 'Ghe / sà lan' },
-            { key: 'tons', label: 'Tấn', align: 'right' },
-            { key: 'destination_name', label: 'Về' },
+            { key: 'bales', label: 'Cuộn', align: 'right', render: (row) => (row.bales ? num(row.bales) : '—') },
+            { key: 'tons', label: 'Ước (t)', align: 'right', render: (row) => num(row.tons, 1) },
+            { key: 'weighed_kg', label: 'Cân', align: 'right', render: (row) => (row.weighed_kg ? `${num(row.weighed_kg / 1000, 1)} t` : badge('chưa cân', 'neutral')) },
             { key: 'trip_code', label: 'Chuyến TMS', render: (row) => (row.trip_code ? badge(row.trip_code, 'info') : badge('không tạo được', 'warn')) },
           ], job.loadings, { empty: 'Chưa có lượt xuống ghe nào' }));
           if (write && !stage.completed_at && job.stages[1].started_at) {
             body.push(el('strong', { text: 'Ghi lượt xuống ghe' }));
             body.push(form([
               { name: 'vesselCode', label: 'Số hiệu ghe / sà lan', required: true, placeholder: 'VD: AG-12345' },
-              { name: 'vesselKind', label: 'Loại', type: 'select', options: [{ value: 'ghe', label: 'Ghe (~90 t rơm)' }, { value: 'sa_lan', label: 'Sà lan' }] },
-              { name: 'tons', label: 'Tấn', type: 'number', step: '0.5', required: true },
-              { name: 'bales', label: 'Số kiện', type: 'number', step: '1' },
+              { name: 'vesselKind', label: 'Loại', type: 'select', options: [{ value: 'ghe', label: 'Ghe (~4 000–4 500 cuộn)' }, { value: 'sa_lan', label: 'Sà lan' }] },
+              { name: 'bales', label: `Số cuộn xuống ghe (≈ ${num(job.baleKg.kg, 1)} kg/cuộn → tấn tự ước)`, type: 'number', step: '1', required: true },
+              { name: 'tons', label: 'Tấn — chỉ ghi nếu có cân tại bến, để trống thì ước theo cuộn', type: 'number', step: '0.5' },
               { name: 'driverName', label: 'Tài công' },
               { name: 'destinationFacilityId', label: 'Về Hub / nhà máy', type: 'select',
                 options: [{ value: '', label: `Tự chọn gần nhất${job.destination_name ? ` (${job.destination_name})` : ''}` },
                   ...lookups.facilities.map((f) => ({ value: f.id, label: `${f.kind === 'hub' ? 'Hub' : 'Nhà máy'} — ${f.name}` }))] },
             ], async (values) => {
               const pos = await currentPosition();
-              const result = await api(`/field/jobs/${jobId}/loadings`, { body: { ...values, destinationFacilityId: values.destinationFacilityId || undefined, ...(pos ?? {}) } });
-              toast(result.trip ? `Đã ghi lượt ${values.vesselCode} → chuyến ${result.trip.code} (${num(result.trip.distance_km, 1)} km)` : 'Đã ghi lượt xuống ghe.');
+              const result = await api(`/field/jobs/${jobId}/loadings`, { body: { ...values, tons: values.tons ?? undefined, destinationFacilityId: values.destinationFacilityId || undefined, ...(pos ?? {}) } });
+              toast(result.trip
+                ? `Đã ghi ${num(values.bales)} cuộn (ước ${num(result.loading.tons, 1)} t) lên ${values.vesselCode} → chuyến ${result.trip.code} (${num(result.trip.distance_km, 1)} km)`
+                : 'Đã ghi lượt xuống ghe.');
               if (result.warnings.length) window.alert(result.warnings.join('\n\n'));
               await refresh();
             }, { submitLabel: '⚓ Ghi lượt xuống ghe' }));
             if (job.loadings.length) {
               body.push(el('button', { class: 'small', text: '✔ Chốt xuống ghe — hoàn thành việc', onclick: async () => {
-                if (!window.confirm(`Chốt việc ${job.code} với ${num(job.loadings.reduce((s, l) => s + l.tons, 0), 1)} tấn đã xuống ${job.loadings.length} ghe?`)) return;
+                if (!window.confirm(`Chốt việc ${job.code} với ${num(job.loadings.reduce((s, l) => s + (l.bales ?? 0), 0))} cuộn (ước ${num(job.loadings.reduce((s, l) => s + l.tons, 0), 1)} t) đã xuống ${job.loadings.length} ghe?`)) return;
                 const pos = await currentPosition();
-                await guard(api(`/field/jobs/${jobId}/stages/xuong_ghe/complete`, { body: { quantityTons: 0, ...(pos ?? {}) } }));
+                await guard(api(`/field/jobs/${jobId}/stages/xuong_ghe/complete`, { body: { ...(pos ?? {}) } }));
                 toast('Việc đã hoàn thành.'); selectedJobId = null; await refresh();
               } }));
             }
@@ -441,18 +504,16 @@ registerPage('field-record', {
               ? el('div', {}, [
                   el('strong', { text: 'Chốt công đoạn' }),
                   form([
-                    { name: 'quantityTons', label: 'Khối lượng (tấn)', type: 'number', step: '0.5', required: true, value: stage.stage === 'cuon_rom' ? '' : (prev?.quantity_tons ?? '') },
-                    { name: 'bales', label: 'Số kiện', type: 'number', step: '1' },
-                    { name: 'evidenceNote', label: 'Bằng chứng (link ảnh Zalo/Drive hoặc mô tả)' },
+                    { name: 'bales', label: `Số cuộn đã ${stage.label.toLowerCase()} (≈ ${num(job.baleKg.kg, 1)} kg/cuộn → tấn tự ước)`, type: 'number', step: '1', required: true, value: stage.stage === 'cuon_rom' ? '' : (prev?.bales ?? '') },
+                    { name: 'quantityTons', label: 'Tấn — chỉ ghi nếu có cân, để trống thì ước theo cuộn', type: 'number', step: '0.5' },
                     { name: 'note', label: 'Ghi chú' },
                   ], async (values) => {
                     const pos = await currentPosition();
-                    await api(`/field/jobs/${jobId}/stages/${stage.stage}/complete`, { body: {
-                      quantityTons: values.quantityTons, bales: values.bales ?? undefined, note: values.note || undefined,
-                      evidence: values.evidenceNote ? [{ kind: /^https?:/.test(values.evidenceNote) ? 'photo' : 'note', url: /^https?:/.test(values.evidenceNote) ? values.evidenceNote : undefined, note: /^https?:/.test(values.evidenceNote) ? undefined : values.evidenceNote }] : [],
-                      ...(pos ?? {}),
+                    const done = await api(`/field/jobs/${jobId}/stages/${stage.stage}/complete`, { body: {
+                      bales: values.bales, quantityTons: values.quantityTons ?? undefined, note: values.note || undefined, ...(pos ?? {}),
                     } });
-                    toast(`Đã chốt ${stage.label.toLowerCase()}: ${num(values.quantityTons, 1)} tấn.`);
+                    const saved = done.stages.find((s) => s.stage === stage.stage);
+                    toast(`Đã chốt ${stage.label.toLowerCase()}: ${num(values.bales)} cuộn (ước ${num(saved?.quantity_tons, 1)} t).`);
                     await refresh();
                   }, { submitLabel: `✔ Chốt ${stage.label.toLowerCase()}` }),
                 ])
@@ -681,3 +742,115 @@ registerPage('field-report', {
   },
 });
 
+// ===========================================================================
+// Cân tại nhà máy & đối soát — số thật về từng lượt ghe (FM-09, FM-10)
+// ===========================================================================
+
+registerPage('field-weighing', {
+  title: 'Cân nhà máy & đối soát',
+  subtitle: 'Ở ruộng đếm cuộn, về nhà máy mới cân — mỗi ghe ghi cả số cuộn và số cân, lệch quá 5 % gắn cờ',
+  async render(view, actions) {
+    const from = sessionStorage.getItem('field-recon-from') ?? addDays(today(), -30);
+    const to = sessionStorage.getItem('field-recon-to') ?? today();
+    const [pending, recon, lookups] = await Promise.all([
+      guard(api('/field/weighings/pending')), api(`/field/reconciliation?from=${from}&to=${to}`), api('/field/lookups'),
+    ]);
+    const refresh = async () => { actions.replaceChildren(); await this.render(view, actions); };
+    const canWeigh = can('warehouse.write') || can('field.manage');
+    const kg = recon.baleKg;
+    const kgSource = { can_htx: 'học từ cân của HTX', can_he_thong: 'học từ các lượt đã cân', cau_hinh: 'cấu hình', mac_dinh: 'mặc định — chưa có lượt cân nào' };
+
+    actions.append(form([
+      { name: 'from', label: 'Từ', type: 'date', value: from, required: true },
+      { name: 'to', label: 'Đến', type: 'date', value: to, required: true },
+    ], async (values) => {
+      sessionStorage.setItem('field-recon-from', values.from); sessionStorage.setItem('field-recon-to', values.to); await refresh();
+    }, { submitLabel: 'Xem', resetOnSuccess: false }));
+
+    let selected = null;
+    const weighBox = el('div', { class: 'grid' });
+    const showWeighForm = (row) => {
+      selected = row.id;
+      weighBox.replaceChildren(card(`Cân ghe ${row.vessel_code} — ${row.job_code}`, [
+        el('div', { class: 'chip-row' }, [
+          badge(`${num(row.bales ?? 0)} cuộn đếm ở ruộng`, 'info'), badge(`ước ${num(row.tons, 1)} t`, 'neutral'),
+          badge(`xuống ghe ${dateTime(row.loaded_at)}`, 'neutral'), row.trip_code ? badge(`chuyến ${row.trip_code}`, 'neutral') : null,
+        ]),
+        el('p', { class: 'muted', text: 'Ghi tổng và bì như phiếu cân, hoặc ghi thẳng khối lượng tịnh. Số cuộn đếm lại ở nhà máy là tuỳ chọn nhưng giúp tách hao hụt do rơi vãi khỏi hao hụt do ẩm.' }),
+        form([
+          { name: 'grossKg', label: 'Tổng (kg) — ghe có hàng', type: 'number', step: '10' },
+          { name: 'tareKg', label: 'Bì (kg) — ghe rỗng', type: 'number', step: '10' },
+          { name: 'netKg', label: 'Hoặc: tịnh (kg)', type: 'number', step: '10' },
+          { name: 'plantBales', label: 'Số cuộn đếm lại tại nhà máy', type: 'number', step: '1' },
+          { name: 'facilityId', label: 'Cân tại', type: 'select', options: lookups.facilities.map((f) => ({ value: f.id, label: `${f.kind === 'hub' ? 'Hub' : 'Nhà máy'} — ${f.name}`, selected: f.name === row.destination_name })) },
+          { name: 'note', label: 'Ghi chú' },
+        ], async (values) => {
+          const result = await api(`/field/loadings/${row.id}/weigh`, { body: {
+            grossKg: values.grossKg ?? undefined, tareKg: values.tareKg ?? undefined, netKg: values.netKg ?? undefined,
+            plantBales: values.plantBales ?? undefined, facilityId: values.facilityId || undefined, note: values.note || undefined,
+          } });
+          toast(result.flagged
+            ? `Cân ${num(result.netKg / 1000, 1)} t — LỆCH ${num(result.variancePct, 1)}% so với ước, đã báo điều hành.`
+            : `Cân ${num(result.netKg / 1000, 1)} t — khớp ước tính (${num(result.variancePct ?? 0, 1)}%).`, Boolean(result.flagged));
+          selected = null;
+          await refresh();
+        }, { submitLabel: '⚖️ Ghi cân' }),
+      ]));
+    };
+
+    const reconColumns = (labelKey, label) => [
+      { key: labelKey, label, render: (row) => row[labelKey] ?? el('span', { class: 'muted', text: 'chưa gán' }) },
+      { key: 'loadings', label: 'Lượt ghe', align: 'right' },
+      { key: 'weighed', label: 'Đã cân', align: 'right', render: (row) => `${row.weighed}/${row.loadings}` },
+      { key: 'bales', label: 'Cuộn (ruộng)', align: 'right', render: (row) => num(row.bales ?? 0) },
+      { key: 'baleDiff', label: 'Cuộn lệch', align: 'right', render: (row) => (row.baleDiff === null ? '—' : badge(`${row.baleDiff > 0 ? '+' : ''}${num(row.baleDiff)}`, row.baleDiff < 0 ? 'warn' : 'neutral')) },
+      { key: 'estTons', label: 'Ước (t)', align: 'right', render: (row) => num(row.estTons, 1) },
+      { key: 'weighedTons', label: 'Cân (t)', align: 'right', render: (row) => num(row.weighedTons, 1) },
+      { key: 'variancePct', label: 'Lệch', align: 'right', render: (row) => varianceBadge(row.variancePct) ?? '—' },
+      { key: 'avgBaleKg', label: 'kg/cuộn', align: 'right', render: (row) => (row.avgBaleKg ? num(row.avgBaleKg, 1) : '—') },
+      { key: 'flagged', label: 'Cờ', align: 'right', render: (row) => (row.flagged ? badge(String(row.flagged), 'bad') : '—') },
+    ];
+
+    view.replaceChildren(
+      el('div', { class: 'grid cols-4' }, [
+        kpi('Ghe chờ cân', num(pending.length), `ước ${num(pending.reduce((s, r) => s + r.tons, 0))} t · ${num(pending.reduce((s, r) => s + (r.bales ?? 0), 0))} cuộn`, pending.length ? 'warning' : 'good'),
+        kpi('kg / cuộn đang dùng', `${num(kg.kg, 1)} kg`, `${kgSource[kg.source] ?? kg.source}${kg.samples ? ` · ${kg.samples} lượt` : ''}`),
+        kpi('Lệch trong kỳ', num(recon.byTeam.reduce((s, r) => s + r.flagged, 0)), `lượt lệch quá ${recon.thresholdPct}%`, recon.byTeam.some((r) => r.flagged) ? 'warning' : 'good'),
+        kpi('Đã cân trong kỳ', `${num(recon.byTeam.reduce((s, r) => s + r.weighedTons, 0))} t`, `ước trước đó ${num(recon.byTeam.reduce((s, r) => s + r.estTons, 0))} t`),
+      ]),
+      pending.some((r) => r.hours_since_loading > 48)
+        ? alert(`${pending.filter((r) => r.hours_since_loading > 48).length} ghe đã xuống hàng quá 48 giờ mà chưa cân — chưa cân thì chưa đối chiếu, chưa trả tiền được.`, 'warn')
+        : null,
+      card('Ghe chờ cân', [
+        el('p', { class: 'muted', text: canWeigh ? 'Bấm một dòng để ghi phiếu cân. Phiếu đi vào phân hệ kho và đóng chuyến TMS với số tấn thật.' : 'Bạn chỉ có quyền xem; ghi cân cần quyền nhập kho hoặc điều hành hiện trường.' }),
+        table([
+          { key: 'vessel_code', label: 'Ghe / sà lan' },
+          { key: 'job_code', label: 'Việc' },
+          { key: 'location_label', label: 'Từ' },
+          { key: 'team_name', label: 'Đội' },
+          { key: 'bales', label: 'Cuộn', align: 'right', render: (row) => num(row.bales ?? 0) },
+          { key: 'tons', label: 'Ước (t)', align: 'right', render: (row) => num(row.tons, 1) },
+          { key: 'destination_name', label: 'Về' },
+          { key: 'hours_since_loading', label: 'Đã đi', align: 'right', render: (row) => badge(`${num(row.hours_since_loading)} h`, row.hours_since_loading > 48 ? 'bad' : row.hours_since_loading > 24 ? 'warn' : 'neutral') },
+          { key: 'trip_status', label: 'Chuyến', render: (row) => (row.trip_code ? badge(`${row.trip_code} · ${row.trip_status === 'dang_chay' ? 'đang chạy' : 'chờ'}`, 'info') : badge('không có', 'warn')) },
+        ], pending, { onRowClick: canWeigh ? (row) => showWeighForm(row) : undefined, rowClass: (row) => (row.id === selected ? 'selected' : null), empty: 'Mọi ghe đã cân — tốt.' }),
+      ]),
+      weighBox,
+      el('div', { class: 'grid cols-2' }, [
+        card('Đối soát theo đội', table(reconColumns('team_name', 'Đội'), recon.byTeam, { empty: 'Chưa có lượt ghe trong kỳ' })),
+        card('Đối soát theo HTX', table(reconColumns('htx_name', 'HTX'), recon.byHtx, { empty: 'Chưa có lượt ghe trong kỳ' })),
+      ]),
+      card('Lượt đã cân gần nhất', table([
+        { key: 'weighed_at', label: 'Cân lúc', render: (row) => dateTime(row.weighed_at) },
+        { key: 'vessel_code', label: 'Ghe' },
+        { key: 'job_code', label: 'Việc' },
+        { key: 'team_name', label: 'Đội' },
+        { key: 'bales', label: 'Cuộn ruộng', align: 'right', render: (row) => num(row.bales ?? 0) },
+        { key: 'plant_bales', label: 'Cuộn nhà máy', align: 'right', render: (row) => (row.plant_bales ? num(row.plant_bales) : '—') },
+        { key: 'tons', label: 'Ước (t)', align: 'right', render: (row) => num(row.tons, 1) },
+        { key: 'weighed_kg', label: 'Cân (t)', align: 'right', render: (row) => num(row.weighed_kg / 1000, 1) },
+        { key: 'variance_pct', label: 'Lệch', align: 'right', render: (row) => varianceBadge(row.variance_pct) },
+      ], recon.recent, { empty: 'Chưa có lượt nào được cân trong kỳ' })),
+    );
+  },
+});

@@ -276,7 +276,7 @@ export const ROLE_PERMISSIONS: Record<string, Permission[] | ['*']> = {
   ],
   [ROLES.WAREHOUSE_OP]: [
     P.PORTAL_ERP,
-    P.MDM_READ, P.GIS_READ, P.WH_READ, P.WH_WRITE,
+    P.MDM_READ, P.GIS_READ, P.WH_READ, P.WH_WRITE, P.FIELD_READ,
     P.PO_READ, P.SO_READ, P.TMS_READ, P.MRV_WRITE, P.MRV_READ,
   ],
   [ROLES.LOGISTICS]: [

@@ -234,6 +234,7 @@ export const PORTALS = [
         items: [
           { id: 'field-dashboard', label: '🛰️ Bảng điều hành', permission: 'field.read' },
           { id: 'field-plan', label: '📅 Kế hoạch thu gom', permission: 'field.read' },
+          { id: 'field-weighing', label: '⚖️ Cân nhà máy & đối soát', permission: 'field.read' },
           { id: 'field-teams', label: '👷 Đội & phương tiện', permission: 'field.read' },
           { id: 'field-report', label: '📈 Năng suất', permission: 'field.read' },
         ],
@@ -281,6 +282,7 @@ export const PORTALS = [
           { id: 'trade', label: '📦 Mua hàng / Bán hàng', permission: 'procurement.read' },
           { id: 'tms', label: '🚛 Vận tải (TMS)', permission: 'tms.read' },
           { id: 'field-dashboard', label: '🌾 Hiện trường thu gom', permission: 'field.read' },
+          { id: 'field-weighing', label: '⚖️ Cân ghe rơm & đối soát', permission: 'field.read' },
           { id: 'finance', label: '💰 Tài chính & MRV', permission: 'finance.read' },
         ],
       },
@@ -289,6 +291,7 @@ export const PORTALS = [
         items: [
           { id: 'sys-users', label: '👤 Tài khoản người dùng', permission: 'admin.users' },
           { id: 'sys-groups', label: '🛡️ Nhóm & phân quyền', permission: 'admin.users' },
+          { id: 'sys-notify', label: '🔔 Thông báo & kênh gửi', permission: 'admin.config' },
           { id: 'masterdata', label: '🗄️ Master Data', permission: 'mdm.read' },
           { id: 'admin', label: '📜 Nhật ký & đồng bộ', permission: 'gis.read' },
         ],

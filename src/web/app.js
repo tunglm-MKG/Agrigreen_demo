@@ -18,13 +18,52 @@ export function allowedPortals() {
   return PORTALS.filter((portal) => can(portal.permission) && portalItems(portal).some((item) => can(item.permission) && pages[item.id]));
 }
 
+// ---------------------------------------------------------------------------
+// Chống ghi trùng + hàng đợi offline
+//
+// Mọi yêu cầu ghi mang một Idempotency-Key. Mất mạng giữa chừng thì thao tác
+// thuộc danh sách cho phép được xếp vào hàng đợi (localStorage) và tự gửi lại
+// với ĐÚNG khoá đó khi có mạng — máy chủ nhận hai lần cùng khoá chỉ chạy một lần.
+// ---------------------------------------------------------------------------
+const QUEUE_KEY = 'mg_offline_queue';
+const QUEUEABLE = [
+  /^\/field\/jobs\/[^/]+\/stages\/[^/]+\/(start|complete)$/,
+  /^\/field\/jobs\/[^/]+\/loadings$/,
+  /^\/htx\/farm-logs$/,
+  /^\/files$/,
+];
+const newKey = () => (crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`);
+
+export class QueuedOffline extends Error {
+  constructor(pending) {
+    super(`Mất mạng — thao tác đã được xếp hàng đợi và sẽ tự gửi khi có mạng (${pending} chờ gửi).`);
+    this.queued = true;
+  }
+}
+
+function readQueue() { try { return JSON.parse(localStorage.getItem(QUEUE_KEY) ?? '[]'); } catch { return []; } }
+function writeQueue(items) { try { localStorage.setItem(QUEUE_KEY, JSON.stringify(items)); } catch { /* đầy bộ nhớ */ } renderOfflineBar(); }
+export function pendingQueue() { return readQueue().length; }
+
 export async function api(path, options = {}) {
-  const response = await fetch(`/api${path}`, {
-    method: options.method ?? (options.body ? 'POST' : 'GET'),
-    headers: options.body ? { 'Content-Type': 'application/json' } : {},
-    body: options.body ? JSON.stringify(options.body) : undefined,
-    credentials: 'same-origin',
-  });
+  const method = options.method ?? (options.body ? 'POST' : 'GET');
+  const headers = options.body ? { 'Content-Type': 'application/json' } : {};
+  const key = method !== 'GET' ? (options.idempotencyKey ?? newKey()) : null;
+  if (key) headers['Idempotency-Key'] = key;
+  let response;
+  try {
+    response = await fetch(`/api${path}`, {
+      method, headers, body: options.body ? JSON.stringify(options.body) : undefined, credentials: 'same-origin',
+    });
+  } catch (error) {
+    if (key && !options.noQueue && QUEUEABLE.some((pattern) => pattern.test(path))) {
+      const queue = readQueue();
+      queue.push({ key, path, method, body: options.body ?? null, at: new Date().toISOString() });
+      writeQueue(queue);
+      throw new QueuedOffline(queue.length);
+    }
+    throw new Error('Không kết nối được máy chủ. Kiểm tra mạng rồi thử lại.');
+  }
   const text = await response.text();
   let payload;
   try {
@@ -515,6 +554,9 @@ export async function boot() {
   );
   buildPortalSwitch(allowed, requestedPortal);
   buildNav();
+  mountBell();
+  watchConnectivity();
+  if (navigator.onLine && pendingQueue()) flushQueue();
 
   const items = portalItems(requestedPortal).filter((item) => can(item.permission) && pages[item.id]);
   const requested = location.hash.slice(1);
@@ -590,6 +632,108 @@ function renderPortalPicker(me, allowed, warning) {
       }),
     ]),
   );
+}
+
+/** Gửi lại hàng đợi offline theo thứ tự; dừng ở thao tác đầu tiên còn mất mạng. */
+export async function flushQueue() {
+  let queue = readQueue();
+  if (!queue.length) return { sent: 0, dropped: 0 };
+  let sent = 0;
+  let dropped = 0;
+  while (queue.length) {
+    const item = queue[0];
+    try {
+      await api(item.path, { method: item.method, body: item.body, idempotencyKey: item.key, noQueue: true });
+      sent += 1;
+    } catch (error) {
+      if (/Không kết nối được/.test(error.message)) break; // vẫn mất mạng — giữ lại, thử sau
+      // Lỗi nghiệp vụ (400): gửi lại cũng không qua — bỏ khỏi hàng đợi và báo.
+      dropped += 1;
+      toast(`Thao tác lúc ${item.at.slice(11, 16)} bị từ chối: ${error.message}`, true);
+    }
+    queue = queue.slice(1);
+    writeQueue(queue);
+  }
+  if (sent) toast(`Đã gửi ${sent} thao tác chờ từ lúc mất mạng.`);
+  return { sent, dropped };
+}
+
+function renderOfflineBar() {
+  const bar = document.getElementById('offline-bar');
+  if (!bar) return;
+  const pending = pendingQueue();
+  const offline = !navigator.onLine;
+  if (!offline && !pending) { bar.hidden = true; return; }
+  bar.hidden = false;
+  bar.replaceChildren(
+    el('span', { text: offline ? '📵 Đang mất mạng' : '📶 Có mạng' }),
+    pending ? el('span', { text: `· ${pending} thao tác chờ gửi` }) : null,
+    pending && !offline ? el('button', { text: 'Gửi ngay', onclick: () => flushQueue() }) : null,
+  );
+}
+
+function watchConnectivity() {
+  window.addEventListener('online', () => { renderOfflineBar(); flushQueue(); });
+  window.addEventListener('offline', renderOfflineBar);
+  setInterval(() => { if (navigator.onLine && pendingQueue()) flushQueue(); }, 60_000);
+  renderOfflineBar();
+  if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => undefined);
+}
+
+// ---------------------------------------------------------------------------
+// Chuông thông báo — cùng một chuông trên mọi cổng
+// ---------------------------------------------------------------------------
+let lastSeenNotification = null;
+
+function mountBell() {
+  const host = document.getElementById('topbar-tools');
+  if (!host) return;
+  const count = el('span', { class: 'count', hidden: true });
+  const panel = el('div', { class: 'bell-panel', hidden: true });
+  const button = el('button', { class: 'bell', title: 'Thông báo', 'aria-label': 'Thông báo' }, ['🔔', count]);
+  host.replaceChildren(button, panel);
+
+  const draw = (data) => {
+    count.hidden = !data.unread;
+    count.textContent = String(data.unread);
+    panel.replaceChildren(
+      el('header', {}, [
+        el('strong', { text: data.unread ? `${data.unread} chưa đọc` : 'Không có thông báo mới' }),
+        data.unread ? el('button', { class: 'small ghost', text: 'Đánh dấu đã đọc hết', onclick: async () => { await api('/notifications/read', { body: { ids: 'all' } }); await poll(); } }) : null,
+      ]),
+      ...(data.items.length ? data.items.map((item) => el('div', {
+        class: `notif ${item.severity} ${item.read_at ? '' : 'unread'}`,
+        onclick: async () => {
+          if (!item.read_at) await api('/notifications/read', { body: { ids: [item.id] } }).catch(() => undefined);
+          panel.hidden = true;
+          if (item.link) {
+            const [path, hash] = item.link.split('#');
+            if (path && path !== `${location.pathname}`) location.href = item.link; else if (hash) await navigate(hash);
+          }
+          await poll();
+        },
+      }, [
+        el('span', { class: 'dot' }),
+        el('div', {}, [el('div', { class: 'title', text: item.title }), el('div', { class: 'body', text: item.body }), el('div', { class: 'when', text: dateTime(item.created_at) })]),
+      ])) : [el('p', { class: 'muted', style: 'padding:12px', text: 'Cảnh báo về rơm quá hạn, cách ly thuốc, kho, cân lệch… sẽ hiện ở đây.' })]),
+    );
+    // Trình duyệt cho phép thì báo cả khi đang ở tab khác.
+    const newest = data.items[0];
+    if (newest && !newest.read_at && lastSeenNotification && newest.id !== lastSeenNotification && 'Notification' in window && Notification.permission === 'granted') {
+      try { new Notification(newest.title, { body: newest.body }); } catch { /* bỏ qua */ }
+    }
+    if (newest) lastSeenNotification = newest.id;
+  };
+  const poll = async () => {
+    try { draw(await api('/notifications?limit=20')); } catch { /* mất mạng — giữ nội dung cũ */ }
+  };
+  button.addEventListener('click', () => {
+    panel.hidden = !panel.hidden;
+    if (!panel.hidden && 'Notification' in window && Notification.permission === 'default') Notification.requestPermission().catch(() => undefined);
+  });
+  document.addEventListener('click', (event) => { if (!host.contains(event.target)) panel.hidden = true; });
+  poll();
+  setInterval(poll, 45_000);
 }
 
 /**

@@ -8,21 +8,26 @@ ghi nhật ký canh tác của nông dân. Phần rà soát này không liệt k
 đi tìm **mắt xích còn hở** — chỗ dữ liệu phải chép tay từ phân hệ này sang phân hệ kia,
 chỗ hệ thống biết mà không báo, và chỗ vận hành thật sẽ vấp trong tháng đầu triển khai.
 
+> **Cập nhật 05/09/2026 (chiều):** đã làm xong mục 2 (A1 ảnh bằng chứng), 3 (A3 thông báo
+> Zalo OA / SMS / chuông), 4 (A2 offline + chống ghi trùng) và phần cốt lõi của mục 1 (B1):
+> đếm cuộn ở ruộng, cân ở nhà máy, đối soát ba chiều theo đội và HTX. Còn lại của B1 là
+> phiếu nhập kho tự tham chiếu chuyến. Chi tiết xem README mục 1I và 1J.
+
 ## Tóm tắt: 5 việc đáng làm trước
 
 | # | Đề xuất | Vì sao trước | Nỗ lực |
 | --- | --- | --- | --- |
-| 1 | **Ghe cập Hub tự đối chiếu với lượt xuống ghe** (hiện trường → cân → kho) | Đây là mắt hở lớn nhất còn lại của chuỗi rơm: 88 t ghi ở ruộng, cân được bao nhiêu ở Hub, hao hụt thuộc đội hay ghe — hôm nay không ai trả lời được từ dữ liệu | Vừa |
-| 2 | **Tải ảnh bằng chứng thật** (kèm GPS + thời gian trong ảnh) | VietGAP, MRV và tranh chấp thuê máy đều cần ảnh; hiện chỉ có ô "dán link Zalo" — bằng chứng ở ngoài hệ thống thì không phải bằng chứng | Vừa |
-| 3 | **Kênh thông báo chủ động** (Zalo OA / SMS / web push) | Hệ thống đã *biết* rơm quá hạn, thuốc chưa hết cách ly, kho quá ẩm — nhưng chỉ nói khi có người mở đúng màn hình. Cảnh báo không đến tay người cần thì bằng không | Vừa |
-| 4 | **Hàng đợi offline + chống ghi trùng** cho App HTX và Cổng Hiện trường | Ruộng ĐBSCL mất sóng là chuyện thường; bấm lại khi mạng chập chờn hiện tạo hai lượt ghe, hai nhật ký | Vừa |
+| 1 | ✅ *phần lớn* **Ghe cập Hub tự đối chiếu với lượt xuống ghe** (hiện trường → cân → kho) | Đây là mắt hở lớn nhất còn lại của chuỗi rơm: 88 t ghi ở ruộng, cân được bao nhiêu ở Hub, hao hụt thuộc đội hay ghe — hôm nay không ai trả lời được từ dữ liệu | Vừa |
+| 2 | ✅ **Tải ảnh bằng chứng thật** (kèm GPS + thời gian trong ảnh) | VietGAP, MRV và tranh chấp thuê máy đều cần ảnh; hiện chỉ có ô "dán link Zalo" — bằng chứng ở ngoài hệ thống thì không phải bằng chứng | Vừa |
+| 3 | ✅ **Kênh thông báo chủ động** (Zalo OA / SMS; web push chưa) | Hệ thống đã *biết* rơm quá hạn, thuốc chưa hết cách ly, kho quá ẩm — nhưng chỉ nói khi có người mở đúng màn hình. Cảnh báo không đến tay người cần thì bằng không | Vừa |
+| 4 | ✅ **Hàng đợi offline + chống ghi trùng** cho App HTX và Cổng Hiện trường | Ruộng ĐBSCL mất sóng là chuyện thường; bấm lại khi mạng chập chờn hiện tạo hai lượt ghe, hai nhật ký | Vừa |
 | 5 | **Đối chiếu giả định – thực tế** đưa số thật (tấn/đội/ngày, chi phí chuyến, hao hụt) về Finance duyệt thành tham số mới | Mô phỏng đầu tư đang chạy trên 49 giả định; hệ thống nay đã có số thật cho ít nhất 8 trong số đó nhưng chưa dùng | Nhỏ |
 
 ---
 
 ## A. Dữ liệu đi vào hệ thống — điểm vấp khi vận hành thật
 
-### A1. Bằng chứng hình ảnh (P1)
+### A1. Bằng chứng hình ảnh (P1) — ✅ đã làm
 Ba nơi đòi bằng chứng — bước VietGAP (`plan_step_evidence`), công đoạn thu gom
 (`field_job_stages.evidence_json`), tranh chấp thuê máy — đều chỉ nhận **chuỗi ký tự**.
 Không có endpoint nhận tệp; ảnh nằm ở Zalo hoặc Drive của cá nhân, mất theo người.
@@ -34,7 +39,7 @@ có EXIF lệch quá 300 m so với thửa hoặc lệch quá 24 h so với th�
 không chặn — tái dùng `verifyLocation` của App HTX. Không cần thư viện ngoài: Node đủ để
 đọc EXIF cơ bản.
 
-### A2. Offline và chống ghi trùng (P1)
+### A2. Offline và chống ghi trùng (P1) — ✅ đã làm
 `syncOfflineLogs` đã có ở phía máy chủ nhưng giao diện **không có hàng đợi**: mất mạng
 là mất thao tác. Ngược lại, mạng chập chờn khiến người dùng bấm hai lần → hai bản ghi
 (POST không có khoá chống lặp).
@@ -44,7 +49,7 @@ là mất thao tác. Ngược lại, mạng chập chờn khiến người dùng
 hàng đợi thao tác cho hai màn hình đứng ruộng: *Nhật ký canh tác* và *Ghi nhận tại ruộng*;
 đồng bộ khi có mạng, hiển thị "3 thao tác chờ gửi" để người dùng yên tâm.
 
-### A3. Kênh thông báo chủ động (P1)
+### A3. Kênh thông báo chủ động (P1) — ✅ đã làm (trừ web push)
 Hệ thống tính ra nhiều cảnh báo tốt — FM-02 rơm quá hạn, BR-06 vi phạm cách ly thuốc,
 kho quá ẩm, đề xuất thiếu máy — nhưng **không có kênh nào đẩy ra ngoài** (không bảng
 `notifications`, không outbox, không adapter). Người phải mở đúng trang mới thấy.
@@ -73,7 +78,7 @@ tons: 'number>0' })` cho các route ghi; trả 400 kèm tên trường. Chừng 
 
 ## B. Chuỗi rơm khép kín — các mắt xích còn hở
 
-### B1. Ghe cập Hub → đối chiếu tự động (P1)
+### B1. Ghe cập Hub → đối chiếu tự động (P1) — ✅ cân & đối soát đã làm; phiếu nhập kho tự tham chiếu chuyến còn lại
 Mỗi lượt xuống ghe nay sinh một chuyến TMS (FM-05). Nhưng khi ghe cập Hub, cân
 (`weighings`) và phiếu nhập (`goods_receipts`) **không tự tham chiếu về chuyến và về lượt
 ghe** — nhân viên kho phải tự tìm. Hậu quả: không tính được hao hụt theo đội / theo ghe,
@@ -221,6 +226,8 @@ rơm; việc thu gom bị huỷ vì "HTX bán bên khác" đi thẳng vào sàn.
 
 ## E. Giới hạn của nhóm chức năng Hiện trường vừa bổ sung — cần biết khi dùng
 
+0. *(Đã đổi)* Ở ruộng nay **đếm cuộn**, tấn là ước tính theo kg/cuộn tự học; số cân thật
+   ghi khi ghe cập nhà máy. Mục 2 và 4 dưới đây đã được giải quyết (A1, B1).
 1. Việc lập từ **trạng thái mùa vụ cấp HTX** là ước tính rơm *một ngày gặt* (tổng vụ ÷ 20
    ngày). Lịch **cấp thửa** từ App HTX (`crop_cycles`) mới là nguồn chuẩn; HTX mở vụ trên
    App HTX càng nhiều, kế hoạch càng đúng.

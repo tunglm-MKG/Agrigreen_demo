@@ -11,6 +11,8 @@ import { HttpError, sendJson } from './platform/http/router.ts';
 import { buildApi } from './api.ts';
 import { gateEnabled, handleGate } from './platform/http/accessGate.ts';
 import { seedIfEmpty } from './seed.ts';
+import { processOutbox, runAlertScan } from './platform/notify/service.ts';
+import { purgeExpired } from './platform/http/idempotency.ts';
 
 const HERE = fileURLToPath(new URL('.', import.meta.url));
 const WEB_ROOT = resolve(HERE, 'web');
@@ -29,6 +31,15 @@ export async function start(port = Number(process.env.PORT ?? 4173)): Promise<vo
   migrate();
   seedIfEmpty();
   const api = buildApi();
+
+  // Tiến trình nền: quét cảnh báo mỗi 10 phút, gửi outbox mỗi 30 giây, dọn khoá
+  // chống trùng quá hạn. unref() để chúng không giữ tiến trình sống khi tắt máy chủ.
+  const scan = () => {
+    try { runAlertScan(); purgeExpired(); } catch (error) { console.error('[notify] quét lỗi:', (error as Error).message); }
+  };
+  scan();
+  setInterval(scan, 10 * 60_000).unref();
+  setInterval(() => { processOutbox().catch((error) => console.error('[notify] outbox lỗi:', error.message)); }, 30_000).unref();
 
   const server = createServer(async (req, res) => {
     const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);

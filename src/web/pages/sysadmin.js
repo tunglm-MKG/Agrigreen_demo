@@ -420,3 +420,64 @@ registerPage('sys-groups', {
     drawMatrix();
   },
 });
+
+// ===========================================================================
+// Thông báo & kênh gửi
+// ===========================================================================
+
+registerPage('sys-notify', {
+  title: 'Thông báo & kênh gửi',
+  subtitle: 'Hệ thống biết thì phải nói: chuông trong ứng dụng luôn bật; Zalo OA và SMS cần cấu hình',
+  async render(view, actions) {
+    const [channels, problems] = await Promise.all([guard(api('/notifications/channels')), api('/notifications/problems')]);
+    const refresh = async () => { actions.replaceChildren(); await this.render(view, actions); };
+    actions.append(el('button', { class: 'small', text: '⟳ Quét cảnh báo & gửi ngay', onclick: async () => {
+      const result = await guard(api('/notifications/scan', { body: {} }));
+      toast(`Quét xong: ${Object.entries(result.scan).map(([k, v]) => `${k} ${v}`).join(' · ')} — gửi ${result.outbox.sent}, lỗi ${result.outbox.failed}.`);
+      await refresh();
+    } }));
+
+    const channelCard = (key, info, fields) => card(info.label, [
+      el('div', { class: 'chip-row' }, [
+        badge(info.configured ? 'Đã cấu hình' : 'Chưa cấu hình', info.configured ? 'good' : 'warn'),
+        info.sent !== undefined ? badge(`${num(info.sent)} đã gửi`, 'neutral') : null,
+        info.queued ? badge(`${num(info.queued)} chờ gửi`, 'info') : null,
+        info.waitingConfig ? badge(`${num(info.waitingConfig)} chờ cấu hình`, 'warn') : null,
+        info.failed ? badge(`${num(info.failed)} lỗi`, 'bad') : null,
+        info.recipients !== undefined ? badge(`${num(info.recipients)} người có Zalo id`, 'neutral') : null,
+      ]),
+      info.note ? el('p', { class: 'muted', text: info.note }) : null,
+      fields && can('admin.config')
+        ? form(fields, async (values) => {
+            for (const [k, v] of Object.entries(values)) if (v) await api('/notifications/channels', { method: 'PUT', body: { key: k, value: v } });
+            toast('Đã lưu cấu hình — các thông báo đang chờ sẽ được gửi ở lượt kế tiếp (≤ 30 giây).');
+            await refresh();
+          }, { submitLabel: 'Lưu' })
+        : null,
+    ]);
+
+    view.replaceChildren(
+      el('p', { class: 'muted', text: 'Mỗi thông báo tạo một dòng cho từng người nhận × từng kênh. Kênh chưa cấu hình không bị bỏ qua âm thầm: dòng nằm ở trạng thái "chờ cấu hình" cho tới khi bạn điền bên dưới. Giá trị token không ghi vào nhật ký.' }),
+      el('div', { class: 'grid cols-2' }, [
+        channelCard('inapp', channels.inapp, null),
+        channelCard('zalo', channels.zalo, [
+          { name: 'notify.zalo_access_token', label: 'Zalo OA access token', type: 'password', placeholder: channels.zalo.configured ? '•••••• (đã có — nhập để đổi)' : 'Dán token từ Zalo Official Account' },
+        ]),
+        channelCard('sms', channels.sms, [
+          { name: 'notify.sms_gateway_url', label: 'URL cổng SMS (POST JSON {to, text})', placeholder: 'https://sms.nhacungcap.vn/api/send' },
+          { name: 'notify.sms_gateway_token', label: 'Token cổng SMS', type: 'password' },
+        ]),
+        channelCard('webpush', channels.webpush, null),
+      ]),
+      card('Dòng chờ / lỗi gần nhất', table([
+        { key: 'created_at', label: 'Tạo lúc', render: (row) => dateTime(row.created_at) },
+        { key: 'username', label: 'Người nhận' },
+        { key: 'channel', label: 'Kênh' },
+        { key: 'title', label: 'Tiêu đề' },
+        { key: 'status', label: 'Trạng thái', render: (row) => badge({ cho_gui: 'Chờ gửi', loi: 'Lỗi', cho_cau_hinh: 'Chờ cấu hình' }[row.status] ?? row.status, row.status === 'loi' ? 'bad' : 'warn') },
+        { key: 'attempts', label: 'Lần thử', align: 'right' },
+        { key: 'last_error', label: 'Lỗi cuối', render: (row) => row.last_error ?? '—' },
+      ], problems, { empty: 'Không có dòng nào chờ hay lỗi.' })),
+    );
+  },
+});

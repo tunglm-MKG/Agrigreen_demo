@@ -25,13 +25,20 @@
  *          tay được vượt nhưng phải thấy cảnh báo.
  *   FM-07  Chỉ đội đang hoạt động mới nhận việc.
  *   FM-08  Chạy phân công tự động nhiều lần không sinh việc trùng.
+ *   FM-09  Ở ruộng ĐẾM CUỌN, không cân. Rơm ĐBSCL bán theo cuộn; cân chỉ có ở nhà
+ *          máy. Tấn lúc cuộn / gom / xuống ghe là ƯỚC TÍNH = cuộn × kg/cuộn; số cân
+ *          thật ghi khi ghe cập nhà máy và đối chiếu ngược về từng lượt ghe.
+ *   FM-10  Cân nhà máy lệch quá 5 % so với ước tính thì gắn cờ và báo điều hành;
+ *          kg/cuộn học từ chính các lượt đã cân để lần ước sau đúng hơn.
  */
 import { all, insert, one, parseJson, transaction, update } from '../../platform/db/db.ts';
 import { nowIso, sequenceCode, uuid } from '../../platform/util/ids.ts';
 import { logEvent, type AuditActor } from '../../platform/audit/audit.ts';
 import { haversineKm, type LatLng } from '../../platform/geo/geo.ts';
 import { resolveParams } from '../params/store.ts';
-import { createTrip } from '../tms/service.ts';
+import { completeTrip, createTrip } from '../tms/service.ts';
+import { recordWeighing } from '../warehouse/service.ts';
+import { notify } from '../../platform/notify/service.ts';
 
 // ---------------------------------------------------------------------------
 // Danh mục
@@ -77,6 +84,43 @@ const DEFAULT_TEAM_CAPACITY_TONS_PER_DAY = 35;
 
 /** Năng suất lúa dùng để ước rơm khi vụ chưa khai báo sản lượng (tấn/ha). */
 const PADDY_YIELD_TONS_PER_HA = 6;
+
+/**
+ * Khối lượng một cuộn rơm khi chưa có số cân nào (kg). Cuộn tròn máy Kubota /
+ * Claas ở ĐBSCL nặng 18–25 kg tuỳ độ ẩm; đổi được ở system_config `field.bale_kg`.
+ */
+export const DEFAULT_BALE_KG = 20;
+
+/** Cân nhà máy lệch quá mức này so với ước tính theo cuộn thì gắn cờ (FM-10). */
+export const WEIGHING_VARIANCE_PCT = 5;
+
+/**
+ * kg/cuộn dùng để ước tấn. Ưu tiên số HỌC từ các lượt đã cân của chính HTX đó
+ * (30 lượt gần nhất), rồi toàn hệ thống, rồi cấu hình, rồi mặc định. Số nào dùng
+ * cũng nói rõ nguồn — người đọc phải biết 88 tấn kia là ước hay là cân.
+ */
+export function baleKg(htxId?: string | null): { kg: number; source: 'can_htx' | 'can_he_thong' | 'cau_hinh' | 'mac_dinh'; samples: number } {
+  const learned = (where: string, params: unknown[]) => one<{ kg: number | null; bales: number | null; n: number }>(
+    `SELECT SUM(l.weighed_kg) AS kg, SUM(l.bales) AS bales, COUNT(*) AS n FROM (
+       SELECT l.weighed_kg, l.bales FROM field_loadings l JOIN field_jobs j ON j.id = l.job_id
+       WHERE l.weighed_kg IS NOT NULL AND l.bales > 0 ${where} ORDER BY l.weighed_at DESC LIMIT 30) l`,
+    params,
+  );
+  if (htxId) {
+    const row = learned('AND j.htx_id = ?', [htxId]);
+    if (row?.n && row.bales) return { kg: Math.round((row.kg! / row.bales) * 10) / 10, source: 'can_htx', samples: row.n };
+  }
+  const global = learned('', []);
+  if (global?.n && global.bales) return { kg: Math.round((global.kg! / global.bales) * 10) / 10, source: 'can_he_thong', samples: global.n };
+  try {
+    const cfg = one<{ value_json: string }>(`SELECT value_json FROM system_config WHERE key = 'field.bale_kg'`);
+    const value = cfg ? Number(JSON.parse(cfg.value_json)) : NaN;
+    if (Number.isFinite(value) && value > 0) return { kg: value, source: 'cau_hinh', samples: 0 };
+  } catch { /* chưa có cấu hình */ }
+  return { kg: DEFAULT_BALE_KG, source: 'mac_dinh', samples: 0 };
+}
+
+const tonsFromBales = (bales: number, kg: number) => Math.round((bales * kg) / 100) / 10;
 
 /**
  * Một HTX không gặt hết trong một ngày: mặt trận gặt kéo dài chừng ba tuần.
@@ -721,13 +765,13 @@ export function completeStage(
   jobId: string,
   stage: FieldStage,
   input: {
-    quantityTons: number; bales?: number; vehicleId?: string; lat?: number; lng?: number;
+    quantityTons?: number; bales?: number; vehicleId?: string; lat?: number; lng?: number;
     note?: string; evidence?: { kind: string; url?: string; note?: string }[]; at?: string;
   },
   actor: AuditActor = {},
 ): Row {
-  const job = one<{ code: string; status: string; team_id: string | null; expected_straw_tons: number }>(
-    'SELECT code, status, team_id, expected_straw_tons FROM field_jobs WHERE id = ?', [jobId]);
+  const job = one<{ code: string; status: string; team_id: string | null; expected_straw_tons: number; htx_id: string | null }>(
+    'SELECT code, status, team_id, expected_straw_tons, htx_id FROM field_jobs WHERE id = ?', [jobId]);
   if (!job) throw new Error('Không tìm thấy việc thu gom.');
   if (['hoan_thanh', 'huy'].includes(job.status)) throw new Error(`Việc ${job.code} đã kết thúc.`);
   const current = loadStage(jobId, stage);
@@ -743,17 +787,37 @@ export function completeStage(
     if (!before.completed_at) throw new Error(`FM-03: "${stageMeta(prev).label}" chưa hoàn thành thì chưa chốt "${stageMeta(stage).label}".`);
   }
 
-  // Xuống ghe: khối lượng là tổng các lượt đã ghi, không nhập tay lại.
-  let quantity = input.quantityTons;
+  // FM-09: ở ruộng ĐẾM CUỘN. Tấn là ước tính từ số cuộn; chỉ khi không có số cuộn
+  // (dữ liệu cũ, HTX bán rơm rời) mới nhận tấn nhập tay.
+  const kg = baleKg(job.htx_id);
+  let bales: number | null = input.bales === undefined || input.bales === null ? null : Math.round(Number(input.bales));
+  let quantity: number;
   if (stage === 'xuong_ghe') {
-    const loaded = one<{ tons: number | null; n: number }>('SELECT SUM(tons) AS tons, COUNT(*) AS n FROM field_loadings WHERE job_id = ?', [jobId]);
+    // Xuống ghe: cộng các lượt đã ghi, không nhập tay lại.
+    const loaded = one<{ tons: number | null; bales: number | null; n: number }>(
+      'SELECT SUM(tons) AS tons, SUM(bales) AS bales, COUNT(*) AS n FROM field_loadings WHERE job_id = ?', [jobId]);
     if (!loaded?.n) throw new Error('Chưa ghi lượt xuống ghe nào — dùng "Ghi lượt xuống ghe" cho từng ghe / sà lan trước.');
     quantity = loaded.tons ?? 0;
+    bales = loaded.bales ?? null;
+  } else if (bales !== null) {
+    if (!(bales >= 0)) throw new Error('Số cuộn phải là số không âm.');
+    quantity = input.quantityTons !== undefined && input.quantityTons !== null ? Number(input.quantityTons) : tonsFromBales(bales, kg.kg);
+  } else if (input.quantityTons !== undefined && input.quantityTons !== null) {
+    quantity = Number(input.quantityTons);
+  } else {
+    throw new Error(`Phải ghi SỐ CUỘN đã ${stageMeta(stage).label.toLowerCase()} — rơm ĐBSCL bán theo cuộn, cân chỉ có ở nhà máy.`);
   }
   if (!(quantity >= 0)) throw new Error('Khối lượng phải là số không âm.');
+
   if (prev) {
-    const before = loadStage(jobId, prev);
-    if (before.quantity_tons !== null && quantity > before.quantity_tons + 1e-6) {
+    const before = loadStage(jobId, prev) as typeof current & { bales: number | null };
+    // So bằng CUỘN khi cả hai bên đều đếm cuộn — đó là số thật; tấn chỉ là ước.
+    if (bales !== null && before.bales !== null && bales > before.bales) {
+      throw new Error(
+        `FM-04: ${stageMeta(stage).label} ${bales} cuộn nhiều hơn ${stageMeta(prev).label.toLowerCase()} ${before.bales} cuộn — rơm không tự sinh ra giữa hai công đoạn. Đếm lại.`,
+      );
+    }
+    if ((bales === null || before.bales === null) && before.quantity_tons !== null && quantity > before.quantity_tons + 1e-6) {
       throw new Error(
         `FM-04: ${stageMeta(stage).label} ${quantity} tấn nhiều hơn ${stageMeta(prev).label.toLowerCase()} ${before.quantity_tons} tấn — rơm không tự sinh ra giữa hai công đoạn. Kiểm tra lại số liệu.`,
       );
@@ -763,7 +827,7 @@ export function completeStage(
   const evidence = (input.evidence ?? []).filter((item) => item && item.kind);
   transaction(() => {
     update('field_job_stages', current.id, {
-      completed_at: at, status: 'hoan_thanh', quantity_tons: quantity, bales: input.bales ?? null,
+      completed_at: at, status: 'hoan_thanh', quantity_tons: quantity, bales,
       vehicle_id: input.vehicleId ?? current.vehicle_id ?? null, recorded_by: actor.name ?? null,
       lat: input.lat ?? current.lat ?? null, lng: input.lng ?? current.lng ?? null,
       note: input.note ?? current.note ?? null,
@@ -775,7 +839,7 @@ export function completeStage(
   });
   logEvent({
     module: 'field', entityType: 'field_job_stages', entityId: current.id, action: 'update',
-    after: { stage, completed_at: at, quantity_tons: quantity, bales: input.bales, evidence: evidence.length },
+    after: { stage, completed_at: at, quantity_tons: quantity, bales, baleKg: bales !== null ? kg : undefined, evidence: evidence.length },
   }, actor);
   return jobDetail(jobId);
 }
@@ -788,34 +852,52 @@ export function completeStage(
 export function recordLoading(
   jobId: string,
   input: {
-    vesselCode: string; vesselKind?: 'ghe' | 'sa_lan'; tons: number; bales?: number;
+    vesselCode: string; vesselKind?: 'ghe' | 'sa_lan'; bales?: number; tons?: number;
     destinationFacilityId?: string; lat?: number; lng?: number; note?: string; at?: string; driverName?: string;
   },
   actor: AuditActor = {},
-): { loading: Row; trip: Row | null; warnings: string[] } {
+): { loading: Row; trip: Row | null; warnings: string[]; baleKg: ReturnType<typeof baleKg> } {
   const job = one<{
     code: string; status: string; team_id: string | null; loading_lat: number; loading_lng: number;
-    location_label: string; destination_facility_id: string | null;
+    location_label: string; destination_facility_id: string | null; htx_id: string | null;
   }>('SELECT * FROM field_jobs WHERE id = ?', [jobId]);
   if (!job) throw new Error('Không tìm thấy việc thu gom.');
   if (['hoan_thanh', 'huy'].includes(job.status)) throw new Error(`Việc ${job.code} đã kết thúc.`);
   if (!input.vesselCode?.trim()) throw new Error('Phải ghi số hiệu ghe / sà lan — đây là mã để TMS và kho đối chiếu.');
-  if (!(input.tons > 0)) throw new Error('Khối lượng xuống ghe phải lớn hơn 0.');
 
-  const gathering = loadStage(jobId, 'gom_rom');
+  // FM-09: đếm cuộn; tấn là ước tính cho tới khi nhà máy cân.
+  const kg = baleKg(job.htx_id);
+  const bales = input.bales === undefined || input.bales === null ? null : Math.round(Number(input.bales));
+  let tons: number;
+  let tonsSource: 'uoc_theo_cuon' | 'nhap_tay';
+  if (bales !== null) {
+    if (!(bales > 0)) throw new Error('Số cuộn xuống ghe phải lớn hơn 0.');
+    tons = input.tons !== undefined && input.tons !== null && Number(input.tons) > 0 ? Number(input.tons) : tonsFromBales(bales, kg.kg);
+    tonsSource = 'uoc_theo_cuon';
+  } else if (input.tons !== undefined && input.tons !== null && Number(input.tons) > 0) {
+    tons = Number(input.tons);
+    tonsSource = 'nhap_tay';
+  } else {
+    throw new Error('Phải ghi SỐ CUỘN đã xuống ghe — cân chỉ có ở nhà máy, ở ruộng ta đếm cuộn.');
+  }
+
+  const gathering = loadStage(jobId, 'gom_rom') as ReturnType<typeof loadStage> & { bales: number | null };
   if (!gathering.started_at) throw new Error('FM-03: Chưa gom rơm ra bờ kênh thì chưa có gì để xuống ghe.');
-  const alreadyLoaded = one<{ tons: number | null }>('SELECT SUM(tons) AS tons FROM field_loadings WHERE job_id = ?', [jobId])?.tons ?? 0;
-  if (gathering.quantity_tons !== null && alreadyLoaded + input.tons > gathering.quantity_tons + 1e-6) {
-    throw new Error(
-      `FM-04: Đã xuống ghe ${alreadyLoaded} tấn, thêm ${input.tons} tấn sẽ vượt ${gathering.quantity_tons} tấn đã gom.`,
-    );
+  const already = one<{ tons: number | null; bales: number | null }>('SELECT SUM(tons) AS tons, SUM(bales) AS bales FROM field_loadings WHERE job_id = ?', [jobId]);
+  const alreadyLoaded = already?.tons ?? 0;
+  const alreadyBales = already?.bales ?? 0;
+  if (bales !== null && gathering.bales !== null && alreadyBales + bales > gathering.bales) {
+    throw new Error(`FM-04: Đã xuống ghe ${alreadyBales} cuộn, thêm ${bales} cuộn sẽ vượt ${gathering.bales} cuộn đã gom.`);
+  }
+  if ((bales === null || gathering.bales === null) && gathering.quantity_tons !== null && alreadyLoaded + tons > gathering.quantity_tons + 1e-6) {
+    throw new Error(`FM-04: Đã xuống ghe ${alreadyLoaded} tấn, thêm ${tons} tấn sẽ vượt ${gathering.quantity_tons} tấn đã gom.`);
   }
 
   const warnings: string[] = [];
   const params = resolveParams();
   const payloadLimit = (input.vesselKind ?? 'ghe') === 'ghe' ? params.boatStrawPayloadTons : params.bargeSmallPayloadTons ?? 1000;
-  if (input.tons > payloadLimit * 1.1) {
-    warnings.push(`Lượt này ${input.tons} tấn vượt khối lượng rơm thực chở của ${input.vesselKind === 'sa_lan' ? 'sà lan' : 'ghe'} (${payloadLimit} tấn, tham số mô phỏng) — kiểm tra lại đơn vị hoặc số hiệu phương tiện.`);
+  if (tons > payloadLimit * 1.1) {
+    warnings.push(`Lượt này ước ${tons} tấn vượt khối lượng rơm thực chở của ${input.vesselKind === 'sa_lan' ? 'sà lan' : 'ghe'} (${payloadLimit} tấn, tham số mô phỏng) — kiểm tra lại số cuộn hoặc số hiệu phương tiện.`);
   }
 
   const at = input.at ?? nowIso();
@@ -827,7 +909,8 @@ export function recordLoading(
 
   const loading = {
     id: uuid(), job_id: jobId, vessel_code: input.vesselCode.trim(), vessel_kind: input.vesselKind ?? 'ghe',
-    tons: input.tons, bales: input.bales ?? null, destination_facility_id: destination?.id ?? null, trip_id: null as string | null,
+    tons, bales, tons_source: tonsSource, destination_facility_id: destination?.id ?? null, trip_id: null as string | null,
+    weighed_kg: null, weighed_at: null, weighing_id: null, plant_bales: null, variance_pct: null,
     loaded_at: at, recorded_by: actor.name ?? null, lat: input.lat ?? null, lng: input.lng ?? null, note: input.note ?? null,
   };
 
@@ -840,7 +923,7 @@ export function recordLoading(
         mode: 'waterway',
         from: { lat: job.loading_lat, lng: job.loading_lng }, to: { lat: destination.lat, lng: destination.lng },
         fromLabel: `Bến tập kết — ${job.location_label}`, toLabel: destination.name,
-        plannedTons: input.tons, vehicleCode: loading.vessel_code, driverName: input.driverName,
+        plannedTons: tons, vehicleCode: loading.vessel_code, driverName: input.driverName,
         refType: 'field_job', refId: jobId,
       }, actor);
       loading.trip_id = String(trip.id);
@@ -856,12 +939,172 @@ export function recordLoading(
     const stage = loadStage(jobId, 'xuong_ghe');
     update('field_job_stages', stage.id, {
       started_at: stage.started_at ?? at, status: stage.completed_at ? stage.status : 'dang_thuc_hien',
-      quantity_tons: alreadyLoaded + input.tons, recorded_by: actor.name ?? null,
+      quantity_tons: alreadyLoaded + tons, bales: bales !== null ? alreadyBales + bales : stage.bales ?? null, recorded_by: actor.name ?? null,
     });
     if (job.status !== 'dang_thuc_hien') update('field_jobs', jobId, { status: 'dang_thuc_hien', updated_at: nowIso() });
   });
   logEvent({ module: 'field', entityType: 'field_loadings', entityId: loading.id, action: 'create', after: { ...loading, warnings } }, actor);
-  return { loading, trip, warnings };
+
+  // Điều phối vận tải và kho biết ngay có ghe đang tới, không chờ cuối ngày.
+  notify({
+    module: 'field', severity: 'info',
+    title: `Ghe ${loading.vessel_code} vừa nhận rơm — ${job.code}`,
+    body: `${bales !== null ? `${bales} cuộn (ước ${tons} tấn)` : `${tons} tấn`} từ ${job.location_label}${destination ? ` về ${destination.name}` : ''}${trip ? `, chuyến ${trip.code}` : ' — KHÔNG tạo được chuyến TMS'}. Cân khi cập bến để đối chiếu.`,
+    link: '/field/#field-weighing', roles: ['logistics', 'warehouse_op'],
+    dedupeKey: `field.loading.${loading.id}`, entityType: 'field_loading', entityId: loading.id,
+  }, actor);
+  return { loading, trip, warnings, baleKg: kg };
+}
+
+// ---------------------------------------------------------------------------
+// Cân tại nhà máy — số thật đối chiếu về từng lượt ghe (FM-09, FM-10)
+// ---------------------------------------------------------------------------
+
+export function recordPlantWeighing(
+  loadingId: string,
+  input: { facilityId?: string; grossKg?: number; tareKg?: number; netKg?: number; plantBales?: number; note?: string; at?: string },
+  actor: AuditActor = {},
+): { loading: Row; netKg: number; variancePct: number | null; flagged: boolean; baleKg: ReturnType<typeof baleKg> } {
+  const loading = one<Row & {
+    id: string; job_id: string; vessel_code: string; tons: number; bales: number | null; trip_id: string | null;
+    destination_facility_id: string | null; weighed_at: string | null;
+  }>('SELECT * FROM field_loadings WHERE id = ?', [loadingId]);
+  if (!loading) throw new Error('Không tìm thấy lượt xuống ghe.');
+  if (loading.weighed_at) throw new Error(`Lượt ghe ${loading.vessel_code} đã cân lúc ${loading.weighed_at}. Cân sai thì ghi chú và cân lại thành lượt điều chỉnh, không sửa số cũ.`);
+
+  const gross = input.grossKg === undefined || input.grossKg === null ? null : Number(input.grossKg);
+  const tare = input.tareKg === undefined || input.tareKg === null ? 0 : Number(input.tareKg);
+  let net: number;
+  if (input.netKg !== undefined && input.netKg !== null) net = Number(input.netKg);
+  else if (gross !== null) net = gross - tare;
+  else throw new Error('Phải ghi khối lượng tịnh (kg) hoặc tổng và bì.');
+  if (!(net > 0)) throw new Error('Khối lượng tịnh phải lớn hơn 0.');
+
+  const job = one<{ code: string; htx_id: string | null; team_id: string | null; location_label: string; lat: number; lng: number }>(
+    'SELECT code, htx_id, team_id, location_label, lat, lng FROM field_jobs WHERE id = ?', [loading.job_id])!;
+  const facilityId = input.facilityId ?? loading.destination_facility_id
+    ?? one<{ id: string }>(`SELECT id FROM facilities WHERE kind = 'plant' AND status = 'active' LIMIT 1`)?.id ?? null;
+  if (!facilityId) throw new Error('Không xác định được nhà máy / Hub cân hàng.');
+
+  // Phiếu cân đi vào phân hệ kho như mọi xe khác — cùng một dòng dữ liệu, hai góc nhìn.
+  const weighing = recordWeighing({
+    facilityId, direction: 'in', grossKg: gross ?? net, tareKg: gross === null ? 0 : tare,
+    vehicleCode: loading.vessel_code, refId: loading.trip_id ?? loading.id,
+  }, actor);
+
+  const variancePct = loading.tons > 0 ? Math.round(((net / 1000 - loading.tons) / loading.tons) * 1000) / 10 : null;
+  const flagged = variancePct !== null && Math.abs(variancePct) > WEIGHING_VARIANCE_PCT;
+  const at = input.at ?? nowIso();
+  transaction(() => {
+    update('field_loadings', loadingId, {
+      weighed_kg: net, weighed_at: at, weighing_id: weighing.id, plant_bales: input.plantBales ?? null,
+      variance_pct: variancePct, note: input.note ?? loading.note ?? null,
+    });
+    if (loading.trip_id) {
+      const trip = one<{ status: string }>('SELECT status FROM trips WHERE id = ?', [loading.trip_id]);
+      if (trip && trip.status !== 'hoan_thanh') completeTrip(loading.trip_id, { actualTons: net / 1000 }, actor);
+    }
+  });
+  logEvent({
+    module: 'field', entityType: 'field_loadings', entityId: loadingId, action: 'update',
+    after: { weighed_kg: net, variance_pct: variancePct, flagged, plant_bales: input.plantBales ?? null },
+  }, actor);
+
+  if (flagged) {
+    const direction = variancePct! < 0 ? 'THIẾU' : 'THỪA';
+    notify({
+      module: 'field', severity: Math.abs(variancePct!) > 15 ? 'critical' : 'warn',
+      title: `Cân lệch ${Math.abs(variancePct!)} % — ghe ${loading.vessel_code}`,
+      body: `Việc ${job.code} (${job.location_label}): ước ${loading.tons} tấn${loading.bales ? ` từ ${loading.bales} cuộn` : ''}, cân ${net / 1000} tấn — ${direction} ${Math.abs(Math.round(net / 1000 - loading.tons))} tấn. Kiểm số cuộn, độ ẩm, hoặc ghe.`,
+      link: '/field/#field-weighing', roles: ['field_manager', 'logistics'],
+      dedupeKey: `field.variance.${loadingId}`, entityType: 'field_loading', entityId: loadingId,
+    }, actor);
+  }
+
+  return {
+    loading: one('SELECT * FROM field_loadings WHERE id = ?', [loadingId])!,
+    netKg: net, variancePct, flagged, baleKg: baleKg(job.htx_id),
+  };
+}
+
+/** Ghe đã xuống hàng nhưng nhà máy chưa cân — hàng đợi cho bàn cân. */
+export function pendingWeighings(): Row[] {
+  return all(
+    `SELECT l.id, l.vessel_code, l.vessel_kind, l.bales, l.tons, l.tons_source, l.loaded_at, l.recorded_by,
+            j.code AS job_code, j.location_label, j.htx_id, t.name AS team_name, h.name AS htx_name,
+            f.name AS destination_name, tr.code AS trip_code, tr.status AS trip_status, tr.distance_km,
+            ROUND((julianday('now') - julianday(l.loaded_at)) * 24) AS hours_since_loading
+     FROM field_loadings l
+     JOIN field_jobs j ON j.id = l.job_id
+     LEFT JOIN field_teams t ON t.id = j.team_id
+     LEFT JOIN cooperatives h ON h.id = j.htx_id
+     LEFT JOIN facilities f ON f.id = l.destination_facility_id
+     LEFT JOIN trips tr ON tr.id = l.trip_id
+     WHERE l.weighed_at IS NULL ORDER BY l.loaded_at`,
+  );
+}
+
+/**
+ * Đối soát ba chiều hiện trường – ghe – cân theo đội và theo HTX.
+ * Trả lời câu hỏi mà trước đây không ai trả lời được: hao hụt nằm ở đâu.
+ */
+export function weighingReconciliation(fromDate = addDays(today(), -30), toDate = today()): Row {
+  const rows = all<{
+    team_id: string | null; team_name: string | null; htx_id: string | null; htx_name: string | null;
+    loadings: number; weighed: number; bales: number | null; plant_bales: number | null;
+    est_tons: number; weighed_kg: number | null; flagged: number;
+  }>(
+    `SELECT j.team_id, t.name AS team_name, j.htx_id, h.name AS htx_name,
+            COUNT(*) AS loadings, COUNT(l.weighed_kg) AS weighed,
+            SUM(CASE WHEN l.weighed_kg IS NOT NULL THEN l.bales END) AS bales,
+            SUM(l.plant_bales) AS plant_bales,
+            SUM(CASE WHEN l.weighed_kg IS NOT NULL THEN l.tons ELSE 0 END) AS est_tons,
+            SUM(l.weighed_kg) AS weighed_kg,
+            SUM(CASE WHEN ABS(COALESCE(l.variance_pct, 0)) > ? THEN 1 ELSE 0 END) AS flagged
+     FROM field_loadings l JOIN field_jobs j ON j.id = l.job_id
+     LEFT JOIN field_teams t ON t.id = j.team_id LEFT JOIN cooperatives h ON h.id = j.htx_id
+     WHERE l.loaded_at BETWEEN ? AND ?
+     GROUP BY j.team_id, j.htx_id ORDER BY t.name, h.name`,
+    [WEIGHING_VARIANCE_PCT, `${fromDate}T00:00:00`, `${toDate}T23:59:59.999`],
+  );
+  const shape = (row: typeof rows[number]) => {
+    const weighedTons = (row.weighed_kg ?? 0) / 1000;
+    return {
+      ...row,
+      weighedTons: Math.round(weighedTons * 10) / 10,
+      estTons: Math.round(row.est_tons * 10) / 10,
+      variancePct: row.est_tons > 0 ? Math.round(((weighedTons - row.est_tons) / row.est_tons) * 1000) / 10 : null,
+      avgBaleKg: row.bales ? Math.round(((row.weighed_kg ?? 0) / row.bales) * 10) / 10 : null,
+      baleDiff: row.bales !== null && row.plant_bales !== null ? row.plant_bales - row.bales : null,
+    };
+  };
+  const groups = rows.map(shape);
+  const aggregate = (key: 'team_id' | 'htx_id', label: 'team_name' | 'htx_name') => {
+    const map = new Map<string, typeof rows[number]>();
+    for (const row of rows) {
+      const k = String(row[key] ?? '—');
+      const acc = map.get(k) ?? { ...row, loadings: 0, weighed: 0, bales: 0, plant_bales: 0, est_tons: 0, weighed_kg: 0, flagged: 0 };
+      acc.loadings += row.loadings; acc.weighed += row.weighed;
+      acc.bales = (acc.bales ?? 0) + (row.bales ?? 0); acc.plant_bales = (acc.plant_bales ?? 0) + (row.plant_bales ?? 0);
+      acc.est_tons += row.est_tons; acc.weighed_kg = (acc.weighed_kg ?? 0) + (row.weighed_kg ?? 0); acc.flagged += row.flagged;
+      (acc as Record<string, unknown>)[label] = row[label];
+      map.set(k, acc);
+    }
+    return [...map.values()].map(shape);
+  };
+  const recent = all<Row>(
+    `SELECT l.id, l.vessel_code, l.bales, l.plant_bales, l.tons, l.weighed_kg, l.variance_pct, l.loaded_at, l.weighed_at,
+            j.code AS job_code, j.location_label, t.name AS team_name
+     FROM field_loadings l JOIN field_jobs j ON j.id = l.job_id LEFT JOIN field_teams t ON t.id = j.team_id
+     WHERE l.weighed_at IS NOT NULL AND l.loaded_at BETWEEN ? AND ? ORDER BY l.weighed_at DESC LIMIT 50`,
+    [`${fromDate}T00:00:00`, `${toDate}T23:59:59.999`],
+  );
+  return {
+    from: fromDate, to: toDate, thresholdPct: WEIGHING_VARIANCE_PCT,
+    byTeam: aggregate('team_id', 'team_name'), byHtx: aggregate('htx_id', 'htx_name'), groups, recent,
+    baleKg: baleKg(null),
+    pending: pendingWeighings().length,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -889,10 +1132,13 @@ function decorateJob(job: Row, stages: Row[]): Row {
     ? daysBetween(harvestDate, String(baling!.completed_at).slice(0, 10))
     : (harvestDate <= referenceDay ? daysBetween(harvestDate, referenceDay) : null);
   const overdue = !done && job.status !== 'huy' && daysOnField !== null && daysOnField > MAX_DAYS_AFTER_HARVEST;
+  const kg = baleKg(job.htx_id as string | null);
   return {
     ...job,
     statusLabel: JOB_STATUS[String(job.status)] ?? job.status,
     stages,
+    expectedBales: Math.round((Number(job.expected_straw_tons) * 1000) / kg.kg),
+    baleKg: kg,
     daysOnField,
     overdue,
     riskLabel: overdue ? `Rơm nằm ruộng ${daysOnField} ngày — quá ngưỡng ${MAX_DAYS_AFTER_HARVEST}` : null,
@@ -981,10 +1227,15 @@ export function fieldDashboard(date = today()): Row {
     'SELECT SUM(quantity_tons) AS tons, COUNT(*) AS n FROM field_job_stages WHERE stage = ? AND completed_at BETWEEN ? AND ?',
     [stage, dayStart, dayEnd],
   ) ?? { tons: 0, n: 0 };
-  const loadedToday = one<{ tons: number | null; n: number; trips: number }>(
-    'SELECT SUM(tons) AS tons, COUNT(*) AS n, COUNT(trip_id) AS trips FROM field_loadings WHERE loaded_at BETWEEN ? AND ?',
+  const loadedToday = one<{ tons: number | null; bales: number | null; n: number; trips: number }>(
+    'SELECT SUM(tons) AS tons, SUM(bales) AS bales, COUNT(*) AS n, COUNT(trip_id) AS trips FROM field_loadings WHERE loaded_at BETWEEN ? AND ?',
     [dayStart, dayEnd],
-  ) ?? { tons: 0, n: 0, trips: 0 };
+  ) ?? { tons: 0, bales: 0, n: 0, trips: 0 };
+  const balesToday = (stage: FieldStage) => one<{ bales: number | null }>(
+    'SELECT SUM(bales) AS bales FROM field_job_stages WHERE stage = ? AND completed_at BETWEEN ? AND ?', [stage, dayStart, dayEnd])?.bales ?? 0;
+  const unweighed = one<{ n: number; tons: number | null }>('SELECT COUNT(*) AS n, SUM(tons) AS tons FROM field_loadings WHERE weighed_at IS NULL') ?? { n: 0, tons: 0 };
+  const weighedToday = one<{ n: number; kg: number | null }>(
+    'SELECT COUNT(*) AS n, SUM(weighed_kg) AS kg FROM field_loadings WHERE weighed_at BETWEEN ? AND ?', [dayStart, dayEnd]) ?? { n: 0, kg: 0 };
   const vesselsUnderway = all<Row>(
     `SELECT code, vehicle_code, planned_tons, to_label, status, departed_at FROM trips
      WHERE ref_type = 'field_job' AND status IN ('ke_hoach', 'dang_chay') ORDER BY created_at DESC LIMIT 20`,
@@ -1025,9 +1276,16 @@ export function fieldDashboard(date = today()): Row {
       completedToday: one<{ n: number }>(
         `SELECT COUNT(*) AS n FROM field_job_stages WHERE stage = 'xuong_ghe' AND completed_at BETWEEN ? AND ?`, [dayStart, dayEnd])?.n ?? 0,
       baledTonsToday: Math.round((baled.tons ?? 0) * 10) / 10,
+      baledBalesToday: balesToday('cuon_rom'),
       gatheredTonsToday: Math.round((gathered.tons ?? 0) * 10) / 10,
+      gatheredBalesToday: balesToday('gom_rom'),
       loadedTonsToday: Math.round((loadedToday.tons ?? 0) * 10) / 10,
+      loadedBalesToday: loadedToday.bales ?? 0,
       loadingsToday: loadedToday.n,
+      unweighedLoadings: unweighed.n,
+      unweighedTons: Math.round(unweighed.tons ?? 0),
+      weighedToday: weighedToday.n,
+      weighedTonsToday: Math.round(((weighedToday.kg ?? 0) / 1000) * 10) / 10,
       tripsCreatedToday: loadedToday.trips,
       overdueJobs: overdue.length,
       overdueTons: Math.round(overdue.reduce((sum, job) => sum + Number(job.expected_straw_tons), 0)),
@@ -1060,7 +1318,8 @@ export function productivityReport(fromDate: string, toDate: string): Row {
     `SELECT * FROM field_jobs WHERE id IN (${DONE_IN_PERIOD})`, bounds);
   const stages = all<Row & { job_id: string; stage: string; started_at: string | null; completed_at: string | null; quantity_tons: number | null }>(
     `SELECT * FROM field_job_stages WHERE job_id IN (${DONE_IN_PERIOD})`, bounds);
-  const loadings = all<{ job_id: string; tons: number; loaded_at: string }>('SELECT job_id, tons, loaded_at FROM field_loadings');
+  const loadings = all<{ job_id: string; tons: number; loaded_at: string; bales: number | null; weighed_kg: number | null }>(
+    'SELECT job_id, tons, loaded_at, bales, weighed_kg FROM field_loadings');
 
   const hours = (from: string | null, to: string | null) =>
     from && to ? (new Date(to).getTime() - new Date(from).getTime()) / 3_600_000 : null;
@@ -1080,9 +1339,18 @@ export function productivityReport(fromDate: string, toDate: string): Row {
       return last ? hours(`${job.harvest_date}T06:00:00`, last) : null;
     }));
     const baled = stageQty('cuon_rom');
+    const stageBales = (code: FieldStage) => teamStages.filter((s) => s.stage === code).reduce((sum, s) => sum + (Number((s as Row).bales) || 0), 0);
+    const weighed = loadings.filter((l) => ids.has(l.job_id) && (l as Row).weighed_kg !== null && (l as Row).weighed_kg !== undefined);
+    const weighedKg = weighed.reduce((sum, l) => sum + Number((l as Row).weighed_kg ?? 0), 0);
+    const weighedBales = weighed.reduce((sum, l) => sum + Number((l as Row).bales ?? 0), 0);
     return {
       teamId: team.id, code: team.code, name: team.name,
       jobsCompleted: teamJobs.length,
+      baledBales: stageBales('cuon_rom'),
+      gatheredBales: stageBales('gom_rom'),
+      loadedBales: stageBales('xuong_ghe'),
+      weighedTons: Math.round((weighedKg / 1000) * 10) / 10,
+      avgBaleKg: weighedBales ? Math.round((weighedKg / weighedBales) * 10) / 10 : null,
       areaHa: Math.round(teamJobs.reduce((sum, job) => sum + (job.area_ha ?? 0), 0) * 10) / 10,
       expectedTons: Math.round(teamJobs.reduce((sum, job) => sum + job.expected_straw_tons, 0)),
       baledTons: Math.round(baled * 10) / 10,
@@ -1126,6 +1394,8 @@ export function fieldLookups(): Row {
     jobStatus: JOB_STATUS,
     memberRoles: MEMBER_ROLES,
     maxDaysAfterHarvest: MAX_DAYS_AFTER_HARVEST,
+    baleKg: baleKg(null),
+    weighingVariancePct: WEIGHING_VARIANCE_PCT,
     facilities: all('SELECT id, code, name, kind, lat, lng FROM facilities WHERE status = \'active\' AND kind IN (\'hub\', \'plant\') ORDER BY kind, name'),
     teams: all('SELECT id, code, name, status FROM field_teams ORDER BY name'),
     cooperatives: all('SELECT id, code, name, lat, lng FROM cooperatives WHERE lat IS NOT NULL ORDER BY name LIMIT 400'),

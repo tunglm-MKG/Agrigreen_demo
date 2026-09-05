@@ -5,7 +5,10 @@
  * tham số thứ 3 của mỗi route là quyền bắt buộc. Endpoint không khai báo quyền
  * là endpoint công khai (đăng nhập, health-check).
  */
-import { Router, badRequest, notFound, type Context } from './platform/http/router.ts';
+import { Router, badRequest, notFound, unauthorized, forbidden, type Context } from './platform/http/router.ts';
+import { can as roleCan } from './platform/auth/rbac.ts';
+import * as files from './platform/files/attachments.ts';
+import * as notifyService from './platform/notify/service.ts';
 import { PERMISSION_GROUPS, PERMISSIONS as P, ROLE_LABELS, ROLE_PERMISSIONS } from './platform/auth/rbac.ts';
 import * as users from './platform/auth/users.ts';
 import * as sysadmin from './platform/auth/admin.ts';
@@ -86,6 +89,62 @@ export function buildApi(): Router {
   }));
 
   // ---- Quản trị hệ thống: tài khoản, nhóm người dùng, phân quyền ----
+  // ===================== Tệp đính kèm (ảnh bằng chứng có EXIF) =====================
+  // Ai đã đăng nhập cũng gửi và xem được; quyền với ĐỐI TƯỢNG được kiểm ở màn hình
+  // gọi tới. Tệp không có quyền riêng vì nó luôn đi kèm một đối tượng nghiệp vụ.
+  const requireUser = (ctx: Context) => { if (!ctx.user) throw unauthorized(); };
+  api.post('/files', (ctx) => {
+    requireUser(ctx);
+    const b = body(ctx);
+    return files.saveAttachment({
+      entityType: String(b.entityType ?? ''), entityId: String(b.entityId ?? ''),
+      fileName: String(b.fileName ?? ''), mime: String(b.mime ?? ''), data: files.decodeUpload(String(b.data ?? '')),
+      note: b.note, deviceLat: b.deviceLat === undefined || b.deviceLat === null ? undefined : num(b.deviceLat),
+      deviceLng: b.deviceLng === undefined || b.deviceLng === null ? undefined : num(b.deviceLng),
+    }, ctx.actor);
+  });
+  api.get('/files', (ctx) => {
+    requireUser(ctx);
+    return files.listAttachments(ctx.query.get('entityType') ?? '', ctx.query.get('entityId') ?? '');
+  });
+  api.get('/files/:id/content', (ctx) => {
+    requireUser(ctx);
+    const file = files.readAttachment(ctx.params.id);
+    if (!file) throw notFound('Không tìm thấy tệp');
+    ctx.res.writeHead(200, {
+      'Content-Type': file.mime, 'Content-Length': file.data.length, 'Cache-Control': 'private, max-age=86400',
+      'Content-Disposition': `inline; filename*=UTF-8''${encodeURIComponent(file.fileName)}`,
+    });
+    ctx.res.end(file.data);
+    return undefined;
+  });
+  api.delete('/files/:id', (ctx) => {
+    requireUser(ctx);
+    files.removeAttachment(ctx.params.id, String(body(ctx).reason ?? ''), ctx.actor);
+    return { ok: true };
+  });
+
+  // ===================== Thông báo =====================
+  api.get('/notifications', (ctx) => {
+    requireUser(ctx);
+    return {
+      unread: notifyService.unreadCount(ctx.user!.id),
+      items: notifyService.listForUser(ctx.user!.id, { unreadOnly: ctx.query.get('unread') === '1', limit: ctx.query.get('limit') ? num(ctx.query.get('limit')) : undefined }),
+    };
+  });
+  api.post('/notifications/read', (ctx) => {
+    requireUser(ctx);
+    const ids = body(ctx).ids;
+    return { marked: notifyService.markRead(ctx.user!.id, ids === 'all' ? 'all' : (Array.isArray(ids) ? ids.map(String) : [])) };
+  });
+  api.get('/notifications/channels', () => notifyService.channelStatus(), P.ADMIN_CONFIG);
+  api.put('/notifications/channels', (ctx) => {
+    notifyService.setChannelConfig(String(body(ctx).key ?? ''), String(body(ctx).value ?? ''), ctx.actor);
+    return notifyService.channelStatus();
+  }, P.ADMIN_CONFIG);
+  api.get('/notifications/problems', () => notifyService.outboxProblems(), P.ADMIN_CONFIG);
+  api.post('/notifications/scan', async () => ({ scan: notifyService.runAlertScan(), outbox: await notifyService.processOutbox() }), P.ADMIN_CONFIG);
+
   // ===================== Quản lý hiện trường (đội thu gom rơm) =====================
   api.get('/field/lookups', () => field.fieldLookups(), P.FIELD_READ);
   api.get('/field/dashboard', (ctx) => field.fieldDashboard(ctx.query.get('date') || undefined), P.FIELD_READ);
@@ -118,6 +177,18 @@ export function buildApi(): Router {
   api.post('/field/jobs/:id/stages/:stage/complete', (ctx) =>
     field.completeStage(ctx.params.id, ctx.params.stage as never, body(ctx) as never, ctx.actor), P.FIELD_WRITE);
   api.post('/field/jobs/:id/loadings', (ctx) => field.recordLoading(ctx.params.id, body(ctx) as never, ctx.actor), P.FIELD_WRITE);
+
+  // Cân tại nhà máy: kho (warehouse.write) hoặc điều hành hiện trường (field.manage) đều ghi được.
+  api.get('/field/weighings/pending', () => field.pendingWeighings(), P.FIELD_READ);
+  api.post('/field/loadings/:id/weigh', (ctx) => {
+    if (!roleCan(ctx.user!.roles, P.WH_WRITE) && !roleCan(ctx.user!.roles, P.FIELD_MANAGE)) {
+      throw forbidden('Ghi cân nhà máy cần quyền nhập kho hoặc quyền điều hành hiện trường');
+    }
+    return field.recordPlantWeighing(ctx.params.id, body(ctx) as never, ctx.actor);
+  }, P.FIELD_READ);
+  api.get('/field/reconciliation', (ctx) => field.weighingReconciliation(
+    ctx.query.get('from') ?? undefined, ctx.query.get('to') ?? undefined), P.FIELD_READ);
+  api.get('/field/bale-kg', (ctx) => field.baleKg(ctx.query.get('htxId') || null), P.FIELD_READ);
 
   api.get('/field/calendar', (ctx) => field.harvestCalendar(
     ctx.query.get('from') || undefined, ctx.query.get('days') ? num(ctx.query.get('days')) : undefined), P.FIELD_READ);

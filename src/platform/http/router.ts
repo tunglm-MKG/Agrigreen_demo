@@ -5,6 +5,7 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { userFromToken, type User } from '../auth/users.ts';
 import { can } from '../auth/rbac.ts';
+import { findReplay, storeResponse } from './idempotency.ts';
 
 export interface Context {
   req: IncomingMessage;
@@ -117,6 +118,22 @@ export class Router {
       }
     }
 
+    // Chống ghi trùng: cùng khoá của cùng người → trả lại kết quả cũ, không chạy lại.
+    const method = req.method ?? 'GET';
+    const idemHeader = req.headers['idempotency-key'];
+    const idemKey = method !== 'GET' && method !== 'HEAD' && typeof idemHeader === 'string' && idemHeader.length >= 8
+      ? idemHeader.slice(0, 128)
+      : null;
+    if (idemKey) {
+      const replay = findReplay(idemKey, user?.id ?? null, method, url.pathname);
+      if (replay) {
+        await readBody(req); // tiêu thụ body để kết nối đóng sạch
+        res.setHeader('Idempotency-Replayed', 'true');
+        sendJson(res, replay.status, replay.body);
+        return true;
+      }
+    }
+
     const ctx: Context = {
       req,
       res,
@@ -129,6 +146,7 @@ export class Router {
 
     const result = await found.route.handler(ctx);
     if (result !== undefined && !res.writableEnded) {
+      if (idemKey) storeResponse(idemKey, user?.id ?? null, method, url.pathname, 200, result);
       sendJson(res, 200, result);
     }
     return true;

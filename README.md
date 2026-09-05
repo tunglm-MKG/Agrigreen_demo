@@ -47,7 +47,7 @@ npm test
 
 - `npm run seed -- --reset` — xoá và nạp lại dữ liệu nền (26 HTX ĐBSCL, 3 mùa vụ, 378 máy cơ giới, 7 tuyến đường thuỷ, nhà máy VFT, 49 tham số).
 - `npm run demo` — chạy trọn vẹn nghiệp vụ trên dòng lệnh: đặt 5 Hub ứng viên → dựng 3 kịch bản → mô phỏng → so sánh → khuyến nghị → độ nhạy → phê duyệt tham số → kết xuất Hub sang kho → nhập kho → định tuyến TMS → cân đối cơ giới hoá.
-- `npm test` — 192 test kiểm chứng các Acceptance Criteria trong BRD và luồng nhập Excel.
+- `npm test` — 225 test kiểm chứng các Acceptance Criteria trong BRD và luồng nhập Excel.
 
 ### Tài khoản mẫu (mật khẩu `123456`)
 
@@ -512,7 +512,26 @@ cuộn, gom kéo dài thêm một ngày, xuống ghe bắt đầu từ ngày th�
 | FM-08 | Đồng bộ lịch gặt chạy lại không sinh việc trùng | Bấm hai lần không thành hai việc |
 
 Khối lượng xuống ghe **không nhập tay**: là tổng các lượt ghe đã ghi — mỗi lượt có số hiệu
-ghe, tài công, tấn, Hub nhận, và mã chuyến TMS để kho đối chiếu.
+ghe, tài công, số cuộn, Hub nhận, và mã chuyến TMS để kho đối chiếu.
+
+### Đếm cuộn ở ruộng, cân ở nhà máy (FM-09, FM-10)
+
+Rơm ĐBSCL bán theo **cuộn**; cân chỉ có ở nhà máy. Vì vậy đội hiện trường chỉ đếm cuộn ở cả
+ba công đoạn; tấn là **ước tính** = cuộn × kg/cuộn và luôn được ghi rõ là ước. Khi ghe cập
+nhà máy, bàn cân ghi **hai thông số** — số cuộn đếm lại và khối lượng tịnh — vào đúng lượt
+ghe đó. Phiếu cân đi vào phân hệ kho như mọi xe khác và đóng chuyến TMS với tấn thật.
+
+| | Ở ruộng | Ở nhà máy |
+| --- | --- | --- |
+| Đơn vị | Cuộn (đếm) | kg (cân) + cuộn (đếm lại) |
+| Tấn | Ước = cuộn × kg/cuộn | Thật |
+| Ai ghi | Đội trưởng | Kho, hoặc điều hành hiện trường |
+
+kg/cuộn **tự học**: ưu tiên 30 lượt đã cân gần nhất của chính HTX đó, rồi toàn hệ thống,
+rồi cấu hình, rồi mặc định 20 kg — và màn hình luôn nói số đang dùng lấy từ đâu. Cân lệch
+quá 5 % so với ước thì gắn cờ và báo điều hành; **đối soát ba chiều** hiện trường – ghe – cân
+theo đội và theo HTX trả lời câu hỏi trước đây không ai trả lời được: hao hụt nằm ở đâu.
+FM-04 so bằng cuộn khi cả hai công đoạn đều đếm cuộn; tấn chỉ dùng khi thiếu số cuộn.
 
 ### Màn hình
 
@@ -532,7 +551,60 @@ Rà soát toàn hệ thống và các đề xuất tiếp theo (đối chiếu g
 thông báo Zalo, offline…): [`docs/RA-SOAT-HE-THONG.md`](docs/RA-SOAT-HE-THONG.md).
 
 Mã nguồn: [`erp/field/service.ts`](src/erp/field/service.ts) ·
-[`web/pages/field.js`](src/web/pages/field.js) · [`tests/field.test.ts`](tests/field.test.ts)
+[`web/pages/field.js`](src/web/pages/field.js) · [`tests/field.test.ts`](tests/field.test.ts) ·
+[`tests/field-bales.test.ts`](tests/field-bales.test.ts)
+
+---
+
+## 1J. Ba nền tảng dùng chung: ảnh bằng chứng, thông báo, offline
+
+### Ảnh bằng chứng có toạ độ và giờ chụp trong ảnh
+
+Ba nơi đòi bằng chứng (bước VietGAP, công đoạn thu gom, tranh chấp thuê máy) trước chỉ nhận
+chuỗi ký tự — ảnh nằm ở Zalo cá nhân, mất theo người. Nay có bảng `attachments` dùng chung
+và điểm nhận tệp `POST /api/files`: lưu theo băm SHA-256 (cùng ảnh không chiếm hai chỗ), đọc
+EXIF ngay khi nhận bằng bộ đọc tự viết (JPEG APP1 / TIFF, không thư viện) để lấy
+DateTimeOriginal và GPS.
+
+Ảnh được so với vị trí đối tượng và thời điểm tải lên; lệch quá 300 m hay cũ quá 24 giờ thì
+**gắn cờ, không chặn** — đội trưởng có thể đứng bờ kênh, mạng có thể về muộn; chặn là mất
+bằng chứng, gắn cờ là giữ bằng chứng kèm nghi vấn. Ảnh không cờ nào mới được đánh dấu *tin
+được*. Gỡ ảnh là xoá mềm có lý do.
+
+### Thông báo chủ động — outbox nhiều kênh
+
+Hệ thống đã *biết* rơm quá hạn, vi phạm cách ly thuốc, kho quá ẩm, cân lệch — nay phải
+*nói*. `notify()` ghi một dòng cho mỗi người nhận × mỗi kênh; tiến trình nền gửi outbox mỗi
+30 giây (thử lại tối đa 5 lần) và quét cảnh báo mỗi 10 phút với khoá khử trùng theo ngày.
+
+| Kênh | Điều kiện | Khi chưa cấu hình |
+| --- | --- | --- |
+| Chuông trong ứng dụng | Luôn có, trên mọi cổng | — |
+| Zalo OA | Người nhận có Zalo id + access token | Dòng ở trạng thái **chờ cấu hình**, hiện ở màn hình quản trị |
+| SMS | Người nhận có số điện thoại, chỉ mức nghiêm trọng | Như trên |
+| Web push | Chưa hỗ trợ (cần VAPID + RFC 8291) | — |
+
+Kênh chưa cấu hình **không nuốt thông báo âm thầm** — quản trị viên thấy đúng chỗ đang
+thiếu ở *Thông báo & kênh gửi* và điền token tại đó, không cần khởi động lại. Quy tắc quét
+hiện có: rơm quá hạn (FM-02), việc sắp gặt chưa có đội, máy cuộn hỏng của đội đang có việc,
+ghe quá 48 giờ chưa cân, cảnh báo môi trường kho chưa xác nhận. Quy tắc theo sự kiện: lượt
+ghe mới → điều phối và kho; cân lệch → điều hành; bị chặn thu hoạch vì cách ly thuốc → ban
+quản lý HTX và khuyến nông xã.
+
+### Offline và chống ghi trùng
+
+Mọi yêu cầu ghi mang header `Idempotency-Key`; cùng khoá của cùng người trong 24 giờ trả lại
+đúng kết quả cũ (header `Idempotency-Replayed: true`), không chạy lại nghiệp vụ. Chỉ phản
+hồi thành công được lưu; cùng khoá khác đường dẫn bị từ chối vì đó là lỗi tái dùng khoá.
+
+Phía trình duyệt: mất mạng giữa thao tác ghi ở ruộng (công đoạn, lượt ghe, nhật ký canh tác,
+ảnh) thì thao tác vào **hàng đợi** trong `localStorage` với đúng khoá đó và tự gửi lại khi
+có mạng; thanh trạng thái hiện "N thao tác chờ gửi". Service worker giữ vỏ ứng dụng để mở
+lại trang được khi mất mạng; `/api/*` không bao giờ vào cache.
+
+Mã nguồn: [`platform/files/attachments.ts`](src/platform/files/attachments.ts) ·
+[`platform/notify/service.ts`](src/platform/notify/service.ts) ·
+[`platform/http/idempotency.ts`](src/platform/http/idempotency.ts) · [`web/sw.js`](src/web/sw.js)
 
 ---
 
@@ -898,7 +970,10 @@ Hai tham số #48/#49 để `null` là cố ý: đó là cách hệ thống th�
 | WH FN-01→39 | Nhập/giám sát/xuất/kiểm kê/báo cáo/MRV/tích hợp | `erp/warehouse/service.ts` |
 | PO / SO | Procure-to-Pay, Order-to-Cash, đối soát 3 chiều | `erp/procurement/`, `erp/sales/` |
 | TMS | Routing đa tiêu chí, ePOD/e-bill, đối chiếu chi phí | `erp/tms/service.ts` |
-| Hiện trường FM-01→08 | Đội, phương tiện, kế hoạch từ lịch gặt, phân công 2 lượt, ghi nhận 3 công đoạn, lượt ghe → chuyến TMS | `erp/field/service.ts` |
+| Hiện trường FM-01→10 | Đội, phương tiện, kế hoạch từ lịch gặt, phân công 2 lượt, đếm cuộn 3 công đoạn, lượt ghe → chuyến TMS, cân nhà máy & đối soát | `erp/field/service.ts` |
+| Tệp đính kèm | Ảnh bằng chứng, EXIF GPS/giờ chụp, cờ tin cậy, lưu theo băm | `platform/files/attachments.ts` |
+| Thông báo | Outbox inapp / Zalo OA / SMS, quét cảnh báo định kỳ, khử trùng | `platform/notify/service.ts` |
+| Chống ghi trùng | `Idempotency-Key` 24 giờ theo người dùng; hàng đợi offline phía trình duyệt | `platform/http/idempotency.ts`, `web/app.js` |
 | **Cổng Hiện trường** | 5 màn hình riêng + TMS, GIS dùng chung | `web/pages/field.js` |
 | Finance | AR/AP, Revenue Engine 3 mô hình, carbon 45/55, budget vs actual | `erp/finance/service.ts` |
 | Reporting | Dashboard hợp nhất, xếp hạng kịch bản, xuất CSV/HTML in được | `erp/reporting/service.ts` |
@@ -907,7 +982,7 @@ Hai tham số #48/#49 để `null` là cố ý: đó là cách hệ thống th�
 
 ## 8. Kiểm thử
 
-`npm test` chạy 192 test viết theo đúng Acceptance Criteria của BRD, ví dụ:
+`npm test` chạy 225 test viết theo đúng Acceptance Criteria của BRD, ví dụ:
 
 - `FN-01 AC-03` — danh mục đúng 49 tham số, 23 thị trường / 24 giả định / 2 khác, không trùng/thiếu STT.
 - `FN-05 AC-03` — vùng phục vụ chồng lấn: mỗi HTX chỉ xuất hiện ở đúng một Hub.
@@ -931,6 +1006,11 @@ Hai tham số #48/#49 để `null` là cố ý: đó là cách hệ thống th�
 - `FM-05` — lượt xuống ghe sinh chuyến TMS đường thuỷ tham chiếu đúng việc, đúng số hiệu ghe, đúng tấn.
 - Khai báo sản lượng trên App HTX tự sinh việc thu gom; vụ đã có việc từ lịch dự kiến thì **cập nhật**, không tạo việc thứ hai.
 - Phân công tự động: việc 500 tấn "vừa" 85 tấn/ngày nếu chia 6 ngày — nhưng không cuộn xong trong hạn FM-02, nên đi vào nhóm ép xếp có cờ.
+- `FM-09` — chốt công đoạn bằng số cuộn, tấn tự ước; 4 000 cuộn × 20 kg = 80 t; FM-04 so bằng cuộn.
+- `FM-10` — cân nhà máy 88 t so với ước 80 t → lệch 10 %, gắn cờ, báo điều hành, đóng chuyến TMS với tấn thật; lần ước sau dùng 22 kg/cuộn đã học.
+- EXIF — JPEG dựng tay từng byte: đọc đúng giờ chụp và GPS (kể cả nam bán cầu); ảnh cách thửa 2 km bị cờ nhưng vẫn lưu.
+- Chống trùng qua HTTP thật — cùng khoá gửi hai lần tạo đúng một đội, phản hồi thứ hai có `Idempotency-Replayed`.
+- Thông báo — kênh Zalo chưa cấu hình để dòng ở "chờ cấu hình"; cấu hình xong thì gửi; adapter lỗi 5 lần thì sang "lỗi", không thử vô hạn.
 - Ba app nghiệp vụ đã tách cổng và mỗi cổng có ≥ 7 màn hình chức năng theo BRD.
 - Ban quản lý HTX đọc được nội dung khuyến nông nhưng **không** vào được Cổng Khuyến nông.
 - Mọi trang khai báo trong `portals.js` đều thực sự được đăng ký ở một module trang.

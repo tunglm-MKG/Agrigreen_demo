@@ -43,6 +43,16 @@ function applyColumnMigrations(): void {
     { table: 'cooperatives', column: 'operating_model', definition: "TEXT NOT NULL DEFAULT 'tap_trung'" },
     { table: 'cooperatives', column: 'origin', definition: "TEXT NOT NULL DEFAULT 'htx'" },
     { table: 'cooperatives', column: 'claimed_at', definition: 'TEXT' },
+    // Zalo user id để gửi thông báo qua Zalo OA.
+    { table: 'users', column: 'zalo_user_id', definition: 'TEXT' },
+    // Rơm bán theo CUỘN, cân chỉ có ở nhà máy: lượt ghe mang cả số cuộn (đếm ở
+    // ruộng) và số cân (ghi ở nhà máy); tấn lúc xuống ghe là ước tính.
+    { table: 'field_loadings', column: 'tons_source', definition: "TEXT NOT NULL DEFAULT 'uoc_theo_cuon'" },
+    { table: 'field_loadings', column: 'weighed_kg', definition: 'REAL' },
+    { table: 'field_loadings', column: 'weighed_at', definition: 'TEXT' },
+    { table: 'field_loadings', column: 'weighing_id', definition: 'TEXT' },
+    { table: 'field_loadings', column: 'plant_bales', definition: 'INTEGER' },
+    { table: 'field_loadings', column: 'variance_pct', definition: 'REAL' },
     { table: 'cooperatives', column: 'claimed_by', definition: 'TEXT' },
   ];
   for (const addition of additions) {
@@ -235,6 +245,71 @@ CREATE TABLE IF NOT EXISTS field_loadings (
 CREATE INDEX IF NOT EXISTS idx_field_jobs_team_status ON field_jobs(team_id, status);
 CREATE INDEX IF NOT EXISTS idx_field_jobs_harvest ON field_jobs(harvest_date);
 CREATE INDEX IF NOT EXISTS idx_field_loadings_job ON field_loadings(job_id);
+
+-- ===========================================================================
+-- TỆP ĐÍNH KÈM DÙNG CHUNG — ảnh bằng chứng có EXIF (platform/files)
+-- ===========================================================================
+CREATE TABLE IF NOT EXISTS attachments (
+  id              TEXT PRIMARY KEY,
+  entity_type     TEXT NOT NULL,     -- field_job_stage | field_loading | plan_step | plot | rental_dispute ...
+  entity_id       TEXT NOT NULL,
+  file_name       TEXT NOT NULL,
+  mime            TEXT NOT NULL,
+  size_bytes      INTEGER NOT NULL,
+  sha256          TEXT NOT NULL,     -- lưu theo băm: cùng ảnh không chiếm hai chỗ
+  storage_path    TEXT NOT NULL,
+  taken_at        TEXT,              -- EXIF DateTimeOriginal
+  lat             REAL,
+  lng             REAL,
+  location_source TEXT,              -- exif | thiet_bi
+  distance_m      REAL,              -- cách vị trí đối tượng
+  flags_json      TEXT NOT NULL DEFAULT '[]',
+  note            TEXT,
+  uploaded_by     TEXT,
+  uploaded_at     TEXT NOT NULL,
+  deleted_at      TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_attachments_entity ON attachments(entity_type, entity_id);
+
+-- ===========================================================================
+-- THÔNG BÁO CHỦ ĐỘNG — outbox nhiều kênh (platform/notify)
+-- ===========================================================================
+CREATE TABLE IF NOT EXISTS notifications (
+  id                TEXT PRIMARY KEY,
+  group_id          TEXT NOT NULL,   -- một thông báo → nhiều dòng (mỗi kênh một dòng)
+  recipient_user_id TEXT NOT NULL,
+  channel           TEXT NOT NULL,   -- inapp | zalo | sms
+  severity          TEXT NOT NULL,   -- info | warn | critical
+  title             TEXT NOT NULL,
+  body              TEXT NOT NULL,
+  link              TEXT,
+  module            TEXT NOT NULL,
+  entity_type       TEXT,
+  entity_id         TEXT,
+  dedupe_key        TEXT,
+  status            TEXT NOT NULL,   -- cho_gui | da_gui | loi | cho_cau_hinh
+  attempts          INTEGER NOT NULL DEFAULT 0,
+  last_error        TEXT,
+  created_at        TEXT NOT NULL,
+  sent_at           TEXT,
+  read_at           TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications(recipient_user_id, channel, read_at);
+CREATE INDEX IF NOT EXISTS idx_notifications_status ON notifications(status, channel);
+
+-- ===========================================================================
+-- CHỐNG GHI TRÙNG — phản hồi đã trả cho một Idempotency-Key (platform/http)
+-- ===========================================================================
+CREATE TABLE IF NOT EXISTS request_log (
+  idem_key      TEXT NOT NULL,
+  user_id       TEXT,
+  method        TEXT NOT NULL,
+  path          TEXT NOT NULL,
+  status        INTEGER NOT NULL,
+  response_json TEXT NOT NULL,
+  created_at    TEXT NOT NULL,
+  PRIMARY KEY (idem_key, user_id)
+);
 
 CREATE TABLE IF NOT EXISTS sessions (
   token       TEXT PRIMARY KEY,
