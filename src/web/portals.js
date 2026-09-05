@@ -273,6 +273,7 @@ export const PORTALS = [
           { id: 'planner', label: '📍 Hub Planner & Kịch bản', permission: 'simulation.read' },
           { id: 'compare', label: '⚖️ So sánh kịch bản', permission: 'simulation.read' },
           { id: 'parameters', label: '🎛️ Tham số mô phỏng', permission: 'simulation.read' },
+          { id: 'sim-actuals', label: '🔁 Giả định – thực tế', permission: 'simulation.read' },
         ],
       },
       {

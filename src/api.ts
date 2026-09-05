@@ -35,6 +35,7 @@ import * as cgh from './agrigreen/cgh/service.ts';
 import * as rental from './agrigreen/rental/service.ts';
 import * as params from './erp/params/store.ts';
 import { PARAMETER_CATALOG, catalogIntegrity } from './erp/params/catalog.ts';
+import * as actuals from './erp/params/actuals.ts';
 import * as sim from './erp/simulation/service.ts';
 import * as warehouse from './erp/warehouse/service.ts';
 import * as procurement from './erp/procurement/service.ts';
@@ -721,6 +722,10 @@ export function buildApi(): Router {
   api.put('/sim/parameters/:code', (ctx) => params.updateParameter(ctx.params.code, body(ctx) as never, ctx.actor), P.SIM_WRITE);
   api.post('/sim/parameters/:code/approve', (ctx) =>
     params.approveParameter(ctx.params.code, String(body(ctx).approver ?? ctx.user?.fullName ?? 'unknown'), ctx.actor), P.SIM_PARAM_APPROVE);
+  // Đối chiếu giả định – thực tế: số thật từ hiện trường / TMS / kho đặt cạnh tham số.
+  api.get('/sim/actuals', (ctx) => actuals.compareAssumptions(ctx.query.get('days') ? num(ctx.query.get('days')) : undefined), P.SIM_READ);
+  api.post('/sim/actuals/:code/propose', (ctx) => actuals.proposeFromActual(
+    ctx.params.code, { days: body(ctx).days ? num(body(ctx).days) : undefined, note: body(ctx).note }, ctx.actor), P.SIM_WRITE);
   api.get('/sim/parameter-sets', () => params.listParameterSets(), P.SIM_READ);
   api.get('/sim/parameter-sets/:version', (ctx) => params.parameterSetSnapshot(Number(ctx.params.version)), P.SIM_READ);
   api.post('/sim/parameter-sets', (ctx) => params.createParameterSet(String(body(ctx).note ?? 'Tạo thủ công'), ctx.actor), P.SIM_WRITE);

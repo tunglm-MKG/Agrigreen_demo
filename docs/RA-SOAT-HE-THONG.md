@@ -11,7 +11,8 @@ chỗ hệ thống biết mà không báo, và chỗ vận hành thật sẽ v�
 > **Cập nhật 05/09/2026 (chiều):** đã làm xong mục 2 (A1 ảnh bằng chứng), 3 (A3 thông báo
 > Zalo OA / SMS / chuông), 4 (A2 offline + chống ghi trùng) và phần cốt lõi của mục 1 (B1):
 > đếm cuộn ở ruộng, cân ở nhà máy, đối soát ba chiều theo đội và HTX. Còn lại của B1 là
-> phiếu nhập kho tự tham chiếu chuyến. Chi tiết xem README mục 1I và 1J.
+> phiếu nhập kho tự tham chiếu chuyến. Mục 5 (B5 giả định – thực tế) cũng đã làm. Chi tiết
+> xem README mục 1I, 1J và 1K.
 
 ## Tóm tắt: 5 việc đáng làm trước
 
@@ -21,7 +22,7 @@ chỗ hệ thống biết mà không báo, và chỗ vận hành thật sẽ v�
 | 2 | ✅ **Tải ảnh bằng chứng thật** (kèm GPS + thời gian trong ảnh) | VietGAP, MRV và tranh chấp thuê máy đều cần ảnh; hiện chỉ có ô "dán link Zalo" — bằng chứng ở ngoài hệ thống thì không phải bằng chứng | Vừa |
 | 3 | ✅ **Kênh thông báo chủ động** (Zalo OA / SMS; web push chưa) | Hệ thống đã *biết* rơm quá hạn, thuốc chưa hết cách ly, kho quá ẩm — nhưng chỉ nói khi có người mở đúng màn hình. Cảnh báo không đến tay người cần thì bằng không | Vừa |
 | 4 | ✅ **Hàng đợi offline + chống ghi trùng** cho App HTX và Cổng Hiện trường | Ruộng ĐBSCL mất sóng là chuyện thường; bấm lại khi mạng chập chờn hiện tạo hai lượt ghe, hai nhật ký | Vừa |
-| 5 | **Đối chiếu giả định – thực tế** đưa số thật (tấn/đội/ngày, chi phí chuyến, hao hụt) về Finance duyệt thành tham số mới | Mô phỏng đầu tư đang chạy trên 49 giả định; hệ thống nay đã có số thật cho ít nhất 8 trong số đó nhưng chưa dùng | Nhỏ |
+| 5 | ✅ **Đối chiếu giả định – thực tế** đưa số thật (tấn/đội/ngày, chi phí chuyến, hao hụt) về Finance duyệt thành tham số mới | Mô phỏng đầu tư đang chạy trên 49 giả định; hệ thống nay đã có số thật cho ít nhất 8 trong số đó nhưng chưa dùng | Nhỏ |
 
 ---
 
@@ -112,7 +113,7 @@ Báo cáo năng suất đã có tấn/đội. Chưa có **đơn giá khoán** (�
 *Đề xuất.* Bảng đơn giá khoán theo đội và thời kỳ; báo cáo chi phí/tấn theo đội, theo
 HTX; đưa vào B5.
 
-### B5. Đối chiếu giả định – thực tế (P1, nỗ lực nhỏ)
+### B5. Đối chiếu giả định – thực tế (P1, nỗ lực nhỏ) — ✅ đã làm (12 tham số đo được)
 Mô phỏng đầu tư Hub chạy trên 49 tham số giả định có quy trình phê duyệt tốt. Hệ thống
 nay đã có **số thật** cho ít nhất tám tham số: công suất máy cuộn (#31), khối lượng rơm
 mỗi ghe (#51), tải trọng xe (#33), cước vận tải đường thuỷ/bộ (chi phí thực của chuyến

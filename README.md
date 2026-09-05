@@ -47,7 +47,7 @@ npm test
 
 - `npm run seed -- --reset` — xoá và nạp lại dữ liệu nền (26 HTX ĐBSCL, 3 mùa vụ, 378 máy cơ giới, 7 tuyến đường thuỷ, nhà máy VFT, 49 tham số).
 - `npm run demo` — chạy trọn vẹn nghiệp vụ trên dòng lệnh: đặt 5 Hub ứng viên → dựng 3 kịch bản → mô phỏng → so sánh → khuyến nghị → độ nhạy → phê duyệt tham số → kết xuất Hub sang kho → nhập kho → định tuyến TMS → cân đối cơ giới hoá.
-- `npm test` — 225 test kiểm chứng các Acceptance Criteria trong BRD và luồng nhập Excel.
+- `npm test` — 234 test kiểm chứng các Acceptance Criteria trong BRD và luồng nhập Excel.
 
 ### Tài khoản mẫu (mật khẩu `123456`)
 
@@ -608,6 +608,38 @@ Mã nguồn: [`platform/files/attachments.ts`](src/platform/files/attachments.ts
 
 ---
 
+## 1K. Giả định – thực tế: mô phỏng học từ số thật
+
+Mô phỏng đầu tư Hub chạy trên 57 tham số, phần lớn là giả định có quy trình phê duyệt tốt.
+Hệ thống nay có **số thật** cho một phần trong đó — từ ghe đã cân, chuyến đã chạy, ruộng đã
+cuộn — và trang *Giả định – thực tế* (ERP → Hoạch định đầu tư) đặt hai cột cạnh nhau.
+
+| # | Tham số | Đo bằng gì | Mẫu tối thiểu |
+| --- | --- | --- | --- |
+| 17 | Hệ số rơm/lúa | Σ rơm ÷ Σ lúa trong khai báo sản lượng App HTX | 3 khai báo |
+| 18 | Hệ số thu gom khả thi | Tấn cuộn được ÷ tấn HTX xác nhận có, việc đã gặt thật | 3 việc |
+| 19 | Hao hụt | Cuộn xuống ghe − cuộn đếm lại ở nhà máy | 3 lượt ghe |
+| 22, 23 | Cước đường bộ / thuỷ | Σ chi phí **nhập tay** ÷ Σ tấn·km — chuyến lấy chi phí theo đơn giá bị loại vì sẽ tự khớp | 3 chuyến |
+| 31 | Công suất máy ép kiện | Tấn/máy-ngày × ngày gặt rộ (#57) × 3 vụ | 5 máy-ngày |
+| 33, 34, 51 | Tải trọng xe / sà lan / ghe | Bình quân **cân** — không dùng số ước theo cuộn | 3 lượt |
+| 36, 37 | Tốc độ | Σ km ÷ Σ giờ chạy của chuyến có giờ đi và đến | 3 chuyến |
+| 57 | Ngày gặt rộ | Mặt trận gặt thật của từng HTX | 3 HTX |
+
+Ba nguyên tắc: mỗi dòng nói rõ **cơ sở tính, nguồn và cỡ mẫu**; chưa đủ mẫu thì ghi "chưa đủ
+dữ liệu" chứ không đưa ra một con số từ hai quan sát; và **số thật không được là số ước** —
+ghe chưa cân, chuyến lấy chi phí theo đơn giá không vào mẫu. Lệch ≤ 5 % là khớp, > 15 % là
+lệch lớn, cùng ngưỡng với đối soát cân ghe.
+
+"Đề xuất giá trị mới" đi qua đúng `updateParameter`: phê duyệt cũ mất hiệu lực, một phiên bản
+bộ tham số mới được sinh (BR-03), Tài chính nhận thông báo và duyệt lại theo luồng FN-01 sẵn
+có. Hệ thống **không tự đổi giả định**, và từ chối đề xuất khi thực tế đã khớp. Đây là cách
+duy nhất để mô phỏng tự tốt lên theo thời gian.
+
+Mã nguồn: [`erp/params/actuals.ts`](src/erp/params/actuals.ts) ·
+[`web/pages/sim-actuals.js`](src/web/pages/sim-actuals.js) · [`tests/actuals.test.ts`](tests/actuals.test.ts)
+
+---
+
 ## 2. Kiến trúc
 
 ```
@@ -974,6 +1006,7 @@ Hai tham số #48/#49 để `null` là cố ý: đó là cách hệ thống th�
 | Tệp đính kèm | Ảnh bằng chứng, EXIF GPS/giờ chụp, cờ tin cậy, lưu theo băm | `platform/files/attachments.ts` |
 | Thông báo | Outbox inapp / Zalo OA / SMS, quét cảnh báo định kỳ, khử trùng | `platform/notify/service.ts` |
 | Chống ghi trùng | `Idempotency-Key` 24 giờ theo người dùng; hàng đợi offline phía trình duyệt | `platform/http/idempotency.ts`, `web/app.js` |
+| Giả định – thực tế | 12 tham số đo từ hiện trường / TMS / cân; đề xuất qua luồng phê duyệt | `erp/params/actuals.ts` |
 | **Cổng Hiện trường** | 5 màn hình riêng + TMS, GIS dùng chung | `web/pages/field.js` |
 | Finance | AR/AP, Revenue Engine 3 mô hình, carbon 45/55, budget vs actual | `erp/finance/service.ts` |
 | Reporting | Dashboard hợp nhất, xếp hạng kịch bản, xuất CSV/HTML in được | `erp/reporting/service.ts` |
@@ -982,7 +1015,7 @@ Hai tham số #48/#49 để `null` là cố ý: đó là cách hệ thống th�
 
 ## 8. Kiểm thử
 
-`npm test` chạy 225 test viết theo đúng Acceptance Criteria của BRD, ví dụ:
+`npm test` chạy 234 test viết theo đúng Acceptance Criteria của BRD, ví dụ:
 
 - `FN-01 AC-03` — danh mục đúng 49 tham số, 23 thị trường / 24 giả định / 2 khác, không trùng/thiếu STT.
 - `FN-05 AC-03` — vùng phục vụ chồng lấn: mỗi HTX chỉ xuất hiện ở đúng một Hub.
@@ -1011,6 +1044,7 @@ Hai tham số #48/#49 để `null` là cố ý: đó là cách hệ thống th�
 - EXIF — JPEG dựng tay từng byte: đọc đúng giờ chụp và GPS (kể cả nam bán cầu); ảnh cách thửa 2 km bị cờ nhưng vẫn lưu.
 - Chống trùng qua HTTP thật — cùng khoá gửi hai lần tạo đúng một đội, phản hồi thứ hai có `Idempotency-Replayed`.
 - Thông báo — kênh Zalo chưa cấu hình để dòng ở "chờ cấu hình"; cấu hình xong thì gửi; adapter lỗi 5 lần thì sang "lỗi", không thử vô hạn.
+- Giả định – thực tế — chuyến lấy chi phí theo đơn giá KHÔNG vào mẫu cước; ghe chưa cân không vào mẫu tải trọng; đề xuất làm mất phê duyệt cũ, sinh phiên bản mới, báo Tài chính; thực tế khớp thì từ chối đề xuất.
 - Ba app nghiệp vụ đã tách cổng và mỗi cổng có ≥ 7 màn hình chức năng theo BRD.
 - Ban quản lý HTX đọc được nội dung khuyến nông nhưng **không** vào được Cổng Khuyến nông.
 - Mọi trang khai báo trong `portals.js` đều thực sự được đăng ký ở một module trang.

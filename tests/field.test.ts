@@ -57,7 +57,9 @@ test('Seed có 4 đội, việc ở đủ trạng thái, và đã sinh chuyến 
   const statuses = new Set(all<{ status: string }>('SELECT DISTINCT status FROM field_jobs').map((row) => row.status));
   for (const expected of ['cho_phan_cong', 'da_phan_cong', 'dang_thuc_hien', 'hoan_thanh']) assert.ok(statuses.has(expected), expected);
   const trips = all("SELECT id FROM trips WHERE ref_type = 'field_job'");
-  assert.equal(trips.length, 2, 'hai lượt xuống ghe của việc đã hoàn thành → hai chuyến');
+  const loadings = all('SELECT id FROM field_loadings');
+  assert.equal(trips.length, loadings.length, 'mỗi lượt xuống ghe trong seed → đúng một chuyến TMS');
+  assert.ok(trips.length >= 4, 'ba việc hoàn thành trong seed có ít nhất bốn lượt ghe');
 });
 
 test('Đội trưởng chỉ ghi nhận; quản lý mới phân công; ban lãnh đạo xem được', () => {

@@ -127,6 +127,7 @@ export function completeTrip(
     arrived_at: nowIso(),
     actual_tons: input.actualTons,
     actual_cost: actualCost,
+    actual_cost_source: input.actualCost === undefined || input.actualCost === null ? 'theo_don_gia' : 'nhap_tay',
     co2_kg: Math.round(input.actualTons * trip.distance_km * EMISSION_FACTOR[trip.mode]),
   });
   emitMrvRecord('tms', 'trip', id, actor);

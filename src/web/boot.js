@@ -36,6 +36,7 @@ import '/pages/field.js';
 import '/pages/dashboard.js';
 import '/pages/simulation.js';
 import '/pages/parameters.js';
+import '/pages/sim-actuals.js';
 import '/pages/erp.js';
 
 bootstrap().catch((error) => {

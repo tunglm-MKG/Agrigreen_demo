@@ -607,6 +607,32 @@ export function seedFieldTeams(): void {
     // Ghe thứ hai còn đang chạy — nằm ở hàng đợi cân.
   }
 
+  // ---- Hai việc nữa đã hoàn thành trong tuần, ghe đã cân — để đối chiếu giả định –
+  // thực tế có đủ mẫu (≥ 3 ghe cân) và đối soát có nhiều hơn một dòng ----
+  const moreDone: { htx: string; team: number; daysAgo: number; label: string; bales: number; gathered: number; vessel: string; netKg: number; plantBales: number }[] = [
+    { htx: 'HTX Tân Hiệp Phát Đạt', team: 1, daysAgo: 6, label: 'HTX Tân Hiệp Phát Đạt — kênh Ba Thê', bales: 4300, gathered: 4250, vessel: 'AG-20311', netKg: 84_200, plantBales: 4210 },
+    { htx: 'HTX Giồng Riềng An Bình', team: 2, daysAgo: 9, label: 'HTX Giồng Riềng An Bình — ấp Hoà Lợi', bales: 4600, gathered: 4580, vessel: 'KG-30877', netKg: 91_500, plantBales: 4550 },
+  ];
+  for (const spec of moreDone) {
+    const htx = one<{ id: string; lat: number; lng: number }>(`SELECT id, lat, lng FROM cooperatives WHERE name = ?`, [spec.htx]);
+    if (!htx) continue;
+    const job = field.createJob({
+      sourceType: 'manual', htxId: htx.id, harvestDate: day(-spec.daysAgo), expectedStrawTons: 100, areaHa: 35,
+      locationLabel: spec.label, harvestConfirmed: true,
+    }, seedActor);
+    const jobId = String(job.id);
+    const teamId = teamIds[spec.team];
+    field.assignJob(jobId, { teamId, plannedDate: day(-spec.daysAgo), mode: 'auto' }, seedActor);
+    const baler = one<{ id: string }>(`SELECT id FROM field_vehicles WHERE team_id = ? AND kind = 'may_cuon' ORDER BY code LIMIT 1`, [teamId])!;
+    field.startStage(jobId, 'cuon_rom', { vehicleId: baler.id, lat: htx.lat, lng: htx.lng, at: at(-spec.daysAgo, 1) }, seedActor);
+    field.completeStage(jobId, 'cuon_rom', { bales: spec.bales, at: at(-spec.daysAgo + 1, 2), lat: htx.lat, lng: htx.lng }, seedActor);
+    field.startStage(jobId, 'gom_rom', { at: at(-spec.daysAgo, 5) }, seedActor);
+    field.completeStage(jobId, 'gom_rom', { bales: spec.gathered, at: at(-spec.daysAgo + 1, 6) }, seedActor);
+    const load = field.recordLoading(jobId, { vesselCode: spec.vessel, vesselKind: 'ghe', bales: spec.gathered, at: at(-spec.daysAgo + 1, 8) }, seedActor);
+    field.completeStage(jobId, 'xuong_ghe', { at: at(-spec.daysAgo + 1, 9) }, seedActor);
+    field.recordPlantWeighing(String(load.loading.id), { netKg: spec.netKg, plantBales: spec.plantBales, at: at(-spec.daysAgo + 2, 3) }, seedActor);
+  }
+
   // ---- Việc quá hạn: gặt 5 ngày trước, đã phân công nhưng chưa ai cuộn (FM-02) ----
   const thoaiSon = one<{ id: string }>(`SELECT id FROM cooperatives WHERE name = 'HTX Dịch vụ NN Thoại Sơn'`);
   if (thoaiSon) {

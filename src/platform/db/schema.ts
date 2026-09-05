@@ -53,6 +53,9 @@ function applyColumnMigrations(): void {
     { table: 'field_loadings', column: 'weighing_id', definition: 'TEXT' },
     { table: 'field_loadings', column: 'plant_bales', definition: 'INTEGER' },
     { table: 'field_loadings', column: 'variance_pct', definition: 'REAL' },
+    // Chi phí chuyến là số NHẬP TAY hay tính theo đơn giá giả định? Đối chiếu
+    // giả định – thực tế chỉ được dùng số nhập tay, nếu không sẽ tự khớp.
+    { table: 'trips', column: 'actual_cost_source', definition: 'TEXT' },
     { table: 'cooperatives', column: 'claimed_by', definition: 'TEXT' },
   ];
   for (const addition of additions) {
