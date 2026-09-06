@@ -47,7 +47,7 @@ npm test
 
 - `npm run seed -- --reset` — xoá và nạp lại dữ liệu nền (26 HTX ĐBSCL, 3 mùa vụ, 378 máy cơ giới, 7 tuyến đường thuỷ, nhà máy VFT, 49 tham số).
 - `npm run demo` — chạy trọn vẹn nghiệp vụ trên dòng lệnh: đặt 5 Hub ứng viên → dựng 3 kịch bản → mô phỏng → so sánh → khuyến nghị → độ nhạy → phê duyệt tham số → kết xuất Hub sang kho → nhập kho → định tuyến TMS → cân đối cơ giới hoá.
-- `npm test` — 234 test kiểm chứng các Acceptance Criteria trong BRD và luồng nhập Excel.
+- `npm test` — 252 test kiểm chứng các Acceptance Criteria trong BRD và luồng nhập Excel.
 
 ### Tài khoản mẫu (mật khẩu `123456`)
 
@@ -640,6 +640,25 @@ Mã nguồn: [`erp/params/actuals.ts`](src/erp/params/actuals.ts) ·
 
 ---
 
+## 1L. Demo lớp dữ liệu nền GIS (spike tách riêng)
+
+Thư mục [`gis-demo/`](gis-demo/) là một **spike độc lập** theo SPIKE-GIS-LAYERS-001: CSDL riêng, không
+đăng nhập, không chạm CSDL AgriGreen. Năm lớp nền vùng ĐBSCL — thời tiết (sống, Open-Meteo),
+thổ nhưỡng (SoilGrids), địa hình (Copernicus DEM), mực nước (MRC, nạp CSV), xâm nhập mặn (bản tin
+Viện Khoa học Thủy lợi miền Nam, nhập tay) — mỗi lớp qua một adapter, một lớp hiển thị mỗi lần,
+nhãn nguồn và mốc thời gian luôn trên màn hình.
+
+```bash
+npm run gis-demo:fetch   # tải raster một lần
+npm run gis-demo         # http://localhost:4190
+```
+
+Xem [`gis-demo/README.md`](gis-demo/README.md), bảng nguồn [`gis-demo/SOURCES.md`](gis-demo/SOURCES.md)
+và báo cáo spike [`gis-demo/SPIKE-REPORT.md`](gis-demo/SPIKE-REPORT.md) (8/9 tiêu chí đạt; mực nước
+chờ giấy phép PDIES của MRC).
+
+---
+
 ## 2. Kiến trúc
 
 ```
@@ -1015,7 +1034,7 @@ Hai tham số #48/#49 để `null` là cố ý: đó là cách hệ thống th�
 
 ## 8. Kiểm thử
 
-`npm test` chạy 234 test viết theo đúng Acceptance Criteria của BRD, ví dụ:
+`npm test` chạy 252 test viết theo đúng Acceptance Criteria của BRD, ví dụ:
 
 - `FN-01 AC-03` — danh mục đúng 49 tham số, 23 thị trường / 24 giả định / 2 khác, không trùng/thiếu STT.
 - `FN-05 AC-03` — vùng phục vụ chồng lấn: mỗi HTX chỉ xuất hiện ở đúng một Hub.

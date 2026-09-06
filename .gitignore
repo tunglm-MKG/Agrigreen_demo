@@ -18,3 +18,8 @@ Thumbs.db
 *.swp
 .vscode/
 .idea/
+# Demo GIS: raster tải một lần (chạy npm run gis-demo:fetch) và CSDL riêng
+gis-demo/data/rasters/*.f32
+gis-demo/data/gis-demo.db*
+gis-demo/data/import/*.csv
+tmp/siwrr/

@@ -1,0 +1,47 @@
+{
+  "_ghi_chu": [
+    "BẢNG NHẬP TAY từ bản tin đã công bố của Viện Khoa học Thủy lợi miền Nam (VKHTLMN). Không tự động hoá (Phụ lục A.2).",
+    "Ranh mặn 4 g/l tính bằng km từ cửa sông, theo đúng câu chữ bản tin. Toạ độ cửa sông và điểm tham chiếu thượng lưu",
+    "do đội demo ước theo bản đồ để vẽ đoạn sông bị ảnh hưởng — vị trí vẽ là XẤP XỈ theo trục sông, không phải số đo của Viện.",
+    "Mùa khô 2025: bản tin ngày 11/3/2025 (số theo từng cửa sông). Mùa khô 2026: thông báo số 11/TB-VKHTLMN ngày 20/3/2026 (số gộp các cửa sông Cửu Long)."
+  ],
+  "bulletins": [
+    {
+      "id": "vkhtlmn-2025-03-11",
+      "title": "Bản tin lấy nước tháng 3 và dự báo xâm nhập mặn mùa khô năm 2025 vùng ĐBSCL",
+      "date": "2025-03-11",
+      "url": "https://www.siwrr.org.vn/docs/2023/files/20250312-VKHTLMN-Bantinlaynuocthang3-2025-VungDBSCL_11_3_2025.pdf",
+      "quote": "Dự báo khoảng từ 12/3/2025 đến 15/3/2025 xâm nhập mặn tăng nhẹ theo kỳ triều cường… Cụ thể chiều sâu xâm nhập mặn lớn nhất với ranh 4g/l trong thời kỳ này tại các cửa sông như sau: Cửa sông Cửu Long: Sông Cửa Tiểu, Cửa Đại: Phạm vi ảnh hưởng từ 40-42km; sông Hàm Luông: từ 58-60km; sông Cổ Chiên: từ 45-48km, sông Hậu: từ 45-47km. Sông Vàm Cỏ (Vàm Cỏ Đông, Vàm Cỏ Tây): Phạm vi ảnh hưởng từ 65-70km."
+    },
+    {
+      "id": "vkhtlmn-2026-03-20",
+      "title": "Thông báo số 11/TB-VKHTLMN về xâm nhập mặn và lấy nước vùng ĐBSCL",
+      "date": "2026-03-20",
+      "url": "https://www.siwrr.org.vn/docs/2023/files/20260321-VKHTLMN-ThongbaoNguonnuoc-Man_20_3_2026-scan.pdf",
+      "quote": "Xâm nhập mặn lớn nhất tại các cửa sông Cửu Long đã xuất hiện trong kỳ triều cường tháng 2,3/2026 với ranh mặn 4g/l từ 40-49km, ở mức thấp hơn đến tương đương trung bình nhiều năm, thấp hơn mùa khô năm 2025. Dự báo từ cuối tháng 3 đến giữa tháng 4/2026… khu vực cách biển từ 25-30km trở vào ở các cửa sông Cửu Long có nước ngọt dồi dào."
+    }
+  ],
+  "rivers": [
+    { "river": "Sông Cửa Tiểu", "mouth": [10.27, 106.78], "upstream": [10.36, 106.36] },
+    { "river": "Sông Cửa Đại", "mouth": [10.20, 106.76], "upstream": [10.30, 106.40] },
+    { "river": "Sông Hàm Luông", "mouth": [9.98, 106.66], "upstream": [10.24, 106.37] },
+    { "river": "Sông Cổ Chiên", "mouth": [9.83, 106.56], "upstream": [10.25, 105.97] },
+    { "river": "Sông Hậu (cửa Trần Đề / Định An)", "mouth": [9.52, 106.25], "upstream": [10.03, 105.78] },
+    { "river": "Sông Vàm Cỏ Tây", "mouth": [10.42, 106.79], "upstream": [10.53, 106.41] },
+    { "river": "Sông Vàm Cỏ Đông", "mouth": [10.42, 106.79], "upstream": [10.64, 106.48] }
+  ],
+  "readings": [
+    { "bulletin": "vkhtlmn-2025-03-11", "river": "Sông Cửa Tiểu", "period_from": "2025-03-12", "period_to": "2025-03-15", "km_min": 40, "km_max": 42 },
+    { "bulletin": "vkhtlmn-2025-03-11", "river": "Sông Cửa Đại", "period_from": "2025-03-12", "period_to": "2025-03-15", "km_min": 40, "km_max": 42 },
+    { "bulletin": "vkhtlmn-2025-03-11", "river": "Sông Hàm Luông", "period_from": "2025-03-12", "period_to": "2025-03-15", "km_min": 58, "km_max": 60 },
+    { "bulletin": "vkhtlmn-2025-03-11", "river": "Sông Cổ Chiên", "period_from": "2025-03-12", "period_to": "2025-03-15", "km_min": 45, "km_max": 48 },
+    { "bulletin": "vkhtlmn-2025-03-11", "river": "Sông Hậu (cửa Trần Đề / Định An)", "period_from": "2025-03-12", "period_to": "2025-03-15", "km_min": 45, "km_max": 47 },
+    { "bulletin": "vkhtlmn-2025-03-11", "river": "Sông Vàm Cỏ Tây", "period_from": "2025-03-12", "period_to": "2025-03-15", "km_min": 65, "km_max": 70 },
+    { "bulletin": "vkhtlmn-2025-03-11", "river": "Sông Vàm Cỏ Đông", "period_from": "2025-03-12", "period_to": "2025-03-15", "km_min": 65, "km_max": 70 },
+    { "bulletin": "vkhtlmn-2025-03-11", "river": "Sông Cửa Tiểu", "period_from": "2025-02-25", "period_to": "2025-03-04", "km_min": 42, "km_max": 60, "note": "Số gộp 'các cửa sông Cửu Long 42–60 km tuỳ từng cửa sông' — đỉnh mặn mùa khô 2025, bản tin không tách theo sông" },
+    { "bulletin": "vkhtlmn-2026-03-20", "river": "Sông Cửa Tiểu", "period_from": "2026-02-01", "period_to": "2026-03-20", "km_min": 40, "km_max": 49, "note": "Số gộp 'các cửa sông Cửu Long 40–49 km' kỳ triều cường tháng 2–3/2026" },
+    { "bulletin": "vkhtlmn-2026-03-20", "river": "Sông Hàm Luông", "period_from": "2026-02-01", "period_to": "2026-03-20", "km_min": 40, "km_max": 49, "note": "Số gộp các cửa sông Cửu Long" },
+    { "bulletin": "vkhtlmn-2026-03-20", "river": "Sông Cổ Chiên", "period_from": "2026-02-01", "period_to": "2026-03-20", "km_min": 40, "km_max": 49, "note": "Số gộp các cửa sông Cửu Long" },
+    { "bulletin": "vkhtlmn-2026-03-20", "river": "Sông Hậu (cửa Trần Đề / Định An)", "period_from": "2026-02-01", "period_to": "2026-03-20", "km_min": 40, "km_max": 49, "note": "Số gộp các cửa sông Cửu Long" }
+  ]
+}

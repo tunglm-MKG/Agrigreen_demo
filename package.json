@@ -12,7 +12,9 @@
     "dev": "node --watch src/main.ts",
     "seed": "node scripts/seed.ts",
     "demo": "node scripts/demo.ts",
-    "test": "node --test \"tests/*.test.ts\""
+    "test": "node --test \"tests/*.test.ts\"",
+    "gis-demo": "node gis-demo/src/server.ts",
+    "gis-demo:fetch": "node gis-demo/src/fetch/fetchStatic.ts"
   },
   "dependencies": {},
   "devDependencies": {}

@@ -1,0 +1,20 @@
+{
+  "id": "terrain",
+  "width": 1039,
+  "height": 1039,
+  "bbox": [
+    104.4,
+    8.5,
+    107,
+    11.1
+  ],
+  "nodata": null,
+  "unit": "m",
+  "scale": 1,
+  "source": "Copernicus DEM GLO-90 (ESA / Airbus), qua AWS Open Data",
+  "sourceUrl": "https://registry.opendata.aws/copernicus-dem/",
+  "license": "Giấy phép Copernicus DEM (dùng thương mại được, ghi nguồn bắt buộc)",
+  "fetchedAt": "2026-09-06",
+  "version": "GLO-90 (2022 release), 12 ô 1°, giảm mẫu 3× từ 90 m",
+  "note": "Cao độ mặt (DSM) so với EGM2008. Brief ghi GLO-30; demo dùng GLO-90 để tải một lần ~70 MB thay vì ~400 MB — xem báo cáo."
+}

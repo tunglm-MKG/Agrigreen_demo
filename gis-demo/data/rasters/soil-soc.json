@@ -1,0 +1,20 @@
+{
+  "id": "soil-soc",
+  "width": 1150,
+  "height": 1088,
+  "bbox": [
+    104.4,
+    8.5,
+    107,
+    11.1
+  ],
+  "nodata": null,
+  "unit": "g/kg",
+  "scale": 0.1,
+  "source": "SoilGrids 2.0 (ISRIC — World Soil Information)",
+  "sourceUrl": "https://soilgrids.org",
+  "license": "CC BY 4.0",
+  "fetchedAt": "2026-09-06",
+  "version": "SoilGrids v2.0, coverage soc_0-5cm_mean, 250 m, WCS maps.isric.org",
+  "note": "Độ sâu 0–5 cm, giá trị trung bình (mean)."
+}
