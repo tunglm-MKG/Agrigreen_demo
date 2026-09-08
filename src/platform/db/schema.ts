@@ -56,6 +56,11 @@ function applyColumnMigrations(): void {
     // Chi phí chuyến là số NHẬP TAY hay tính theo đơn giá giả định? Đối chiếu
     // giả định – thực tế chỉ được dùng số nhập tay, nếu không sẽ tự khớp.
     { table: 'trips', column: 'actual_cost_source', definition: 'TEXT' },
+    // Lượt ghe nối với thông báo hàng đến và phiếu nhập kho (đóng mắt hở B1).
+    { table: 'field_loadings', column: 'inbound_notice_id', definition: 'TEXT' },
+    { table: 'field_loadings', column: 'grn_id', definition: 'TEXT' },
+    // Việc thu gom biết mình thuộc hợp đồng nào → ưu tiên và đơn giá phiếu mua.
+    { table: 'field_jobs', column: 'contract_id', definition: 'TEXT' },
     { table: 'cooperatives', column: 'claimed_by', definition: 'TEXT' },
   ];
   for (const addition of additions) {
@@ -313,6 +318,71 @@ CREATE TABLE IF NOT EXISTS request_log (
   created_at    TEXT NOT NULL,
   PRIMARY KEY (idem_key, user_id)
 );
+
+-- ===========================================================================
+-- CHUỖI THU MUA RƠM: hợp đồng HTX, phiếu mua rơm, danh mục ghe (erp/straw, erp/tms)
+-- ===========================================================================
+CREATE TABLE IF NOT EXISTS straw_contracts (
+  id               TEXT PRIMARY KEY,
+  code             TEXT UNIQUE NOT NULL,
+  htx_id           TEXT NOT NULL,
+  from_date        TEXT NOT NULL,
+  to_date          TEXT NOT NULL,
+  committed_tons   REAL NOT NULL,
+  price_basis      TEXT NOT NULL,      -- theo_tan_can | theo_cuon
+  unit_price       REAL NOT NULL,      -- đ/tấn hoặc đ/cuộn
+  max_moisture_pct REAL,
+  status           TEXT NOT NULL DEFAULT 'hieu_luc',   -- hieu_luc | het_han | huy
+  note             TEXT,
+  created_by       TEXT,
+  created_at       TEXT NOT NULL,
+  updated_at       TEXT NOT NULL,
+  FOREIGN KEY (htx_id) REFERENCES cooperatives(id)
+);
+CREATE TABLE IF NOT EXISTS straw_purchase_tickets (
+  id                 TEXT PRIMARY KEY,
+  code               TEXT UNIQUE NOT NULL,
+  job_id             TEXT NOT NULL UNIQUE,   -- PM-01: một việc = một phiếu
+  htx_id             TEXT,
+  contract_id        TEXT,
+  price_basis        TEXT,
+  unit_price         REAL,
+  bales              INTEGER NOT NULL DEFAULT 0,
+  estimated_tons     REAL NOT NULL DEFAULT 0,
+  weighed_tons       REAL,                    -- chỉ khi MỌI ghe của việc đã cân
+  unweighed_loadings INTEGER NOT NULL DEFAULT 0,
+  amount             REAL,
+  status             TEXT NOT NULL,           -- cho_can | cho_xac_nhan | da_xac_nhan | da_thanh_toan | huy
+  ledger_entry_id    TEXT,
+  due_date           TEXT,
+  confirmed_by       TEXT,
+  confirmed_at       TEXT,
+  paid_at            TEXT,
+  note               TEXT,
+  created_at         TEXT NOT NULL,
+  updated_at         TEXT NOT NULL,
+  FOREIGN KEY (job_id) REFERENCES field_jobs(id)
+);
+CREATE TABLE IF NOT EXISTS vessels (
+  id                  TEXT PRIMARY KEY,
+  code                TEXT UNIQUE NOT NULL,   -- số hiệu đăng ký
+  name                TEXT,
+  kind                TEXT NOT NULL,          -- ghe | sa_lan
+  vessel_class        TEXT,                   -- mã lớp tàu platform/geo/vessels.ts
+  owner_name          TEXT,
+  owner_phone         TEXT,
+  registered_tons     REAL,
+  straw_payload_tons  REAL,
+  registration_expiry TEXT,
+  rate_type           TEXT,                   -- per_ton | per_trip | per_ton_km
+  rate_vnd            REAL,
+  status              TEXT NOT NULL DEFAULT 'hoat_dong',
+  note                TEXT,
+  created_at          TEXT NOT NULL,
+  updated_at          TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_straw_contracts_htx ON straw_contracts(htx_id, status);
+CREATE INDEX IF NOT EXISTS idx_straw_tickets_htx ON straw_purchase_tickets(htx_id, status);
 
 CREATE TABLE IF NOT EXISTS sessions (
   token       TEXT PRIMARY KEY,

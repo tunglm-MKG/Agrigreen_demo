@@ -47,7 +47,7 @@ npm test
 
 - `npm run seed -- --reset` — xoá và nạp lại dữ liệu nền (26 HTX ĐBSCL, 3 mùa vụ, 378 máy cơ giới, 7 tuyến đường thuỷ, nhà máy VFT, 49 tham số).
 - `npm run demo` — chạy trọn vẹn nghiệp vụ trên dòng lệnh: đặt 5 Hub ứng viên → dựng 3 kịch bản → mô phỏng → so sánh → khuyến nghị → độ nhạy → phê duyệt tham số → kết xuất Hub sang kho → nhập kho → định tuyến TMS → cân đối cơ giới hoá.
-- `npm test` — 252 test kiểm chứng các Acceptance Criteria trong BRD và luồng nhập Excel.
+- `npm test` — 266 test kiểm chứng các Acceptance Criteria trong BRD và luồng nhập Excel.
 
 ### Tài khoản mẫu (mật khẩu `123456`)
 
@@ -59,7 +59,10 @@ npm test
 | `banlanhdao` | Ban lãnh đạo | Đánh dấu kịch bản "Chính thức", chốt ngưỡng ROI/Payback |
 | `khonhap` | Vận hành kho/bãi | Cân nhập/xuất, giám sát môi trường, kiểm kê |
 | `dieuphoi` | Điều phối vận tải | TMS, số hoá tuyến |
-| `hientruong` | Điều hành hiện trường | Kế hoạch thu gom, phân công đội, bảng điều hành Cổng Hiện trường |
+| `hientruong` | Điều hành hiện trường | Kế hoạch thu gom, phân công đội, bảng điều hành Cổng Hiện trường, danh mục ghe |
+| `supplychain` | (thêm) | Hợp đồng thu mua rơm, xác nhận phiếu mua rơm |
+| `taichinh` | (thêm) | Thanh toán phiếu mua rơm — tất toán công nợ HTX |
+| `htx01` | (thêm) | Xem hợp đồng, phiếu mua rơm và tiền còn phải nhận của HTX mình |
 | `doitruong` | Đội trưởng thu gom rơm | Ghi nhận cuộn – gom – xuống ghe tại ruộng |
 | `canbo_tw` / `canbo_xa` | Khuyến nông TW / xã | Thư viện kỹ thuật, nhiệm vụ hỗ trợ |
 | `htx01` / `nongdan` | Ban quản lý HTX / Nông dân | Vẽ lô ruộng, mở vụ, nhật ký, khai báo sản lượng |
@@ -640,6 +643,59 @@ Mã nguồn: [`erp/params/actuals.ts`](src/erp/params/actuals.ts) ·
 
 ---
 
+## 1M. Chuỗi thu mua rơm khép kín: hợp đồng → phiếu mua → công nợ, phiếu nhập tự tham chiếu chuyến, danh mục ghe
+
+Bốn mắt hở còn lại của chuỗi rơm trong bản rà soát (B1 phần còn lại, B3, D1, D2) được đóng cùng lúc
+vì chúng nối nhau: hợp đồng cho giá, việc thu gom cho cuộn, cân nhà máy cho tấn, phiếu mua rơm biến
+hai số đó thành tiền, ghe chở giữa hai đầu.
+
+### Phiếu nhập kho tự tham chiếu chuyến (đóng B1)
+
+Mỗi lượt xuống ghe nay sinh **thông báo hàng đến** cho kho mang mã chuyến TMS. Khi ghe cập bến và được
+cân, thông báo chuyển "đã đến" và một **phiếu nhập kho chờ duyệt** được lập tự động với đúng
+`weighing_id`, HTX, thửa, ngày gặt, toạ độ gốc — kho không gõ lại gì; duyệt phiếu là lô kho và tồn kho
+tăng như quy trình FN-06 sẵn có. Chuỗi hiện trường → ghe → cân → kho giờ là **một dòng dữ liệu**.
+
+### Hợp đồng thu mua rơm với HTX (D1)
+
+| Mã | Chốt chặn |
+| --- | --- |
+| CT-01 | Một HTX chỉ có một hợp đồng hiệu lực trong một khoảng thời gian — hai hợp đồng chồng nhau thì phiếu không biết lấy giá nào |
+| CT-02 | Giá và cam kết phải dương; ngày kết thúc không trước ngày bắt đầu |
+| CT-03 | Cơ sở giá: **đ/cuộn đếm ở ruộng** (phổ biến ở ĐBSCL, ra tiền ngay) hoặc **đ/tấn theo cân nhà máy** |
+
+Việc thu gom của HTX có hợp đồng tự mang `contract_id` và **ưu tiên 10** khi phân công. Tiến độ giao
+(tấn, cuộn, phần trăm cam kết) tính từ phiếu mua rơm.
+
+### Phiếu mua rơm và công nợ HTX (B3)
+
+| Mã | Chốt chặn |
+| --- | --- |
+| PM-01 | Một việc thu gom = một phiếu, sinh tự động khi việc hoàn thành xuống ghe; làm mới mỗi lần ghe được cân cho tới khi xác nhận |
+| PM-02 | Theo cuộn: tiền = cuộn × giá, có ngay. Theo tấn cân: **chờ mọi ghe của việc được cân** — xác nhận sớm bị từ chối |
+| PM-03 | Không có hợp đồng thì phiếu vẫn sinh nhưng **không có tiền**; người xác nhận phải nhập đơn giá thoả thuận — hệ thống không đoán giá |
+| PM-04 | Xác nhận ghi **một** bút toán phải trả (AP) gắn HTX, hạn 15 ngày; trả tiền tất toán đúng bút toán đó; phiếu đã nợ không tự làm mới, không huỷ trực tiếp |
+
+HTX xem hợp đồng, từng phiếu và tiền còn phải nhận ở Cổng HTX → *Hợp đồng & công nợ rơm*, lấy theo
+tài khoản, không theo tham số. Tài chính nhận thông báo khi phiếu quá hạn trả.
+
+### Danh mục ghe và đơn giá thuê (D2)
+
+| Mã | Chốt chặn |
+| --- | --- |
+| GH-01 | Số hiệu là định danh duy nhất, chuẩn hoá chữ in |
+| GH-02 | Hết hạn đăng kiểm **không chặn** xuống ghe — cảnh báo rõ ở mỗi lượt và quét nhắc 30 ngày trước hạn; chặn là kẹt rơm trên bờ |
+| GH-03 | Ghe có đơn giá thuê thì chuyến TMS lấy **chi phí thật theo hợp đồng thuê** khi cân ở nhà máy; số này vào mẫu cước thực của trang Giả định – thực tế |
+
+Ghe nối với lớp tàu của mạng lưới đường thuỷ để biết ghe nào qua được tuyến nào. Đội trưởng chọn ghe từ
+danh mục khi ghi lượt; ghe lạ vẫn ghi được kèm cảnh báo.
+
+Mã nguồn: [`erp/straw/contracts.ts`](src/erp/straw/contracts.ts) · [`erp/straw/tickets.ts`](src/erp/straw/tickets.ts) ·
+[`erp/tms/vessels.ts`](src/erp/tms/vessels.ts) · [`web/pages/straw.js`](src/web/pages/straw.js) ·
+[`tests/straw.test.ts`](tests/straw.test.ts)
+
+---
+
 ## 1L. Demo lớp dữ liệu nền GIS (spike tách riêng)
 
 Thư mục [`gis-demo/`](gis-demo/) là một **spike độc lập** theo SPIKE-GIS-LAYERS-001: CSDL riêng, không
@@ -1026,6 +1082,10 @@ Hai tham số #48/#49 để `null` là cố ý: đó là cách hệ thống th�
 | Thông báo | Outbox inapp / Zalo OA / SMS, quét cảnh báo định kỳ, khử trùng | `platform/notify/service.ts` |
 | Chống ghi trùng | `Idempotency-Key` 24 giờ theo người dùng; hàng đợi offline phía trình duyệt | `platform/http/idempotency.ts`, `web/app.js` |
 | Giả định – thực tế | 12 tham số đo từ hiện trường / TMS / cân; đề xuất qua luồng phê duyệt | `erp/params/actuals.ts` |
+| Hợp đồng thu mua CT-01→03 | Một hợp đồng hiệu lực / HTX, hai cơ sở giá, tiến độ giao | `erp/straw/contracts.ts` |
+| Phiếu mua rơm PM-01→04 | Sinh từ việc hoàn thành, AP theo HTX, thanh toán tất toán | `erp/straw/tickets.ts` |
+| Danh mục ghe GH-01→03 | Số hiệu, đăng kiểm, đơn giá thuê → cước thật chuyến | `erp/tms/vessels.ts` |
+| Kho ← hiện trường | Thông báo hàng đến theo chuyến, phiếu nhập tự lập từ cân ghe | `erp/field/service.ts::recordPlantWeighing` |
 | **Cổng Hiện trường** | 5 màn hình riêng + TMS, GIS dùng chung | `web/pages/field.js` |
 | Finance | AR/AP, Revenue Engine 3 mô hình, carbon 45/55, budget vs actual | `erp/finance/service.ts` |
 | Reporting | Dashboard hợp nhất, xếp hạng kịch bản, xuất CSV/HTML in được | `erp/reporting/service.ts` |
@@ -1034,7 +1094,7 @@ Hai tham số #48/#49 để `null` là cố ý: đó là cách hệ thống th�
 
 ## 8. Kiểm thử
 
-`npm test` chạy 252 test viết theo đúng Acceptance Criteria của BRD, ví dụ:
+`npm test` chạy 266 test viết theo đúng Acceptance Criteria của BRD, ví dụ:
 
 - `FN-01 AC-03` — danh mục đúng 49 tham số, 23 thị trường / 24 giả định / 2 khác, không trùng/thiếu STT.
 - `FN-05 AC-03` — vùng phục vụ chồng lấn: mỗi HTX chỉ xuất hiện ở đúng một Hub.
@@ -1064,6 +1124,10 @@ Hai tham số #48/#49 để `null` là cố ý: đó là cách hệ thống th�
 - Chống trùng qua HTTP thật — cùng khoá gửi hai lần tạo đúng một đội, phản hồi thứ hai có `Idempotency-Replayed`.
 - Thông báo — kênh Zalo chưa cấu hình để dòng ở "chờ cấu hình"; cấu hình xong thì gửi; adapter lỗi 5 lần thì sang "lỗi", không thử vô hạn.
 - Giả định – thực tế — chuyến lấy chi phí theo đơn giá KHÔNG vào mẫu cước; ghe chưa cân không vào mẫu tải trọng; đề xuất làm mất phê duyệt cũ, sinh phiên bản mới, báo Tài chính; thực tế khớp thì từ chối đề xuất.
+- `B1` — lượt ghe sinh thông báo hàng đến mang mã chuyến; cân xong thông báo "đã đến" và phiếu nhập chờ duyệt có đúng weighing/HTX/ngày gặt; duyệt tăng tồn kho, không ghi AP hai lần.
+- `PM-02` — phiếu theo tấn cân còn một ghe chưa cân thì vẫn "chờ cân", xác nhận bị từ chối; cân đủ mới ra tiền.
+- `PM-03` — không hợp đồng: phiếu không có tiền, xác nhận không nhập giá bị từ chối.
+- `GH-03` — ghe có đơn giá: chuyến 80 t × 180 000 đ = 14,4 triệu, nguồn `don_gia_ghe`, vào mẫu cước thực; ghe không đơn giá thì theo tham số, không vào mẫu.
 - Ba app nghiệp vụ đã tách cổng và mỗi cổng có ≥ 7 màn hình chức năng theo BRD.
 - Ban quản lý HTX đọc được nội dung khuyến nông nhưng **không** vào được Cổng Khuyến nông.
 - Mọi trang khai báo trong `portals.js` đều thực sự được đăng ký ở một module trang.

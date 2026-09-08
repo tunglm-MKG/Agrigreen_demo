@@ -25,6 +25,9 @@ import {
 } from './agrigreen/khuyennong/survey.ts';
 import { createUser } from './platform/auth/users.ts';
 import * as field from './erp/field/service.ts';
+import { createContract } from './erp/straw/contracts.ts';
+import { createVessel } from './erp/tms/vessels.ts';
+import { confirmTicket, listTickets } from './erp/straw/tickets.ts';
 import { ROLES } from './platform/auth/rbac.ts';
 import { captureSnapshot } from './platform/audit/audit.ts';
 
@@ -493,8 +496,16 @@ export function seedAll(): void {
   // ---------- Công trình vượt sông + suy ra tải trọng lưu thông ----------
   seedWaterwayStructures();
 
+  // ---------- Hợp đồng thu mua rơm + danh mục ghe (trước hiện trường, để việc có ưu tiên và phiếu có giá) ----------
+  seedStrawChain(htxIds);
+
   // ---------- Đội thu gom rơm của Mekong Green ----------
   seedFieldTeams();
+
+  // Phiếu mua rơm đã sinh từ các việc hoàn thành trong seed — xác nhận một phiếu để có công nợ mẫu.
+  // Chỉ xác nhận phiếu đã có giá hợp đồng — phiếu không hợp đồng phải có người nhập giá (PM-03).
+  const ready = listTickets({ status: 'cho_xac_nhan' }).find((t) => t.unit_price);
+  if (ready) confirmTicket(String(ready.id), {}, { name: 'seed' });
 
   // ---------- Tài khoản mẫu ----------
   const firstHtxId = [...htxIds.values()][0];
@@ -524,6 +535,39 @@ export function seedAll(): void {
 
   // Snapshot ngày đầu tiên để chức năng replay (GIS FN-19) có dữ liệu gốc.
   captureSnapshot();
+}
+
+/**
+ * Hợp đồng thu mua rơm với hai HTX (một theo tấn cân, một theo cuộn) và danh mục
+ * ghe thuê — đúng các số hiệu ghe mà seed hiện trường dùng, để lượt ghe nào cũng
+ * tra được đơn giá và đăng kiểm. Giá tham khảo thị trường ĐBSCL 2026: rơm cuộn
+ * 20–25 nghìn đ/cuộn, ~1 triệu đ/tấn tại nhà máy; cước ghe 150–200 nghìn đ/tấn.
+ */
+function seedStrawChain(htxIds: Map<string, string>): void {
+  const seedActor = { name: 'seed' };
+  const day = (offset: number) => new Date(Date.now() + offset * 86_400_000).toISOString().slice(0, 10);
+  const vinhBinh = htxIds.get('HTX Nông nghiệp Vĩnh Bình');
+  const tanHiep = htxIds.get('HTX Tân Hiệp Phát Đạt');
+  if (vinhBinh) {
+    createContract({
+      htxId: vinhBinh, fromDate: day(-60), toDate: day(120), committedTons: 1_500, priceBasis: 'theo_tan_can', unitPrice: 1_050_000,
+      maxMoisturePct: 18, note: 'Vụ Hè Thu – Thu Đông 2026; trả theo tấn cân tại nhà máy, độ ẩm ≤ 18 %',
+    }, seedActor);
+  }
+  if (tanHiep) {
+    createContract({
+      htxId: tanHiep, fromDate: day(-30), toDate: day(150), committedTons: 900, priceBasis: 'theo_cuon', unitPrice: 22_000,
+      note: 'Trả theo cuộn đếm tại ruộng — HTX bán rơm cuộn, không chờ cân',
+    }, seedActor);
+  }
+  const vessels = [
+    { code: 'AG-12345', name: 'Ghe Năm Cường', kind: 'ghe' as const, ownerName: 'Lê Văn Cường', ownerPhone: '0919 331 220', registeredTons: 100, strawPayloadTons: 90, registrationExpiry: day(240), rateType: 'per_ton' as const, rateVnd: 180_000 },
+    { code: 'AG-10088', name: 'Ghe Hai Nghĩa', kind: 'ghe' as const, ownerName: 'Trần Hữu Nghĩa', ownerPhone: '0938 774 105', registeredTons: 100, strawPayloadTons: 85, registrationExpiry: day(18), rateType: 'per_ton' as const, rateVnd: 175_000 },
+    { code: 'AG-20311', name: 'Ghe Ba Thê', kind: 'ghe' as const, ownerName: 'Nguyễn Văn Bé', ownerPhone: '0907 620 118', registeredTons: 120, strawPayloadTons: 95, registrationExpiry: day(400), rateType: 'per_ton_km' as const, rateVnd: 950 },
+    { code: 'KG-30877', name: 'Ghe Út Lợi', kind: 'ghe' as const, ownerName: 'Phạm Văn Lợi', ownerPhone: '0913 501 776', registeredTons: 100, strawPayloadTons: 90, registrationExpiry: day(-12), rateType: 'per_ton' as const, rateVnd: 185_000, note: 'Đăng kiểm hết hạn — chủ ghe nói đang làm lại' },
+    { code: 'SL-2001', name: 'Sà lan Sông Hậu 01', kind: 'sa_lan' as const, vesselClass: 'sa_lan_1000t', ownerName: 'Công ty Vận tải Sông Hậu', ownerPhone: '0292 3 880 112', registeredTons: 1_000, strawPayloadTons: 600, registrationExpiry: day(300), rateType: 'per_trip' as const, rateVnd: 38_000_000 },
+  ];
+  for (const v of vessels) createVessel(v, seedActor);
 }
 
 /**

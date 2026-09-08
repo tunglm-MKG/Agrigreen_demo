@@ -38,6 +38,7 @@ import '/pages/simulation.js';
 import '/pages/parameters.js';
 import '/pages/sim-actuals.js';
 import '/pages/erp.js';
+import '/pages/straw.js';
 
 bootstrap().catch((error) => {
   console.error('Không khởi động được giao diện:', error);

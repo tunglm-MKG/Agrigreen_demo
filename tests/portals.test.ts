@@ -65,7 +65,7 @@ test('Ba app nghiệp vụ đã tách thành cổng riêng, mỗi cổng có h�
   // trừ những màn hình dùng chung có chủ đích (nhập Excel, sàn cho thuê).
   // Cổng Hiện trường dùng lại màn hình TMS và GIS (đội trưởng xem chuyến ghe của
   // mình); ERP mở được bảng điều hành hiện trường — đều là dùng chung có chủ đích.
-  const shared = new Set(['import', 'masterdata', 'rental', 'htx-rental', 'tms', 'gis', 'field-dashboard', 'field-weighing']);
+  const shared = new Set(['import', 'masterdata', 'rental', 'htx-rental', 'tms', 'gis', 'field-dashboard', 'field-weighing', 'vessels']);
   const seen = new Map<string, string>();
   for (const portal of portals) {
     for (const pageId of portal.pageIds) {

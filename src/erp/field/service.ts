@@ -37,8 +37,11 @@ import { logEvent, type AuditActor } from '../../platform/audit/audit.ts';
 import { haversineKm, type LatLng } from '../../platform/geo/geo.ts';
 import { resolveParams } from '../params/store.ts';
 import { completeTrip, createTrip } from '../tms/service.ts';
-import { recordWeighing } from '../warehouse/service.ts';
+import { createGoodsReceipt, receiveInboundNotice, recordWeighing } from '../warehouse/service.ts';
 import { notify } from '../../platform/notify/service.ts';
+import { contractFor } from '../straw/contracts.ts';
+import { generateTicketForJob, refreshTicketForJob } from '../straw/tickets.ts';
+import { expiryStatus, tripCostFor, vesselByCode } from '../tms/vessels.ts';
 
 // ---------------------------------------------------------------------------
 // Danh mục
@@ -376,9 +379,12 @@ export function createJob(
 
   const expected = input.expectedStrawTons ?? (areaHa ? estimateStrawTons(areaHa) : 0);
   const destination = input.destinationFacilityId ?? nearestFacility({ lat, lng })?.id ?? null;
+  // HTX có hợp đồng thu mua hiệu lực → việc được ưu tiên xếp trước (D1), phiếu mua biết giá.
+  const contract = contractFor(htxId, input.harvestDate);
   const timestamp = nowIso();
   const record = {
     id: uuid(), code: nextCode('TG', 'field_jobs'),
+    contract_id: contract?.id ?? null,
     source_type: input.sourceType, source_id: input.sourceId ?? null,
     crop_cycle_id: input.cropCycleId ?? null, plot_id: input.plotId ?? null, htx_id: htxId,
     location_label: label, lat, lng,
@@ -387,7 +393,7 @@ export function createJob(
     harvest_date: input.harvestDate, harvest_confirmed: input.harvestConfirmed ? 1 : 0,
     expected_straw_tons: expected, area_ha: areaHa,
     team_id: null, planned_date: null, assignment_mode: null, assigned_by: null, assigned_at: null,
-    priority: input.priority ?? 0, status: 'cho_phan_cong', note: input.note ?? null,
+    priority: input.priority ?? (contract ? 10 : 0), status: 'cho_phan_cong', note: input.note ?? null,
     created_at: timestamp, updated_at: timestamp,
   };
   transaction(() => {
@@ -841,6 +847,9 @@ export function completeStage(
     module: 'field', entityType: 'field_job_stages', entityId: current.id, action: 'update',
     after: { stage, completed_at: at, quantity_tons: quantity, bales, baleKg: bales !== null ? kg : undefined, evidence: evidence.length },
   }, actor);
+  // Rơm đã xuống ghe hết → phiếu mua rơm cho HTX sinh ngay (PM-01). Lỗi phiếu không
+  // được làm hỏng việc chốt công đoạn — ghi nhận hiện trường đi trước, tiền đi sau.
+  if (stage === 'xuong_ghe') { try { generateTicketForJob(jobId, actor); } catch { /* không có lượt ghe / không hợp lệ */ } }
   return jobDetail(jobId);
 }
 
@@ -895,7 +904,18 @@ export function recordLoading(
 
   const warnings: string[] = [];
   const params = resolveParams();
-  const payloadLimit = (input.vesselKind ?? 'ghe') === 'ghe' ? params.boatStrawPayloadTons : params.bargeSmallPayloadTons ?? 1000;
+  // Danh mục ghe (D2): biết loại, tải rơm, đăng kiểm, đơn giá. Không có trong danh mục
+  // vẫn ghi được — nhưng nói rõ để điều phối bổ sung.
+  const vessel = vesselByCode(input.vesselCode);
+  const vesselKind = (vessel?.kind as 'ghe' | 'sa_lan' | undefined) ?? input.vesselKind ?? 'ghe';
+  if (!vessel) warnings.push(`Ghe ${input.vesselCode.trim().toUpperCase()} chưa có trong danh mục ghe — thêm vào danh mục để có đơn giá thuê và theo dõi đăng kiểm.`);
+  else {
+    if (vessel.status !== 'hoat_dong') warnings.push(`Ghe ${vessel.code} đang ở trạng thái ngừng hoạt động trong danh mục.`);
+    const exp = expiryStatus(vessel.registration_expiry);
+    if (exp.state === 'het_han') warnings.push(`GH-02: Ghe ${vessel.code} đã HẾT HẠN đăng kiểm ${Math.abs(exp.daysLeft!)} ngày — vẫn ghi nhận, báo chủ ghe và điều phối.`);
+    else if (exp.state === 'sap_het_han') warnings.push(`Ghe ${vessel.code} còn ${exp.daysLeft} ngày đăng kiểm.`);
+  }
+  const payloadLimit = vessel?.straw_payload_tons ?? (vesselKind === 'ghe' ? params.boatStrawPayloadTons : params.bargeSmallPayloadTons ?? 1000);
   if (tons > payloadLimit * 1.1) {
     warnings.push(`Lượt này ước ${tons} tấn vượt khối lượng rơm thực chở của ${input.vesselKind === 'sa_lan' ? 'sà lan' : 'ghe'} (${payloadLimit} tấn, tham số mô phỏng) — kiểm tra lại số cuộn hoặc số hiệu phương tiện.`);
   }
@@ -908,8 +928,9 @@ export function recordLoading(
     : null;
 
   const loading = {
-    id: uuid(), job_id: jobId, vessel_code: input.vesselCode.trim(), vessel_kind: input.vesselKind ?? 'ghe',
+    id: uuid(), job_id: jobId, vessel_code: vessel?.code ?? input.vesselCode.trim().toUpperCase(), vessel_kind: vesselKind,
     tons, bales, tons_source: tonsSource, destination_facility_id: destination?.id ?? null, trip_id: null as string | null,
+    inbound_notice_id: null as string | null, grn_id: null as string | null,
     weighed_kg: null, weighed_at: null, weighing_id: null, plant_bales: null, variance_pct: null,
     loaded_at: at, recorded_by: actor.name ?? null, lat: input.lat ?? null, lng: input.lng ?? null, note: input.note ?? null,
   };
@@ -929,6 +950,14 @@ export function recordLoading(
       loading.trip_id = String(trip.id);
     } catch (error) {
       warnings.push(`Không tạo được chuyến TMS: ${(error as Error).message}. Lượt xuống ghe vẫn được ghi; điều phối vận tải cần tạo chuyến tay.`);
+    }
+    // Kho biết hàng đang tới: thông báo hàng đến mang mã chuyến — bàn cân chọn đúng
+    // chuyến khi ghe cập bến, không phải tự tìm (đóng mắt hở B1).
+    try {
+      const notice = receiveInboundNotice({ facilityId: destination.id, tripId: loading.trip_id ?? undefined, expectedTons: tons }, actor);
+      loading.inbound_notice_id = String(notice.id);
+    } catch (error) {
+      warnings.push(`Không tạo được thông báo hàng đến cho kho: ${(error as Error).message}.`);
     }
   }
 
@@ -995,16 +1024,34 @@ export function recordPlantWeighing(
   const variancePct = loading.tons > 0 ? Math.round(((net / 1000 - loading.tons) / loading.tons) * 1000) / 10 : null;
   const flagged = variancePct !== null && Math.abs(variancePct) > WEIGHING_VARIANCE_PCT;
   const at = input.at ?? nowIso();
+
+  // Phiếu nhập kho tự tham chiếu chuyến và lượt ghe: cân xong là có GRN chờ duyệt mang
+  // đúng weighing_id, HTX, thửa, ngày gặt, toạ độ gốc — kho không phải gõ lại.
+  const grn = createGoodsReceipt({
+    facilityId, weighingId: String(weighing.id), htxId: job.htx_id ?? undefined, plotId: (one<{ plot_id: string | null }>('SELECT plot_id FROM field_jobs WHERE id = ?', [loading.job_id])?.plot_id) ?? undefined,
+    harvestDate: one<{ harvest_date: string }>('SELECT harvest_date FROM field_jobs WHERE id = ?', [loading.job_id])?.harvest_date,
+    originLat: job.lat, originLng: job.lng,
+  }, actor);
+  const vessel = vesselByCode(loading.vessel_code);
+  const distanceKm = loading.trip_id ? one<{ distance_km: number }>('SELECT distance_km FROM trips WHERE id = ?', [loading.trip_id])?.distance_km ?? 0 : 0;
+  const rateCost = tripCostFor(vessel, net / 1000, distanceKm);
+
   transaction(() => {
     update('field_loadings', loadingId, {
       weighed_kg: net, weighed_at: at, weighing_id: weighing.id, plant_bales: input.plantBales ?? null,
-      variance_pct: variancePct, note: input.note ?? loading.note ?? null,
+      variance_pct: variancePct, note: input.note ?? loading.note ?? null, grn_id: grn.id,
     });
+    if ((loading as Row).inbound_notice_id) update('inbound_notices', String((loading as Row).inbound_notice_id), { status: 'da_den' });
     if (loading.trip_id) {
       const trip = one<{ status: string }>('SELECT status FROM trips WHERE id = ?', [loading.trip_id]);
-      if (trip && trip.status !== 'hoan_thanh') completeTrip(loading.trip_id, { actualTons: net / 1000 }, actor);
+      if (trip && trip.status !== 'hoan_thanh') {
+        // GH-03: có đơn giá thuê ghe thì chi phí chuyến là số thực theo hợp đồng thuê.
+        completeTrip(loading.trip_id, rateCost !== null ? { actualTons: net / 1000, actualCost: rateCost, costSource: 'don_gia_ghe' } : { actualTons: net / 1000 }, actor);
+      }
     }
   });
+  // Việc đã hoàn thành → phiếu mua rơm cập nhật tấn cân (PM-01).
+  refreshTicketForJob(loading.job_id, actor);
   logEvent({
     module: 'field', entityType: 'field_loadings', entityId: loadingId, action: 'update',
     after: { weighed_kg: net, variance_pct: variancePct, flagged, plant_bales: input.plantBales ?? null },
@@ -1024,6 +1071,8 @@ export function recordPlantWeighing(
   return {
     loading: one('SELECT * FROM field_loadings WHERE id = ?', [loadingId])!,
     netKg: net, variancePct, flagged, baleKg: baleKg(job.htx_id),
+    goodsReceipt: { id: grn.id, code: grn.code, status: grn.status },
+    tripCost: rateCost,
   };
 }
 
@@ -1033,6 +1082,7 @@ export function pendingWeighings(): Row[] {
     `SELECT l.id, l.vessel_code, l.vessel_kind, l.bales, l.tons, l.tons_source, l.loaded_at, l.recorded_by,
             j.code AS job_code, j.location_label, j.htx_id, t.name AS team_name, h.name AS htx_name,
             f.name AS destination_name, tr.code AS trip_code, tr.status AS trip_status, tr.distance_km,
+            n.code AS notice_code, n.status AS notice_status,
             ROUND((julianday('now') - julianday(l.loaded_at)) * 24) AS hours_since_loading
      FROM field_loadings l
      JOIN field_jobs j ON j.id = l.job_id
@@ -1040,6 +1090,7 @@ export function pendingWeighings(): Row[] {
      LEFT JOIN cooperatives h ON h.id = j.htx_id
      LEFT JOIN facilities f ON f.id = l.destination_facility_id
      LEFT JOIN trips tr ON tr.id = l.trip_id
+     LEFT JOIN inbound_notices n ON n.id = l.inbound_notice_id
      WHERE l.weighed_at IS NULL ORDER BY l.loaded_at`,
   );
 }
@@ -1094,8 +1145,9 @@ export function weighingReconciliation(fromDate = addDays(today(), -30), toDate 
   };
   const recent = all<Row>(
     `SELECT l.id, l.vessel_code, l.bales, l.plant_bales, l.tons, l.weighed_kg, l.variance_pct, l.loaded_at, l.weighed_at,
-            j.code AS job_code, j.location_label, t.name AS team_name
+            j.code AS job_code, j.location_label, t.name AS team_name, g.code AS grn_code, g.status AS grn_status
      FROM field_loadings l JOIN field_jobs j ON j.id = l.job_id LEFT JOIN field_teams t ON t.id = j.team_id
+     LEFT JOIN goods_receipts g ON g.id = l.grn_id
      WHERE l.weighed_at IS NOT NULL AND l.loaded_at BETWEEN ? AND ? ORDER BY l.weighed_at DESC LIMIT 50`,
     [`${fromDate}T00:00:00`, `${toDate}T23:59:59.999`],
   );
@@ -1154,10 +1206,13 @@ export function jobDetail(jobId: string): Row {
     [jobId],
   ).map((stage) => ({ ...stage, label: stageMeta(String(stage.stage)).label, evidence: parseJson(stage.evidence_json, []) }));
   const loadings = all<Row>(
-    `SELECT l.*, f.name AS destination_name, tr.code AS trip_code, tr.status AS trip_status, tr.distance_km
+    `SELECT l.*, f.name AS destination_name, tr.code AS trip_code, tr.status AS trip_status, tr.distance_km,
+            g.code AS grn_code, g.status AS grn_status, n.code AS notice_code, n.status AS notice_status
      FROM field_loadings l
      LEFT JOIN facilities f ON f.id = l.destination_facility_id
      LEFT JOIN trips tr ON tr.id = l.trip_id
+     LEFT JOIN goods_receipts g ON g.id = l.grn_id
+     LEFT JOIN inbound_notices n ON n.id = l.inbound_notice_id
      WHERE l.job_id = ? ORDER BY l.loaded_at`,
     [jobId],
   );

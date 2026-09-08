@@ -110,7 +110,7 @@ export function departTrip(id: string, actor: AuditActor = {}): Record<string, u
 
 export function completeTrip(
   id: string,
-  input: { actualTons: number; actualCost?: number },
+  input: { actualTons: number; actualCost?: number; costSource?: 'nhap_tay' | 'don_gia_ghe' },
   actor: AuditActor = {},
 ): Record<string, unknown> {
   const trip = one<{ id: string; mode: TransportMode; distance_km: number; planned_cost: number; planned_tons: number }>(
@@ -127,7 +127,7 @@ export function completeTrip(
     arrived_at: nowIso(),
     actual_tons: input.actualTons,
     actual_cost: actualCost,
-    actual_cost_source: input.actualCost === undefined || input.actualCost === null ? 'theo_don_gia' : 'nhap_tay',
+    actual_cost_source: input.actualCost === undefined || input.actualCost === null ? 'theo_don_gia' : (input.costSource ?? 'nhap_tay'),
     co2_kg: Math.round(input.actualTons * trip.distance_km * EMISSION_FACTOR[trip.mode]),
   });
   emitMrvRecord('tms', 'trip', id, actor);

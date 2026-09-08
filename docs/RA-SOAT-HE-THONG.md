@@ -13,12 +13,16 @@ chỗ hệ thống biết mà không báo, và chỗ vận hành thật sẽ v�
 > đếm cuộn ở ruộng, cân ở nhà máy, đối soát ba chiều theo đội và HTX. Còn lại của B1 là
 > phiếu nhập kho tự tham chiếu chuyến. Mục 5 (B5 giả định – thực tế) cũng đã làm. Chi tiết
 > xem README mục 1I, 1J và 1K.
+>
+> **Cập nhật 06/09/2026:** đã làm nốt B1 (phiếu nhập kho tự tham chiếu chuyến), B3 (phiếu mua rơm
+> và công nợ HTX), D1 (hợp đồng thu mua) và D2 (danh mục ghe) — README mục 1M. Đợt 1 và phần lớn
+> đợt 3 của lộ trình đã xong.
 
 ## Tóm tắt: 5 việc đáng làm trước
 
 | # | Đề xuất | Vì sao trước | Nỗ lực |
 | --- | --- | --- | --- |
-| 1 | ✅ *phần lớn* **Ghe cập Hub tự đối chiếu với lượt xuống ghe** (hiện trường → cân → kho) | Đây là mắt hở lớn nhất còn lại của chuỗi rơm: 88 t ghi ở ruộng, cân được bao nhiêu ở Hub, hao hụt thuộc đội hay ghe — hôm nay không ai trả lời được từ dữ liệu | Vừa |
+| 1 | ✅ **Ghe cập Hub tự đối chiếu với lượt xuống ghe** (hiện trường → cân → kho) | Đây là mắt hở lớn nhất còn lại của chuỗi rơm: 88 t ghi ở ruộng, cân được bao nhiêu ở Hub, hao hụt thuộc đội hay ghe — hôm nay không ai trả lời được từ dữ liệu | Vừa |
 | 2 | ✅ **Tải ảnh bằng chứng thật** (kèm GPS + thời gian trong ảnh) | VietGAP, MRV và tranh chấp thuê máy đều cần ảnh; hiện chỉ có ô "dán link Zalo" — bằng chứng ở ngoài hệ thống thì không phải bằng chứng | Vừa |
 | 3 | ✅ **Kênh thông báo chủ động** (Zalo OA / SMS; web push chưa) | Hệ thống đã *biết* rơm quá hạn, thuốc chưa hết cách ly, kho quá ẩm — nhưng chỉ nói khi có người mở đúng màn hình. Cảnh báo không đến tay người cần thì bằng không | Vừa |
 | 4 | ✅ **Hàng đợi offline + chống ghi trùng** cho App HTX và Cổng Hiện trường | Ruộng ĐBSCL mất sóng là chuyện thường; bấm lại khi mạng chập chờn hiện tạo hai lượt ghe, hai nhật ký | Vừa |
@@ -79,7 +83,7 @@ tons: 'number>0' })` cho các route ghi; trả 400 kèm tên trường. Chừng 
 
 ## B. Chuỗi rơm khép kín — các mắt xích còn hở
 
-### B1. Ghe cập Hub → đối chiếu tự động (P1) — ✅ cân & đối soát đã làm; phiếu nhập kho tự tham chiếu chuyến còn lại
+### B1. Ghe cập Hub → đối chiếu tự động (P1) — ✅ đã làm trọn (cân, đối soát, thông báo hàng đến, phiếu nhập tự lập)
 Mỗi lượt xuống ghe nay sinh một chuyến TMS (FM-05). Nhưng khi ghe cập Hub, cân
 (`weighings`) và phiếu nhập (`goods_receipts`) **không tự tham chiếu về chuyến và về lượt
 ghe** — nhân viên kho phải tự tìm. Hậu quả: không tính được hao hụt theo đội / theo ghe,
@@ -98,7 +102,7 @@ kiểm định.
 kho nhận theo lô. Hồ sơ truy xuất (`traceabilityRecord` của App HTX) nối tiếp được tới lô
 kho và đơn bán — một mã, một chuỗi.
 
-### B3. Phiếu mua rơm và công nợ HTX (P2)
+### B3. Phiếu mua rơm và công nợ HTX (P2) — ✅ đã làm
 Finance có AR/AP nhưng **không có chứng từ mua rơm** sinh từ số liệu hiện trường. Trả tiền
 cho HTX theo tấn cuộn hay tấn cân ở Hub, giá nào, đã trả chưa — hiện nằm ngoài hệ thống.
 
@@ -187,14 +191,14 @@ bảng mới (đã làm ở nhóm hiện trường); chạy `PRAGMA foreign_key_
 
 ## D. Nghiệp vụ mở rộng đáng giá
 
-### D1. Hợp đồng thu mua rơm với HTX (P2)
+### D1. Hợp đồng thu mua rơm với HTX (P2) — ✅ đã làm
 Việc thu gom hiện không biết HTX nào có hợp đồng, cam kết bao nhiêu tấn, giá nào. Ưu tiên
 phân công (`priority`) đang nhập tay.
 
 *Đề xuất.* `straw_contracts` (HTX, vụ, tấn cam kết, giá, thời hạn) → `priority` tự tính
 theo hợp đồng, phiếu mua rơm (B3) lấy giá từ đây, Cổng HTX xem tiến độ giao so với cam kết.
 
-### D2. Danh mục ghe / sà lan và đơn giá thuê (P2)
+### D2. Danh mục ghe / sà lan và đơn giá thuê (P2) — ✅ đã làm
 TMS nhận `vehicle_code` tự do. Ghe phần lớn thuê ngoài; không có danh mục chủ ghe, lớp
 tàu (đã có `VESSEL_CLASSES` để tính lưu thông) và đơn giá → chi phí vận tải thực không
 đối chiếu được với hợp đồng thuê.

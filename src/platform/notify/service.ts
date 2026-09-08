@@ -340,6 +340,40 @@ export function runAlertScan(): Record<string, number> {
     return n;
   });
 
+  // Ghe sắp hết / đã hết hạn đăng kiểm → điều phối và điều hành hiện trường (GH-02).
+  safe('vessel_expiry', () => {
+    const rows = all<{ id: string; code: string; registration_expiry: string }>(
+      `SELECT id, code, registration_expiry FROM vessels WHERE status = 'hoat_dong' AND registration_expiry IS NOT NULL
+         AND registration_expiry <= date('now', '+30 day')`);
+    let n = 0;
+    for (const v of rows) {
+      const days = Math.round((Date.parse(v.registration_expiry) - Date.parse(today)) / 86_400_000);
+      n += notify({
+        module: 'tms', severity: days < 0 ? 'critical' : 'warn',
+        title: days < 0 ? `Ghe ${v.code} đã hết hạn đăng kiểm` : `Ghe ${v.code} còn ${days} ngày đăng kiểm`,
+        body: days < 0 ? `Hết hạn ${Math.abs(days)} ngày (${v.registration_expiry}). Không nên xếp hàng lên ghe này cho tới khi chủ ghe gia hạn.` : `Hạn ${v.registration_expiry}. Nhắc chủ ghe gia hạn để không đứt chuyến giữa vụ.`,
+        link: '/erp/#vessels', roles: ['logistics', 'field_manager'], dedupeKey: `vessel.expiry.${v.id}.${today}`, entityType: 'vessel', entityId: v.id,
+      });
+    }
+    return n;
+  });
+
+  // Phiếu mua rơm quá hạn thanh toán → Tài chính.
+  safe('straw_overdue', () => {
+    const rows = all<{ id: string; code: string; amount: number; due_date: string; htx_name: string }>(
+      `SELECT t.id, t.code, t.amount, t.due_date, h.name AS htx_name FROM straw_purchase_tickets t LEFT JOIN cooperatives h ON h.id = t.htx_id
+       WHERE t.status = 'da_xac_nhan' AND t.due_date < date('now')`);
+    let n = 0;
+    for (const t of rows) {
+      n += notify({
+        module: 'straw', severity: 'warn', title: `Phiếu mua rơm ${t.code} quá hạn thanh toán`,
+        body: `${Number(t.amount).toLocaleString('vi-VN')} đ trả ${t.htx_name ?? 'HTX'}, hạn ${t.due_date}. Chậm trả là mất niềm tin của HTX ngay trước vụ sau.`,
+        link: '/erp/#straw-tickets', roles: ['finance'], dedupeKey: `straw.overdue.${t.id}.${today}`, entityType: 'straw_purchase_tickets', entityId: t.id,
+      });
+    }
+    return n;
+  });
+
   // Kho: cảnh báo môi trường chưa xác nhận → vận hành kho.
   safe('warehouse_env', () => {
     const rows = all<{ id: string; level: string; message: string; facility_id: string }>(

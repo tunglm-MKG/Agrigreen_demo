@@ -409,7 +409,7 @@ registerPage('field-record', {
   title: 'Ghi nhận tại ruộng',
   subtitle: 'Bắt đầu / chốt từng công đoạn, ghi lượt xuống ghe — mỗi lượt là một chuyến vận tải',
   async render(view, actions) {
-    const [teams, lookups] = await Promise.all([guard(api('/field/teams')), api('/field/lookups')]);
+    const [teams, lookups, vesselList] = await Promise.all([guard(api('/field/teams')), api('/field/lookups'), can('tms.read') ? api('/vessels?status=hoat_dong').catch(() => []) : Promise.resolve([])]);
     const refresh = async () => { actions.replaceChildren(); await this.render(view, actions); };
     const write = can('field.write');
 
@@ -455,12 +455,16 @@ registerPage('field-record', {
             { key: 'tons', label: 'Ước (t)', align: 'right', render: (row) => num(row.tons, 1) },
             { key: 'weighed_kg', label: 'Cân', align: 'right', render: (row) => (row.weighed_kg ? `${num(row.weighed_kg / 1000, 1)} t` : badge('chưa cân', 'neutral')) },
             { key: 'trip_code', label: 'Chuyến TMS', render: (row) => (row.trip_code ? badge(row.trip_code, 'info') : badge('không tạo được', 'warn')) },
+            { key: 'grn_code', label: 'Kho', render: (row) => (row.grn_code ? badge(`${row.grn_code} · ${row.grn_status === 'da_duyet' ? 'đã duyệt' : 'chờ duyệt'}`, row.grn_status === 'da_duyet' ? 'good' : 'info') : row.notice_code ? badge(`${row.notice_code} · hàng đang tới`, 'neutral') : '—') },
           ], job.loadings, { empty: 'Chưa có lượt xuống ghe nào' }));
           if (write && !stage.completed_at && job.stages[1].started_at) {
             body.push(el('strong', { text: 'Ghi lượt xuống ghe' }));
             body.push(form([
-              { name: 'vesselCode', label: 'Số hiệu ghe / sà lan', required: true, placeholder: 'VD: AG-12345' },
-              { name: 'vesselKind', label: 'Loại', type: 'select', options: [{ value: 'ghe', label: 'Ghe (~4 000–4 500 cuộn)' }, { value: 'sa_lan', label: 'Sà lan' }] },
+              vesselList.length
+                ? { name: 'vesselCode', label: 'Ghe / sà lan (danh mục; gõ số hiệu mới nếu chưa có)', type: 'select', required: true,
+                    options: vesselList.map((v) => ({ value: v.code, label: `${v.code} — ${v.name ?? v.kindLabel}${v.expiry.state === 'het_han' ? ' ⚠ hết đăng kiểm' : v.expiry.state === 'sap_het_han' ? ` (còn ${v.expiry.daysLeft} ngày ĐK)` : ''}` })) }
+                : { name: 'vesselCode', label: 'Số hiệu ghe / sà lan', required: true, placeholder: 'VD: AG-12345' },
+              { name: 'vesselKind', label: 'Loại (bỏ qua nếu ghe có trong danh mục)', type: 'select', options: [{ value: 'ghe', label: 'Ghe (~4 000–4 500 cuộn)' }, { value: 'sa_lan', label: 'Sà lan' }] },
               { name: 'bales', label: `Số cuộn xuống ghe (≈ ${num(job.baleKg.kg, 1)} kg/cuộn → tấn tự ước)`, type: 'number', step: '1', required: true },
               { name: 'tons', label: 'Tấn — chỉ ghi nếu có cân tại bến, để trống thì ước theo cuộn', type: 'number', step: '0.5' },
               { name: 'driverName', label: 'Tài công' },
@@ -789,9 +793,9 @@ registerPage('field-weighing', {
             grossKg: values.grossKg ?? undefined, tareKg: values.tareKg ?? undefined, netKg: values.netKg ?? undefined,
             plantBales: values.plantBales ?? undefined, facilityId: values.facilityId || undefined, note: values.note || undefined,
           } });
-          toast(result.flagged
+          toast(`${result.flagged
             ? `Cân ${num(result.netKg / 1000, 1)} t — LỆCH ${num(result.variancePct, 1)}% so với ước, đã báo điều hành.`
-            : `Cân ${num(result.netKg / 1000, 1)} t — khớp ước tính (${num(result.variancePct ?? 0, 1)}%).`, Boolean(result.flagged));
+            : `Cân ${num(result.netKg / 1000, 1)} t — khớp ước tính (${num(result.variancePct ?? 0, 1)}%).`} Phiếu nhập ${result.goodsReceipt.code} chờ kho duyệt${result.tripCost ? ` · cước ghe ${num(result.tripCost)} đ` : ''}.`, Boolean(result.flagged));
           selected = null;
           await refresh();
         }, { submitLabel: '⚖️ Ghi cân' }),
@@ -833,6 +837,7 @@ registerPage('field-weighing', {
           { key: 'destination_name', label: 'Về' },
           { key: 'hours_since_loading', label: 'Đã đi', align: 'right', render: (row) => badge(`${num(row.hours_since_loading)} h`, row.hours_since_loading > 48 ? 'bad' : row.hours_since_loading > 24 ? 'warn' : 'neutral') },
           { key: 'trip_status', label: 'Chuyến', render: (row) => (row.trip_code ? badge(`${row.trip_code} · ${row.trip_status === 'dang_chay' ? 'đang chạy' : 'chờ'}`, 'info') : badge('không có', 'warn')) },
+          { key: 'notice_code', label: 'Báo kho', render: (row) => (row.notice_code ? badge(row.notice_code, 'neutral') : '—') },
         ], pending, { onRowClick: canWeigh ? (row) => showWeighForm(row) : undefined, rowClass: (row) => (row.id === selected ? 'selected' : null), empty: 'Mọi ghe đã cân — tốt.' }),
       ]),
       weighBox,
@@ -850,6 +855,7 @@ registerPage('field-weighing', {
         { key: 'tons', label: 'Ước (t)', align: 'right', render: (row) => num(row.tons, 1) },
         { key: 'weighed_kg', label: 'Cân (t)', align: 'right', render: (row) => num(row.weighed_kg / 1000, 1) },
         { key: 'variance_pct', label: 'Lệch', align: 'right', render: (row) => varianceBadge(row.variance_pct) },
+        { key: 'grn_code', label: 'Phiếu nhập', render: (row) => (row.grn_code ? badge(`${row.grn_code} · ${row.grn_status === 'da_duyet' ? 'đã duyệt' : 'chờ duyệt'}`, row.grn_status === 'da_duyet' ? 'good' : 'info') : '—') },
       ], recon.recent, { empty: 'Chưa có lượt nào được cân trong kỳ' })),
     );
   },

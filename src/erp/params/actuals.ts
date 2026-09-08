@@ -195,12 +195,12 @@ const MEASURERS: Record<string, { minSamples: number; digits: number; measure: M
 function freightRate(mode: 'road' | 'waterway', from: string, to: string): Measurement {
   const row = one<{ cost: number | null; tonkm: number | null; n: number }>(
     `SELECT SUM(actual_cost) AS cost, SUM(actual_tons * distance_km) AS tonkm, COUNT(*) AS n FROM trips
-     WHERE mode = ? AND status = 'hoan_thanh' AND actual_cost_source = 'nhap_tay'
+     WHERE mode = ? AND status = 'hoan_thanh' AND actual_cost_source IN ('nhap_tay', 'don_gia_ghe')
        AND actual_tons > 0 AND distance_km > 0 AND arrived_at BETWEEN ? AND ?`, [mode, ...bounds(from, to)]);
   return {
     value: row?.tonkm ? round(row.cost! / row.tonkm, 0) : null, samples: row?.n ?? 0,
-    sampleLabel: `${row?.n ?? 0} chuyến có nhập chi phí thực`,
-    basis: 'Σ chi phí thực ÷ Σ (tấn × km) — bỏ chuyến lấy chi phí theo đơn giá giả định vì sẽ tự khớp',
+    sampleLabel: `${row?.n ?? 0} chuyến có chi phí thực (nhập tay hoặc theo đơn giá thuê ghe)`,
+    basis: 'Σ chi phí thực ÷ Σ (tấn × km) — bỏ chuyến lấy chi phí theo tham số giả định vì sẽ tự khớp; đơn giá hợp đồng thuê ghe là số thực',
     source: `TMS — chuyến ${mode === 'road' ? 'đường bộ' : 'đường thuỷ'} hoàn thành`,
   };
 }

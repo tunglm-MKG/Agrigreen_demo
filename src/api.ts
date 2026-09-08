@@ -44,6 +44,9 @@ import * as tms from './erp/tms/service.ts';
 import * as finance from './erp/finance/service.ts';
 import * as reporting from './erp/reporting/service.ts';
 import * as field from './erp/field/service.ts';
+import * as contracts from './erp/straw/contracts.ts';
+import * as tickets from './erp/straw/tickets.ts';
+import * as vessels from './erp/tms/vessels.ts';
 
 const body = (ctx: Context) => (ctx.body ?? {}) as Record<string, any>;
 const num = (value: unknown, fallback?: number): number => {
@@ -145,6 +148,30 @@ export function buildApi(): Router {
   }, P.ADMIN_CONFIG);
   api.get('/notifications/problems', () => notifyService.outboxProblems(), P.ADMIN_CONFIG);
   api.post('/notifications/scan', async () => ({ scan: notifyService.runAlertScan(), outbox: await notifyService.processOutbox() }), P.ADMIN_CONFIG);
+
+  // ===================== Chuỗi thu mua rơm: hợp đồng, phiếu mua, danh mục ghe =====================
+  api.get('/straw/contracts', (ctx) => contracts.listContracts({ htxId: ctx.query.get('htxId') || undefined, status: ctx.query.get('status') || undefined }), P.PO_READ);
+  api.get('/straw/contracts/:id', (ctx) => contracts.contractDetail(ctx.params.id), P.PO_READ);
+  api.post('/straw/contracts', (ctx) => contracts.createContract(body(ctx) as never, ctx.actor), P.PO_WRITE);
+  api.put('/straw/contracts/:id', (ctx) => contracts.updateContract(ctx.params.id, body(ctx) as never, ctx.actor), P.PO_WRITE);
+  api.post('/straw/contracts/:id/status', (ctx) => contracts.setContractStatus(ctx.params.id, body(ctx).status, ctx.actor), P.PO_WRITE);
+  api.get('/straw/tickets', (ctx) => tickets.listTickets({ htxId: ctx.query.get('htxId') || undefined, status: ctx.query.get('status') || undefined }), P.PO_READ);
+  api.get('/straw/tickets/:id', (ctx) => tickets.ticketDetail(ctx.params.id), P.PO_READ);
+  api.post('/straw/tickets/generate/:jobId', (ctx) => tickets.generateTicketForJob(ctx.params.jobId, ctx.actor), P.PO_WRITE);
+  api.post('/straw/tickets/:id/confirm', (ctx) => tickets.confirmTicket(ctx.params.id, body(ctx) as never, ctx.actor), P.PO_WRITE);
+  api.post('/straw/tickets/:id/pay', (ctx) => tickets.payTicket(ctx.params.id, ctx.actor), P.FIN_WRITE);
+  api.post('/straw/tickets/:id/cancel', (ctx) => tickets.cancelTicket(ctx.params.id, String(body(ctx).reason ?? ''), ctx.actor), P.PO_WRITE);
+  api.get('/straw/payables', (ctx) => tickets.payables(ctx.query.get('htxId') || undefined), P.FIN_READ);
+  // Cổng HTX: HTX chỉ thấy hợp đồng, phiếu và công nợ của CHÍNH MÌNH — lấy theo tài khoản, không theo tham số.
+  api.get('/straw/my', (ctx) => {
+    const htxId = ctx.user?.htxId;
+    if (!htxId) return { contracts: [], tickets: [], payables: tickets.payables('__none__'), notice: 'Tài khoản chưa gắn với hợp tác xã nào.' };
+    return { contracts: contracts.listContracts({ htxId }), tickets: tickets.listTickets({ htxId }), payables: tickets.payables(htxId) };
+  }, P.HTX_READ);
+  api.get('/vessels', (ctx) => vessels.listVessels({ status: ctx.query.get('status') || undefined }), P.TMS_READ);
+  api.get('/vessels/lookups', () => ({ rateTypes: vessels.RATE_TYPES, classes: VESSEL_CLASSES.map((c) => ({ code: c.code, label: c.label, tons: c.tons })) }), P.TMS_READ);
+  api.post('/vessels', (ctx) => vessels.createVessel(body(ctx) as never, ctx.actor), P.TMS_WRITE);
+  api.put('/vessels/:id', (ctx) => vessels.updateVessel(ctx.params.id, body(ctx) as never, ctx.actor), P.TMS_WRITE);
 
   // ===================== Quản lý hiện trường (đội thu gom rơm) =====================
   api.get('/field/lookups', () => field.fieldLookups(), P.FIELD_READ);
