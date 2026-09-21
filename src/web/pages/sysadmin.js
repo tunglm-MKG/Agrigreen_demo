@@ -271,178 +271,131 @@ function groupPicker(groups, current, onSave) {
 // ===========================================================================
 
 registerPage('sys-groups', {
-  title: 'Nhóm người dùng & phân quyền',
-  subtitle: 'Điều chỉnh quyền của từng nhóm ngay trên giao diện, không phải sửa mã nguồn và triển khai lại',
+  title: 'Nhóm & phân quyền',
+  subtitle: 'Một bảng: hàng là quyền, cột là nhóm (cấp). Tick ô cần cấp, bấm Lưu.',
   async render(view, actions) {
-    const [groups, meta] = await Promise.all([
-      guard(api('/admin/groups')), api('/admin/permissions'),
+    const [groups, meta, lookups] = await Promise.all([
+      guard(api('/admin/groups')), api('/admin/permissions'), api('/admin/lookups'),
     ]);
     const refresh = async () => { actions.replaceChildren(); await this.render(view, actions); };
+    const editable = can('admin.groups');
 
-    let selectedCode = groups.some((g) => g.code === lastGroupCode) ? lastGroupCode : (groups[0]?.code ?? null);
-    const matrix = el('div', { class: 'grid' });
+    // Nhóm → hệ thống (để lọc cột). Nhóm tuỳ chỉnh không thuộc hệ thống nào.
+    const systemOf = Object.fromEntries((lookups.assignableRoles ?? []).map((r) => [r.code, r.system]));
+    const systemLabel = Object.fromEntries((lookups.allSystems ?? []).map((sys) => [sys.code, sys.label]));
+    let filter = sessionStorage.getItem('perm-matrix-filter') ?? 'all';
+    const visibleGroups = () => groups.filter((g) => {
+      if (filter === 'all') return true;
+      if (filter === 'custom') return !g.isSystem;
+      return systemOf[g.code] === filter;
+    });
 
-    const drawMatrix = () => {
-      const group = groups.find((g) => g.code === selectedCode);
-      if (!group) return matrix.replaceChildren();
-
-      const isRoot = group.defaultPermissions.includes('*');
-      const effective = new Set(group.effectivePermissions);
-      const defaults = new Set(group.defaultPermissions);
-      const overridden = new Map(group.overrides.map((o) => [o.permission, o.granted]));
-
-      matrix.replaceChildren(card(`Quyền của nhóm: ${group.label}`, [
-        el('div', { class: 'chip-row' }, [
-          badge(group.isSystem ? 'Nhóm hệ thống' : 'Nhóm tuỳ chỉnh', group.isSystem ? 'neutral' : 'info'),
-          badge(`${group.userCount} người dùng`, 'neutral'),
-          badge(`${isRoot ? 'toàn quyền' : `${effective.size} quyền`}`, 'good'),
-          group.overrides.length ? badge(`${group.overrides.length} ô đã chỉnh`, 'warn') : null,
-        ]),
-        group.description ? el('p', { class: 'muted', text: group.description }) : null,
-
-        isRoot
-          ? alert(
-              'Nhóm quản trị nền tảng luôn có toàn quyền và không điều chỉnh được. Cho phép thu hồi quyền ' +
-              'của nhóm này thì một thao tác nhầm là khoá cứng cả hệ thống, không còn ai vào sửa lại.', 'info')
-          : el('div', {}, [
-              el('p', { class: 'muted', text: 'Ô có viền vàng là đã chỉnh khác mặc định. Bỏ chọn rồi chọn lại sẽ giữ trạng thái ghi đè; bấm "Trả về mặc định" ở từng dòng để xoá ghi đè và theo lại mã nguồn.' }),
-              ...meta.groups.map((section) => el('div', { class: 'perm-section' }, [
-                el('h4', { text: section.group }),
-                el('div', { class: 'perm-grid' }, section.permissions.map((permission) => {
-                  const isOn = effective.has(permission.code);
-                  const isDefault = defaults.has(permission.code);
-                  const isOverridden = overridden.has(permission.code);
-                  return el('div', { class: `perm-cell ${isOverridden ? 'overridden' : ''}` }, [
-                    el('label', { class: 'pick-item' }, [
-                      el('input', {
-                        type: 'checkbox', checked: isOn, disabled: !can('admin.users'),
-                        onchange: async (event) => {
-                          const wanted = event.target.checked;
-                          try {
-                            await api(`/admin/groups/${group.code}/permission`, {
-                              method: 'PUT',
-                              body: { permission: permission.code, granted: wanted },
-                            });
-                            toast(`${wanted ? 'Đã cấp' : 'Đã thu hồi'}: ${permission.label}`);
-                            await refresh();
-                          } catch (error) {
-                            event.target.checked = !wanted;
-                            toast(error.message, true);
-                          }
-                        },
-                      }),
-                      el('span', {}, [
-                        permission.label,
-                        el('span', { class: 'muted perm-code', text: permission.code }),
-                      ]),
-                    ]),
-                    isOverridden
-                      ? el('button', {
-                          class: 'ghost small', text: `↺ Mặc định: ${isDefault ? 'có' : 'không'}`,
-                          onclick: async () => {
-                            await guard(api(`/admin/groups/${group.code}/permission`, {
-                              method: 'PUT', body: { permission: permission.code, granted: null },
-                            }));
-                            toast('Đã trả về mặc định.');
-                            await refresh();
-                          },
-                        })
-                      : null,
-                  ]);
-                })),
-              ])),
-            ]),
-      ], can('admin.users') && !isRoot
-        ? el('span', { class: 'chip-row' }, [
-            group.overrides.length
-              ? el('button', {
-                  class: 'ghost small', text: '↺ Khôi phục toàn bộ về mặc định',
-                  onclick: async () => {
-                    await guard(api(`/admin/groups/${group.code}/reset`, { body: {} }));
-                    toast('Đã khôi phục quyền mặc định của nhóm.');
-                    await refresh();
-                  },
-                })
-              : null,
-            !group.isSystem
-              ? el('button', {
-                  class: 'ghost small', text: '🗑 Xoá nhóm',
-                  onclick: async () => {
-                    if (!window.confirm(`Xoá nhóm "${group.label}"?`)) return;
-                    await guard(api(`/admin/groups/${group.code}`, { method: 'DELETE' }));
-                    toast('Đã xoá nhóm.');
-                    await refresh();
-                  },
-                })
-              : null,
-          ])
-        : null));
+    // Thay đổi chờ lưu: khoá "nhóm|quyền" → true/false. Lưu một lần, không gọi API mỗi ô.
+    const pending = new Map();
+    const saveBar = el('div', { class: 'save-bar', hidden: true });
+    const drawSaveBar = () => {
+      saveBar.hidden = pending.size === 0;
+      saveBar.replaceChildren(
+        el('strong', { text: `${pending.size} thay đổi chưa lưu` }),
+        el('button', { class: 'small', text: '💾 Lưu', onclick: async () => {
+          let ok = 0;
+          for (const [key, granted] of pending) {
+            const [code, permission] = key.split('|');
+            try { await api(`/admin/groups/${code}/permission`, { method: 'PUT', body: { permission, granted } }); ok += 1; }
+            catch (error) { toast(`${code} · ${permission}: ${error.message}`, true); }
+          }
+          toast(`Đã lưu ${ok}/${pending.size} thay đổi.`);
+          pending.clear();
+          await refresh();
+        } }),
+        el('button', { class: 'small ghost', text: 'Huỷ', onclick: () => { pending.clear(); drawMatrix(); drawSaveBar(); } }),
+      );
     };
+
+    const matrixHost = el('div', { class: 'perm-matrix-wrap' });
+    const drawMatrix = () => {
+      const cols = visibleGroups();
+      const head = el('tr', {}, [
+        el('th', { class: 'perm-sticky', text: 'Quyền' }),
+        ...cols.map((g) => el('th', { class: 'perm-col' }, [
+          el('div', { class: 'perm-col-name', text: g.label }),
+          el('div', { class: 'muted', text: `${g.userCount} người${g.overrides.length ? ` · ${g.overrides.length} đã chỉnh` : ''}` }),
+          g.overrides.length && editable
+            ? el('button', { class: 'ghost small', text: '↺ mặc định', title: 'Bỏ mọi chỉnh sửa của nhóm này, theo lại mã nguồn', onclick: async () => {
+                if (!window.confirm(`Trả nhóm "${g.label}" về quyền mặc định?`)) return;
+                await guard(api(`/admin/groups/${g.code}/reset`, { body: {} })); toast('Đã trả về mặc định.'); await refresh();
+              } })
+            : null,
+        ])),
+      ]);
+      const rows = [];
+      for (const section of meta.groups) {
+        rows.push(el('tr', { class: 'perm-section-row' }, [el('td', { colspan: cols.length + 1, text: section.group })]));
+        for (const permission of section.permissions) {
+          rows.push(el('tr', {}, [
+            el('td', { class: 'perm-sticky' }, [el('div', { text: permission.label }), el('div', { class: 'muted perm-code', text: permission.code })]),
+            ...cols.map((g) => {
+              const root = g.defaultPermissions.includes('*');
+              const key = `${g.code}|${permission.code}`;
+              const effective = pending.has(key) ? pending.get(key) : g.effectivePermissions.includes(permission.code);
+              const overridden = g.overrides.some((o) => o.permission === permission.code);
+              const cell = el('td', { class: `perm-tick${overridden ? ' overridden' : ''}${pending.has(key) ? ' pending' : ''}`, title: root ? 'Quản trị nền tảng luôn có toàn quyền' : (overridden ? `Đã chỉnh — mặc định: ${g.defaultPermissions.includes(permission.code) ? 'có' : 'không'}` : '') });
+              const box = el('input', { type: 'checkbox', checked: root || effective, disabled: root || !editable });
+              box.addEventListener('change', () => {
+                const original = g.effectivePermissions.includes(permission.code);
+                if (box.checked === original) pending.delete(key); else pending.set(key, box.checked);
+                cell.classList.toggle('pending', pending.has(key));
+                drawSaveBar();
+              });
+              cell.append(box);
+              return cell;
+            }),
+          ]));
+        }
+      }
+      matrixHost.replaceChildren(el('table', { class: 'perm-matrix' }, [el('thead', {}, [head]), el('tbody', {}, rows)]));
+    };
+
+    const filterBar = el('div', { class: 'chip-row' }, [
+      ...[['all', 'Tất cả nhóm'], ...(lookups.allSystems ?? []).map((sys) => [sys.code, sys.label]), ['custom', 'Nhóm tuỳ chỉnh']].map(([key, label]) =>
+        el('button', { class: `chip${filter === key ? ' active' : ''}`, text: label, onclick: () => { filter = key; sessionStorage.setItem('perm-matrix-filter', key); filterBar.querySelectorAll('.chip').forEach((c) => c.classList.toggle('active', c.textContent === label)); drawMatrix(); } })),
+    ]);
+    void systemLabel;
 
     mount(view,
       el('div', { class: 'grid cols-4' }, [
-        kpi('Tổng số nhóm', num(groups.length),
-          `${num(groups.filter((g) => !g.isSystem).length)} nhóm tuỳ chỉnh`),
-        kpi('Nhóm đã chỉnh quyền', num(groups.filter((g) => g.overrides.length).length),
-          'Khác với mặc định trong mã nguồn'),
-        kpi('Nhóm chưa có người dùng', num(groups.filter((g) => !g.userCount).length)),
+        kpi('Nhóm (cấp)', num(groups.length), `${num(groups.filter((g) => !g.isSystem).length)} nhóm tuỳ chỉnh`),
+        kpi('Quyền', num(meta.groups.reduce((n, sec) => n + sec.permissions.length, 0)), `${meta.groups.length} mảng chức năng`),
+        kpi('Nhóm đã chỉnh', num(groups.filter((g) => g.overrides.length).length), 'Khác mặc định trong mã nguồn'),
+        kpi('Chưa có người', num(groups.filter((g) => !g.userCount).length), 'Nhóm không ai dùng'),
       ]),
-
-      alert(
-        'Ma trận gốc nằm trong mã nguồn và là mặc định. Điều chỉnh ở đây lưu dạng GHI ĐÈ, nên khi hệ thống ' +
-        'bổ sung quyền mới cho một nhóm, nhóm đó nhận được ngay thay vì đứng yên ở ảnh chụp cũ. ' +
-        'Đổi lại, bạn cần biết ô nào đang lệch khỏi mặc định — chúng được đánh dấu viền vàng.',
-        'info'),
-
-      can('admin.users')
-        ? card('Tạo nhóm mới', [
-            el('p', { class: 'muted', text: 'Nhóm mới bắt đầu từ KHÔNG có quyền nào. Cấp từng quyền cần thiết thay vì sao chép một nhóm sẵn có rồi bớt đi — cách sau hay để sót quyền thừa.' }),
+      editable ? null : alert('Bạn chỉ xem được. Sửa ma trận nhóm–quyền là việc của quản trị nền tảng (SA-10).', 'info'),
+      card('Ma trận nhóm – quyền', [
+        el('p', { class: 'muted', text: 'Tick ô để cấp, bỏ tick để thu hồi, rồi bấm Lưu ở thanh dưới. Ô nền vàng là đã chỉnh khác mặc định; rê chuột để xem mặc định. Cột Quản trị nền tảng luôn toàn quyền.' }),
+        filterBar,
+        matrixHost,
+      ]),
+      saveBar,
+      editable
+        ? el('details', { class: 'perm-new-group' }, [
+            el('summary', { text: '+ Tạo nhóm (cấp) mới' }),
+            el('p', { class: 'muted', text: 'Nhóm mới bắt đầu từ không có quyền nào — tick từng quyền cần thiết trong bảng trên.' }),
             form([
               { name: 'code', label: 'Mã nhóm', required: true, placeholder: 'ke-toan-htx' },
               { name: 'label', label: 'Tên hiển thị', required: true, placeholder: 'Kế toán HTX' },
               { name: 'description', label: 'Mô tả' },
             ], async (values) => {
               const created = await api('/admin/groups', { body: values });
-              selectedCode = created.code;
-              lastGroupCode = created.code;
-              toast(`Đã tạo nhóm ${created.label}. Cấp quyền cho nhóm ở bảng bên dưới.`);
+              toast(`Đã tạo nhóm ${created.label}.`);
               await refresh();
             }, { submitLabel: '+ Tạo nhóm' }),
           ])
         : null,
-
-      card('Danh sách nhóm', table([
-        { key: 'label', label: 'Nhóm' },
-        { key: 'code', label: 'Mã' },
-        {
-          key: 'isSystem', label: 'Loại',
-          render: (row) => badge(row.isSystem ? 'Hệ thống' : 'Tuỳ chỉnh', row.isSystem ? 'neutral' : 'info'),
-        },
-        { key: 'userCount', label: 'Người dùng', align: 'right', render: (row) => num(row.userCount) },
-        {
-          key: 'effectivePermissions', label: 'Số quyền', align: 'right',
-          render: (row) => (row.defaultPermissions.includes('*')
-            ? badge('Toàn quyền', 'warn')
-            : num(row.effectivePermissions.length)),
-        },
-        {
-          key: 'overrides', label: 'Đã chỉnh', align: 'right',
-          render: (row) => (row.overrides.length ? badge(num(row.overrides.length), 'warn') : '—'),
-        },
-      ], groups, {
-        onRowClick: (row) => { selectedCode = row.code; lastGroupCode = row.code; drawMatrix(); },
-        rowClass: (row) => (row.code === selectedCode ? 'highlight' : null),
-      })),
-
-      matrix,
     );
-
     drawMatrix();
   },
 });
 
-// ===========================================================================
-// Thông báo & kênh gửi
 // ===========================================================================
 
 registerPage('sys-notify', {
