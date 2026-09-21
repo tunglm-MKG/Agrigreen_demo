@@ -70,6 +70,13 @@ export const PORTALS = [
           { id: 'import', label: '📥 Nhập Excel HTX & vụ mùa', permission: 'mdm.write' },
         ],
       },
+      {
+        group: 'Quản trị',
+        items: [
+          { id: 'sys-users', label: '👤 Tài khoản & phân quyền', permission: 'admin.users' },
+          { id: 'sys-scopes', label: '🏷️ Phân cấp quản trị', permission: 'admin.delegate' },
+        ],
+      },
     ],
   },
 
@@ -126,6 +133,13 @@ export const PORTALS = [
           { id: 'htx-advice', label: '🌤️ Thời tiết & khuyến cáo', permission: 'htx.read' },
         ],
       },
+      {
+        group: 'Quản trị',
+        items: [
+          { id: 'sys-users', label: '👤 Tài khoản & phân quyền', permission: 'admin.users' },
+          { id: 'sys-scopes', label: '🏷️ Phân cấp quản trị', permission: 'admin.delegate' },
+        ],
+      },
     ],
   },
 
@@ -167,6 +181,13 @@ export const PORTALS = [
           { id: 'rental', label: '🤝 Tin đăng & lệnh thuê', permission: 'rental.read' },
         ],
       },
+      {
+        group: 'Quản trị',
+        items: [
+          { id: 'sys-users', label: '👤 Tài khoản & phân quyền', permission: 'admin.users' },
+          { id: 'sys-scopes', label: '🏷️ Phân cấp quản trị', permission: 'admin.delegate' },
+        ],
+      },
     ],
   },
 
@@ -204,6 +225,13 @@ export const PORTALS = [
         items: [
           { id: 'import', label: '📥 Nhập dữ liệu Excel', permission: 'mdm.write' },
           { id: 'masterdata', label: '🗄️ Master Data', permission: 'mdm.read' },
+        ],
+      },
+      {
+        group: 'Quản trị',
+        items: [
+          { id: 'sys-users', label: '👤 Tài khoản & phân quyền', permission: 'admin.users' },
+          { id: 'sys-scopes', label: '🏷️ Phân cấp quản trị', permission: 'admin.delegate' },
         ],
       },
     ],
@@ -246,6 +274,13 @@ export const PORTALS = [
         items: [
           { id: 'tms', label: '🚛 Chuyến ghe (TMS)', permission: 'tms.read' },
           { id: 'gis', label: '🗺️ Bản đồ dùng chung', permission: 'gis.read' },
+        ],
+      },
+      {
+        group: 'Quản trị',
+        items: [
+          { id: 'sys-users', label: '👤 Tài khoản & phân quyền', permission: 'admin.users' },
+          { id: 'sys-scopes', label: '🏷️ Phân cấp quản trị', permission: 'admin.delegate' },
         ],
       },
     ],
@@ -296,7 +331,9 @@ export const PORTALS = [
         group: 'Quản trị hệ thống',
         items: [
           { id: 'sys-users', label: '👤 Tài khoản người dùng', permission: 'admin.users' },
-          { id: 'sys-groups', label: '🛡️ Nhóm & phân quyền', permission: 'admin.users' },
+          { id: 'sys-scopes', label: '🏷️ Phân cấp quản trị', permission: 'admin.delegate' },
+          { id: 'sys-groups', label: '🛡️ Nhóm & phân quyền', permission: 'admin.groups' },
+          { id: 'sys-data', label: '🗂️ Miền dữ liệu & đồng bộ', permission: 'admin.config' },
           { id: 'sys-notify', label: '🔔 Thông báo & kênh gửi', permission: 'admin.config' },
           { id: 'masterdata', label: '🗄️ Master Data', permission: 'mdm.read' },
           { id: 'admin', label: '📜 Nhật ký & đồng bộ', permission: 'gis.read' },

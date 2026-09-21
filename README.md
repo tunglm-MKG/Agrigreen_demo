@@ -47,7 +47,7 @@ npm test
 
 - `npm run seed -- --reset` — xoá và nạp lại dữ liệu nền (26 HTX ĐBSCL, 3 mùa vụ, 378 máy cơ giới, 7 tuyến đường thuỷ, nhà máy VFT, 49 tham số).
 - `npm run demo` — chạy trọn vẹn nghiệp vụ trên dòng lệnh: đặt 5 Hub ứng viên → dựng 3 kịch bản → mô phỏng → so sánh → khuyến nghị → độ nhạy → phê duyệt tham số → kết xuất Hub sang kho → nhập kho → định tuyến TMS → cân đối cơ giới hoá.
-- `npm test` — 266 test kiểm chứng các Acceptance Criteria trong BRD và luồng nhập Excel.
+- `npm test` — 282 test kiểm chứng các Acceptance Criteria trong BRD và luồng nhập Excel.
 
 ### Tài khoản mẫu (mật khẩu `123456`)
 
@@ -63,6 +63,9 @@ npm test
 | `supplychain` | (thêm) | Hợp đồng thu mua rơm, xác nhận phiếu mua rơm |
 | `taichinh` | (thêm) | Thanh toán phiếu mua rơm — tất toán công nợ HTX |
 | `htx01` | (thêm) | Xem hợp đồng, phiếu mua rơm và tiền còn phải nhận của HTX mình |
+| `qtri_kn_ag` | Quản trị Khuyến nông **tỉnh An Giang** | Vào Cổng Khuyến nông → Tài khoản: chỉ thấy cán bộ An Giang, chỉ gán được nhóm Khuyến nông, tài khoản tạo ra bị gán cứng tỉnh |
+| `qtri_erp` | Quản trị **toàn hệ thống ERP** | Thấy mọi người ERP, gán được cả nhóm Tài chính, uỷ quyền tiếp phạm vi tỉnh / HTX trong ERP |
+| `canbo_xa_dt` | Cán bộ Khuyến nông xã (Đồng Tháp) | Để thấy admin An Giang **không** nhìn thấy người này |
 | `doitruong` | Đội trưởng thu gom rơm | Ghi nhận cuộn – gom – xuống ghe tại ruộng |
 | `canbo_tw` / `canbo_xa` | Khuyến nông TW / xã | Thư viện kỹ thuật, nhiệm vụ hỗ trợ |
 | `htx01` / `nongdan` | Ban quản lý HTX / Nông dân | Vẽ lô ruộng, mở vụ, nhật ký, khai báo sản lượng |
@@ -643,6 +646,60 @@ Mã nguồn: [`erp/params/actuals.ts`](src/erp/params/actuals.ts) ·
 
 ---
 
+## 1N. Phân quyền theo phạm vi và tách cơ sở dữ liệu theo hệ thống con
+
+### Mỗi hệ thống con, mỗi cấp một admin riêng — super admin quản tất cả
+
+Ma trận nhóm–quyền (mục 1H) trả lời "nhóm này làm được gì". Phần này trả lời câu còn thiếu:
+**ai được quản ai**. Trung tâm Khuyến nông tỉnh An Giang cần tự tạo tài khoản và phân quyền cho
+cán bộ tỉnh mình, nhưng không được thấy cán bộ Đồng Tháp, không được đụng ERP, không được sửa
+ma trận quyền toàn hệ thống.
+
+Một **phạm vi quản trị** = (hệ thống, cấp, đơn vị): cấp *toàn hệ thống*, *tỉnh* hoặc *hợp tác
+xã*, trong một của sáu hệ thống con (KN, HTX, CGH, GIS, ERP, Hiện trường). Mỗi nhóm thuộc đúng
+một hệ thống (`ROLE_SYSTEM`); một tài khoản "thuộc" hệ thống nào là do nhóm của nó. Super admin
+là nhóm `platform_admin` — không cần dòng phạm vi nào.
+
+| Mã | Chốt chặn |
+| --- | --- |
+| SA-08 | Admin phạm vi chỉ **thấy và thao tác** trên tài khoản cùng hệ thống, và cùng tỉnh / cùng HTX nếu phạm vi ở cấp đó. Quản trị nền tảng nằm ngoài mọi phạm vi con |
+| SA-09 | Chỉ gán được nhóm **thuộc hệ thống mình quản**; không bao giờ gán được quản trị nền tảng. Admin cấp hệ thống gán được mọi nhóm của hệ thống đó, kể cả nhóm có quyền bản thân không có (kế toán ERP không cần là kế toán) |
+| SA-10 | Ma trận nhóm–quyền là toàn hệ thống — **chỉ super admin** sửa (quyền `admin.groups`, không nhóm nào có sẵn) |
+| SA-11 | Uỷ quyền phân cấp: super admin cấp phạm vi bất kỳ; admin cấp hệ thống cấp được phạm vi tỉnh / HTX **trong hệ thống mình**, không nhân bản quyền toàn hệ thống; admin tỉnh / HTX không uỷ quyền tiếp |
+| SA-12 | Tài khoản tạo trong phạm vi tỉnh / HTX bị **gán cứng** tỉnh / HTX đó |
+
+Màn *Tài khoản & phân quyền* và *Phân cấp quản trị* xuất hiện ở **mọi cổng** — admin KN tỉnh làm
+việc ngay trong Cổng Khuyến nông, không cần vào ERP. Mọi route quản trị tự kiểm phạm vi ở máy chủ;
+hai quyền "ảo" `admin.users` / `admin.delegate` mà giao diện thấy chỉ để hiện menu.
+
+### Mỗi hệ thống con một cơ sở dữ liệu; dữ liệu dùng chung ở một nơi và chảy theo luồng
+
+98 bảng trước đây nằm trong một tệp SQLite. Nay **mỗi miền một tệp**: `mekonggreen.shared.db`
+(định danh, phân quyền, đơn vị hành chính, HTX, thửa, máy móc, cơ sở, nhật ký truy vết, thông báo)
+và `mekonggreen.kn.db`, `.htx.db`, `.cgh.db`, `.gis.db`, `.erp.db`, `.field.db`. Bảng nào thuộc miền
+nào khai một chỗ ([`domains.ts`](src/platform/db/domains.ts)); test bắt bảng chưa xếp miền.
+
+Cùng một tiến trình, các tệp được **ATTACH** vào một kết nối: mã nghiệp vụ vẫn JOIN xuyên miền
+không cần tiền tố, giao dịch ghi hai tệp vẫn nguyên tử. SQLite không cho FOREIGN KEY trỏ sang tệp
+khác, nên FK xuyên miền bị gỡ lúc migrate (FK cùng miền giữ nguyên và vẫn được cưỡng chế) — tính
+toàn vẹn xuyên miền do tầng nghiệp vụ giữ, đúng như khi các hệ thống tách ra chạy riêng. Sao lưu,
+di chuyển hay để một tỉnh tự vận hành Khuyến nông giờ là việc của **một tệp**.
+
+**Luồng đồng bộ dữ liệu dùng chung** ([`sharedFlows.ts`](src/platform/sync/sharedFlows.ts)): mỗi
+thực thể dùng chung có **một chủ** (hệ thống được ghi), có thể có đồng chủ, và danh sách hệ thống
+nhận — hồ sơ HTX do KN khởi tạo, HTX kích hoạt, ERP / CGH / GIS / Hiện trường nhận; hộ nông dân chỉ
+KN nhận, ERP không đụng dữ liệu cá nhân; cơ sở Hub do ERP ghi, Hiện trường và GIS nhận. Nguồn sự
+thật của mọi thay đổi là nhật ký truy vết append-only: hệ thống con kéo **feed** theo đúng thực thể
+mình nhận, xử lý, rồi **ack** con trỏ — cùng tiến trình thì đọc thẳng tệp dùng chung, tách ra chạy
+riêng thì kéo feed qua API, mã nghiệp vụ không đổi. Màn *Miền dữ liệu & đồng bộ* (super admin) cho
+thấy từng tệp, từng luồng ai ghi ai nhận, và từng hệ thống còn nợ bao nhiêu thay đổi.
+
+Mã nguồn: [`platform/auth/scopes.ts`](src/platform/auth/scopes.ts) · [`platform/db/domains.ts`](src/platform/db/domains.ts) ·
+[`platform/db/db.ts`](src/platform/db/db.ts) · [`platform/sync/sharedFlows.ts`](src/platform/sync/sharedFlows.ts) ·
+[`tests/scopes.test.ts`](tests/scopes.test.ts) · [`tests/domains.test.ts`](tests/domains.test.ts)
+
+---
+
 ## 1M. Chuỗi thu mua rơm khép kín: hợp đồng → phiếu mua → công nợ, phiếu nhập tự tham chiếu chuyến, danh mục ghe
 
 Bốn mắt hở còn lại của chuỗi rơm trong bản rà soát (B1 phần còn lại, B3, D1, D2) được đóng cùng lúc
@@ -1086,6 +1143,9 @@ Hai tham số #48/#49 để `null` là cố ý: đó là cách hệ thống th�
 | Phiếu mua rơm PM-01→04 | Sinh từ việc hoàn thành, AP theo HTX, thanh toán tất toán | `erp/straw/tickets.ts` |
 | Danh mục ghe GH-01→03 | Số hiệu, đăng kiểm, đơn giá thuê → cước thật chuyến | `erp/tms/vessels.ts` |
 | Kho ← hiện trường | Thông báo hàng đến theo chuyến, phiếu nhập tự lập từ cân ghe | `erp/field/service.ts::recordPlantWeighing` |
+| Phạm vi quản trị SA-08→12 | Admin theo hệ thống / tỉnh / HTX, uỷ quyền phân cấp, super admin | `platform/auth/scopes.ts` |
+| Miền dữ liệu | Mỗi hệ thống con một tệp SQLite, ATTACH, gỡ FK xuyên miền lúc migrate | `platform/db/domains.ts`, `platform/db/db.ts` |
+| Luồng dùng chung | Chủ / đồng chủ / người nhận từng thực thể; feed + ack từ nhật ký truy vết | `platform/sync/sharedFlows.ts` |
 | **Cổng Hiện trường** | 5 màn hình riêng + TMS, GIS dùng chung | `web/pages/field.js` |
 | Finance | AR/AP, Revenue Engine 3 mô hình, carbon 45/55, budget vs actual | `erp/finance/service.ts` |
 | Reporting | Dashboard hợp nhất, xếp hạng kịch bản, xuất CSV/HTML in được | `erp/reporting/service.ts` |
@@ -1094,7 +1154,7 @@ Hai tham số #48/#49 để `null` là cố ý: đó là cách hệ thống th�
 
 ## 8. Kiểm thử
 
-`npm test` chạy 266 test viết theo đúng Acceptance Criteria của BRD, ví dụ:
+`npm test` chạy 282 test viết theo đúng Acceptance Criteria của BRD, ví dụ:
 
 - `FN-01 AC-03` — danh mục đúng 49 tham số, 23 thị trường / 24 giả định / 2 khác, không trùng/thiếu STT.
 - `FN-05 AC-03` — vùng phục vụ chồng lấn: mỗi HTX chỉ xuất hiện ở đúng một Hub.
@@ -1128,6 +1188,10 @@ Hai tham số #48/#49 để `null` là cố ý: đó là cách hệ thống th�
 - `PM-02` — phiếu theo tấn cân còn một ghe chưa cân thì vẫn "chờ cân", xác nhận bị từ chối; cân đủ mới ra tiền.
 - `PM-03` — không hợp đồng: phiếu không có tiền, xác nhận không nhập giá bị từ chối.
 - `GH-03` — ghe có đơn giá: chuyến 80 t × 180 000 đ = 14,4 triệu, nguồn `don_gia_ghe`, vào mẫu cước thực; ghe không đơn giá thì theo tham số, không vào mẫu.
+- `SA-08` — admin KN tỉnh An Giang thấy cán bộ An Giang, không thấy Đồng Tháp, ERP, HTX cùng tỉnh, hay super admin.
+- `SA-11` — admin ERP uỷ quyền tỉnh trong ERP được; nhân bản quyền toàn hệ thống, uỷ quyền sang KN, hay admin tỉnh uỷ quyền tiếp đều bị chặn.
+- Miền dữ liệu — mỗi bảng nằm đúng tệp của miền; JOIN xuyên tệp không tiền tố; FK xuyên miền bị gỡ, FK cùng miền vẫn cưỡng chế; giao dịch hai tệp rollback cùng nhau.
+- Luồng dùng chung — feed của KN không chứa cơ sở ERP; hiện trường không nhận dữ liệu hộ; ack lùi không kéo con trỏ lùi.
 - Ba app nghiệp vụ đã tách cổng và mỗi cổng có ≥ 7 màn hình chức năng theo BRD.
 - Ban quản lý HTX đọc được nội dung khuyến nông nhưng **không** vào được Cổng Khuyến nông.
 - Mọi trang khai báo trong `portals.js` đều thực sự được đăng ký ở một module trang.

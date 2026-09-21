@@ -12,6 +12,10 @@ import * as notifyService from './platform/notify/service.ts';
 import { PERMISSION_GROUPS, PERMISSIONS as P, ROLE_LABELS, ROLE_PERMISSIONS } from './platform/auth/rbac.ts';
 import * as users from './platform/auth/users.ts';
 import * as sysadmin from './platform/auth/admin.ts';
+import * as scopes from './platform/auth/scopes.ts';
+import * as sharedFlows from './platform/sync/sharedFlows.ts';
+import { databaseFiles } from './platform/db/db.ts';
+import { SYSTEMS } from './platform/auth/rbac.ts';
 import * as audit from './platform/audit/audit.ts';
 import * as sync from './platform/sync/sync.ts';
 import * as mdm from './mdm/service.ts';
@@ -228,49 +232,80 @@ export function buildApi(): Router {
     return field.productivityReport(ctx.query.get('from'), ctx.query.get('to'));
   }, P.FIELD_READ);
 
-  api.get('/admin/dashboard', () => sysadmin.adminDashboard(), P.ADMIN_USERS);
-  api.get('/admin/user-views', () => sysadmin.listUserViews(), P.ADMIN_USERS);
-  api.get('/admin/users/:id', (ctx) => sysadmin.userDetail(ctx.params.id), P.ADMIN_USERS);
-  api.put('/admin/users/:id', (ctx) =>
-    sysadmin.updateProfile(ctx.params.id, body(ctx) as never, ctx.actor), P.ADMIN_USERS);
-  api.put('/admin/users/:id/roles', (ctx) =>
-    sysadmin.setUserRoles(ctx.params.id, body(ctx).roles ?? [], ctx.actor), P.ADMIN_USERS);
-  api.post('/admin/users/:id/set-status', (ctx) =>
-    sysadmin.setStatus(ctx.params.id, body(ctx).status, ctx.actor), P.ADMIN_USERS);
-  api.post('/admin/users/:id/reset-pw', (ctx) =>
-    sysadmin.resetUserPassword(ctx.params.id, ctx.actor), P.ADMIN_USERS);
-  api.post('/admin/users/:id/revoke-sessions', (ctx) => ({
-    revokedSessions: sysadmin.revokeSessions(ctx.params.id, ctx.actor),
-  }), P.ADMIN_USERS);
+  // ===================== Quản trị người dùng theo PHẠM VI (SA-08..12) =====================
+  // Không dùng quyền tĩnh: super admin (quyền *) hoặc người có phạm vi được uỷ quyền
+  // mới vào; mỗi thao tác tự kiểm tài khoản đích có nằm trong phạm vi không.
+  const adminCtx = (ctx: Context) => {
+    if (!ctx.user) throw unauthorized();
+    try { return scopes.adminContext(ctx.user); } catch (error) { throw forbidden((error as Error).message); }
+  };
+  const superOnly = (ctx: Context) => {
+    if (!ctx.user) throw unauthorized();
+    try { return scopes.requireSuperAdmin(ctx.user); } catch (error) { throw forbidden((error as Error).message); }
+  };
+  api.get('/admin/dashboard', (ctx) => { const a = adminCtx(ctx); return a.superAdmin ? { ...sysadmin.adminDashboard(), scoped: false } : scopes.scopedDashboard(a); });
+  api.get('/admin/lookups', (ctx) => scopes.adminLookups(adminCtx(ctx)));
+  api.get('/admin/user-views', (ctx) => {
+    const visible = scopes.visibleUserIds(adminCtx(ctx));
+    const views = sysadmin.listUserViews();
+    return visible ? views.filter((v) => visible.has(v.id)) : views;
+  });
+  api.get('/admin/users/:id', (ctx) => { scopes.assertCanManage(adminCtx(ctx), ctx.params.id); return { ...sysadmin.userDetail(ctx.params.id), adminScopes: scopes.scopesOf(ctx.params.id) }; });
+  api.put('/admin/users/:id', (ctx) => { scopes.assertCanManage(adminCtx(ctx), ctx.params.id); return sysadmin.updateProfile(ctx.params.id, body(ctx) as never, ctx.actor); });
+  api.put('/admin/users/:id/roles', (ctx) => {
+    const a = adminCtx(ctx);
+    scopes.assertCanManage(a, ctx.params.id);
+    const roles = (body(ctx).roles ?? []) as string[];
+    scopes.assertRolesAllowed(a, roles);
+    return sysadmin.setUserRoles(ctx.params.id, roles, ctx.actor);
+  });
+  api.post('/admin/users/:id/set-status', (ctx) => { scopes.assertCanManage(adminCtx(ctx), ctx.params.id); return sysadmin.setStatus(ctx.params.id, body(ctx).status, ctx.actor); });
+  api.post('/admin/users/:id/reset-pw', (ctx) => { scopes.assertCanManage(adminCtx(ctx), ctx.params.id); return sysadmin.resetUserPassword(ctx.params.id, ctx.actor); });
+  api.post('/admin/users/:id/revoke-sessions', (ctx) => { scopes.assertCanManage(adminCtx(ctx), ctx.params.id); return { revokedSessions: sysadmin.revokeSessions(ctx.params.id, ctx.actor) }; });
+  api.get('/admin/users', (ctx) => { const visible = scopes.visibleUserIds(adminCtx(ctx)); const list = users.listUsers(); return visible ? list.filter((u) => visible.has(u.id)) : list; });
+  api.post('/admin/users', (ctx) => {
+    const a = adminCtx(ctx);
+    const input = scopes.coerceCreateInput(a, body(ctx) as never);
+    return users.createUser(input as never, ctx.actor);
+  });
+  api.post('/admin/users/:id/status', (ctx) => { scopes.assertCanManage(adminCtx(ctx), ctx.params.id); return sysadmin.setStatus(ctx.params.id, body(ctx).status, ctx.actor); });
+  api.post('/admin/users/:id/reset-password', (ctx) => { scopes.assertCanManage(adminCtx(ctx), ctx.params.id); return sysadmin.resetUserPassword(ctx.params.id, ctx.actor); });
 
-  api.get('/admin/permissions', () => ({
-    groups: PERMISSION_GROUPS,
-  }), P.ADMIN_USERS);
-  api.get('/admin/groups', () => sysadmin.listGroups(), P.ADMIN_USERS);
-  api.post('/admin/groups', (ctx) => sysadmin.createGroup(body(ctx) as never, ctx.actor), P.ADMIN_USERS);
-  api.put('/admin/groups/:code', (ctx) =>
-    sysadmin.updateGroup(ctx.params.code, body(ctx) as never, ctx.actor), P.ADMIN_USERS);
-  api.delete('/admin/groups/:code', (ctx) => {
-    sysadmin.deleteGroup(ctx.params.code, ctx.actor);
-    return { ok: true };
-  }, P.ADMIN_USERS);
-  api.put('/admin/groups/:code/permission', (ctx) => sysadmin.setGroupPermission(
-    ctx.params.code, body(ctx).permission,
-    body(ctx).granted === null ? null : Boolean(body(ctx).granted),
-    ctx.actor,
-  ), P.ADMIN_USERS);
-  api.post('/admin/groups/:code/reset', (ctx) =>
-    sysadmin.resetGroupPermissions(ctx.params.code, ctx.actor), P.ADMIN_USERS);
+  // Ma trận nhóm–quyền: toàn hệ thống → chỉ super admin (SA-10).
+  api.get('/admin/permissions', (ctx) => { superOnly(ctx); return { groups: PERMISSION_GROUPS, roles: ROLE_LABELS, defaults: ROLE_PERMISSIONS }; });
+  api.get('/admin/groups', (ctx) => { adminCtx(ctx); return sysadmin.listGroups(); });
+  api.post('/admin/groups', (ctx) => { superOnly(ctx); return sysadmin.createGroup(body(ctx) as never, ctx.actor); });
+  api.put('/admin/groups/:code', (ctx) => { superOnly(ctx); return sysadmin.updateGroup(ctx.params.code, body(ctx) as never, ctx.actor); });
+  api.delete('/admin/groups/:code', (ctx) => { superOnly(ctx); sysadmin.deleteGroup(ctx.params.code, ctx.actor); return { ok: true }; });
+  api.put('/admin/groups/:code/permission', (ctx) => { superOnly(ctx); return sysadmin.setGroupPermission(ctx.params.code, String(body(ctx).permission), body(ctx).granted === null ? null : Boolean(body(ctx).granted), ctx.actor); });
+  api.post('/admin/groups/:code/reset', (ctx) => { superOnly(ctx); return sysadmin.resetGroupPermissions(ctx.params.code, ctx.actor); });
 
-  api.get('/admin/users', () => users.listUsers(), P.ADMIN_USERS);
-  api.post('/admin/users', (ctx) => users.createUser(body(ctx) as never, ctx.actor), P.ADMIN_USERS);
-  api.post('/admin/users/:id/status', (ctx) => {
-    users.setUserStatus(ctx.params.id, body(ctx).status, ctx.actor);
-    return { ok: true };
-  }, P.ADMIN_USERS);
-  api.post('/admin/users/:id/reset-password', (ctx) => ({
-    temporaryPassword: users.resetPassword(ctx.params.id, ctx.actor),
-  }), P.ADMIN_USERS);
+  // Uỷ quyền phạm vi (SA-11).
+  api.get('/admin/scopes', (ctx) => {
+    const a = adminCtx(ctx);
+    const list = scopes.listScopes({ system: ctx.query.get('system') || undefined });
+    return a.superAdmin ? list : list.filter((s) => a.systems.has(s.system));
+  });
+  api.post('/admin/scopes', (ctx) => scopes.grantScope(body(ctx) as never, adminCtx(ctx), ctx.actor));
+  api.delete('/admin/scopes/:id', (ctx) => { scopes.revokeScope(ctx.params.id, adminCtx(ctx), ctx.actor); return { ok: true }; });
+
+  // Miền dữ liệu & luồng đồng bộ dữ liệu dùng chung.
+  api.get('/admin/data-domains', (ctx) => { superOnly(ctx); return { files: databaseFiles(), sync: sharedFlows.overview(SYSTEMS.map((s) => s.code)) }; });
+  api.get('/sync/shared/feed', (ctx) => {
+    const a = adminCtx(ctx);
+    const system = ctx.query.get('system') as never;
+    if (!SYSTEMS.some((s) => s.code === system)) throw badRequest('Thiếu hoặc sai tham số system');
+    if (!a.superAdmin && !a.systems.has(system)) throw forbidden('Chỉ đọc được feed của hệ thống mình quản trị');
+    return sharedFlows.feedFor(system, ctx.query.get('since') ? num(ctx.query.get('since')) : sharedFlows.cursorOf(system), ctx.query.get('limit') ? num(ctx.query.get('limit')) : undefined);
+  });
+  api.post('/sync/shared/ack', (ctx) => {
+    const a = adminCtx(ctx);
+    const system = String(body(ctx).system) as never;
+    if (!SYSTEMS.some((s) => s.code === system)) throw badRequest('Thiếu hoặc sai tham số system');
+    if (!a.superAdmin && !a.systems.has(system)) throw forbidden('Chỉ ack được feed của hệ thống mình quản trị');
+    sharedFlows.ack(system, num(body(ctx).seq));
+    return { system, cursor: sharedFlows.cursorOf(system) };
+  });
 
   // ===================== Nhật ký, snapshot, replay =====================
   api.get('/audit/events', (ctx) =>

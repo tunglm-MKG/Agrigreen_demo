@@ -21,6 +21,8 @@ export interface User {
   mustChangePassword: boolean;
   orgNodeId: string | null;
   htxId: string | null;
+  /** Tỉnh (admin_units.id) — phạm vi quản trị cấp tỉnh bám vào cột này. */
+  provinceId: string | null;
   roles: string[];
 }
 
@@ -36,6 +38,7 @@ interface UserRow {
   status: string;
   org_node_id: string | null;
   htx_id: string | null;
+  province_id?: string | null;
 }
 
 function hydrate(row: UserRow): User {
@@ -52,6 +55,7 @@ function hydrate(row: UserRow): User {
     mustChangePassword: row.must_change_pw === 1,
     orgNodeId: row.org_node_id,
     htxId: row.htx_id,
+    provinceId: row.province_id ?? null,
     roles,
   };
 }
@@ -65,6 +69,7 @@ export interface CreateUserInput {
   roles: string[];
   orgNodeId?: string;
   htxId?: string;
+  provinceId?: string;
 }
 
 export function createUser(input: CreateUserInput, actor = {}): { user: User; temporaryPassword: string } {
@@ -89,6 +94,7 @@ export function createUser(input: CreateUserInput, actor = {}): { user: User; te
       status: 'active',
       org_node_id: input.orgNodeId ?? null,
       htx_id: input.htxId ?? null,
+      province_id: input.provinceId ?? null,
       created_at: timestamp,
       updated_at: timestamp,
     });
@@ -196,9 +202,23 @@ export function userFromToken(token: string | null | undefined): User | null {
 }
 
 export function describeUser(user: User): Record<string, unknown> {
+  const permissions = new Set(permissionsFor(user.roles));
+  // Phạm vi quản trị được uỷ quyền (SA-11) mở hai quyền "ảo" cho giao diện: vào được
+  // màn hình tài khoản, và uỷ quyền tiếp nếu là admin cấp hệ thống. Máy chủ KHÔNG
+  // tin hai quyền này — mọi route quản trị tự kiểm phạm vi bằng `scopes.adminContext`.
+  let adminScopes: Record<string, unknown>[] = [];
+  if (!permissions.has('*')) {
+    try {
+      adminScopes = all<{ system: string; scope_type: string; scope_id: string | null }>(
+        'SELECT system, scope_type, scope_id FROM admin_scopes WHERE user_id = ?', [user.id]);
+    } catch { /* bảng chưa có */ }
+    if (adminScopes.length) permissions.add('admin.users');
+    if (adminScopes.some((s) => s.scope_type === 'system')) permissions.add('admin.delegate');
+  }
   return {
     ...user,
     roleLabels: user.roles.map((role) => ROLE_LABELS[role] ?? role),
-    permissions: [...permissionsFor(user.roles)],
+    permissions: [...permissions],
+    adminScopes,
   };
 }

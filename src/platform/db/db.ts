@@ -3,29 +3,49 @@
  *
  * Dùng `node:sqlite` (có sẵn trong Node >= 22) nên toàn bộ hệ thống chạy được
  * mà không cần cài thêm bất kỳ package nào.
+ *
+ * MỖI MIỀN DỮ LIỆU MỘT TỆP (xem `domains.ts`): tệp dùng chung là `main`, các hệ
+ * thống con được ATTACH vào cùng kết nối. Đường dẫn cấu hình là đường dẫn GỐC —
+ * `data/mekonggreen.db` cho ra `data/mekonggreen.shared.db`, `.kn.db`, `.htx.db`, …
+ * Mã nghiệp vụ không thấy khác biệt: tên bảng không tiền tố được phân giải qua
+ * mọi tệp đã gắn; một giao dịch có thể ghi nhiều tệp và vẫn nguyên tử.
  */
 import { DatabaseSync } from 'node:sqlite';
-import { mkdirSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
+import { existsSync, mkdirSync, statSync } from 'node:fs';
+import { basename, dirname, join, resolve } from 'node:path';
+import { DOMAINS, tablesOf, type Domain } from './domains.ts';
 
 export type Row = Record<string, unknown>;
 
 let instance: DatabaseSync | null = null;
-let dbPath = resolve(process.cwd(), 'data', 'mekonggreen.db');
+let basePath = resolve(process.cwd(), 'data', 'mekonggreen.db');
+
+/** Đường dẫn tệp của một miền, suy từ đường dẫn gốc. */
+export function domainFile(domain: Domain, base = basePath): string {
+  const dir = dirname(base);
+  const stem = basename(base).replace(/\.db$/i, '');
+  return join(dir, `${stem}.${domain}.db`);
+}
 
 export function configureDatabase(path: string): void {
   if (instance) {
     instance.close();
     instance = null;
   }
-  dbPath = resolve(path);
+  basePath = resolve(path);
 }
 
 export function db(): DatabaseSync {
   if (!instance) {
-    mkdirSync(dirname(dbPath), { recursive: true });
-    instance = new DatabaseSync(dbPath);
-    instance.exec('PRAGMA journal_mode = WAL');
+    mkdirSync(dirname(basePath), { recursive: true });
+    instance = new DatabaseSync(domainFile('shared'));
+    for (const domain of DOMAINS) {
+      if (domain.code === 'shared') continue;
+      // SQLite nhận đường dẫn kiểu POSIX kể cả trên Windows; nháy đơn trong tên tệp được nhân đôi.
+      const file = domainFile(domain.code).split('\\').join('/').replace(/'/g, "''");
+      instance.exec(`ATTACH DATABASE '${file}' AS ${domain.code}`);
+    }
+    for (const domain of DOMAINS) instance.exec(`PRAGMA ${domain.code === 'shared' ? 'main' : domain.code}.journal_mode = WAL`);
     instance.exec('PRAGMA foreign_keys = ON');
   }
   return instance;
@@ -36,6 +56,27 @@ export function closeDatabase(): void {
     instance.close();
     instance = null;
   }
+}
+
+/** Tên schema SQLite của một miền (`main` cho dùng chung). */
+export const schemaName = (domain: Domain): string => (domain === 'shared' ? 'main' : domain);
+
+/** Tệp, kích cỡ và số bảng của từng miền — cho màn hình quản trị dữ liệu. */
+export function databaseFiles(): { domain: Domain; label: string; description: string; path: string; sizeBytes: number; tables: string[]; tableCount: number }[] {
+  db();
+  return DOMAINS.map((domain) => {
+    const path = domainFile(domain.code);
+    const exists = existsSync(path);
+    const wal = existsSync(`${path}-wal`) ? statSync(`${path}-wal`).size : 0;
+    const tables = all<{ name: string }>(
+      `SELECT name FROM ${schemaName(domain.code)}.sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name`,
+    ).map((r) => r.name);
+    return {
+      domain: domain.code, label: domain.label, description: domain.description, path,
+      sizeBytes: (exists ? statSync(path).size : 0) + wal, tables, tableCount: tables.length,
+      declared: tablesOf(domain.code).length,
+    } as never;
+  });
 }
 
 /** Chạy một câu lệnh ghi (INSERT/UPDATE/DELETE/DDL). */

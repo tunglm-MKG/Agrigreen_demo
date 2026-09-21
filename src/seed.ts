@@ -23,7 +23,8 @@ import {
   createTemplate as createSurveyTemplate,
   publishTemplate as publishSurveyTemplate,
 } from './agrigreen/khuyennong/survey.ts';
-import { createUser } from './platform/auth/users.ts';
+import { createUser, listUsers } from './platform/auth/users.ts';
+import { grantScope, tryAdminContext } from './platform/auth/scopes.ts';
 import * as field from './erp/field/service.ts';
 import { createContract } from './erp/straw/contracts.ts';
 import { createVessel } from './erp/tms/vessels.ts';
@@ -509,7 +510,8 @@ export function seedAll(): void {
 
   // ---------- Tài khoản mẫu ----------
   const firstHtxId = [...htxIds.values()][0];
-  const accounts: { username: string; fullName: string; roles: string[]; htxId?: string }[] = [
+  const provinceOf = (code: string) => provinceIds.get(code) ?? undefined;
+  const accounts: { username: string; fullName: string; roles: string[]; htxId?: string; provinceId?: string }[] = [
     { username: 'admin', fullName: 'Quản trị nền tảng', roles: [ROLES.PLATFORM_ADMIN] },
     { username: 'supplychain', fullName: 'Trưởng bộ phận Supply Chain', roles: [ROLES.SUPPLY_CHAIN] },
     { username: 'taichinh', fullName: 'Trưởng bộ phận Tài chính', roles: [ROLES.FINANCE] },
@@ -519,15 +521,26 @@ export function seedAll(): void {
     { username: 'hientruong', fullName: 'Điều hành hiện trường', roles: [ROLES.FIELD_MANAGER] },
     { username: 'doitruong', fullName: 'Đội trưởng Đội 1 — Long Xuyên', roles: [ROLES.FIELD_CREW] },
     { username: 'canbo_tw', fullName: 'Cán bộ Khuyến nông Trung ương', roles: [ROLES.KN_TRUNG_UONG] },
-    { username: 'canbo_xa', fullName: 'Cán bộ Khuyến nông xã', roles: [ROLES.KN_XA] },
-    { username: 'htx01', fullName: 'Ban quản lý HTX Vĩnh Bình', roles: [ROLES.HTX_MANAGER], htxId: firstHtxId },
-    { username: 'nongdan', fullName: 'Nông dân Nguyễn Văn A', roles: [ROLES.FARMER], htxId: firstHtxId },
+    { username: 'canbo_xa', fullName: 'Cán bộ Khuyến nông xã Vĩnh Bình (An Giang)', roles: [ROLES.KN_XA], provinceId: provinceOf('AG') },
+    { username: 'canbo_xa_dt', fullName: 'Cán bộ Khuyến nông xã Tân Hồng (Đồng Tháp)', roles: [ROLES.KN_XA], provinceId: provinceOf('DT') },
+    { username: 'htx01', fullName: 'Ban quản lý HTX Vĩnh Bình', roles: [ROLES.HTX_MANAGER], htxId: firstHtxId, provinceId: provinceOf('AG') },
+    { username: 'nongdan', fullName: 'Nông dân Nguyễn Văn A', roles: [ROLES.FARMER], htxId: firstHtxId, provinceId: provinceOf('AG') },
+    // Admin theo phạm vi (SA-08..12): KN tỉnh An Giang tự quản cán bộ tỉnh mình; ERP có admin toàn hệ thống.
+    { username: 'qtri_kn_ag', fullName: 'Quản trị Khuyến nông tỉnh An Giang', roles: [ROLES.KN_TINH], provinceId: provinceOf('AG') },
+    { username: 'qtri_erp', fullName: 'Quản trị hệ thống ERP', roles: [ROLES.SUPPLY_CHAIN] },
     { username: 'cuc_ktht', fullName: 'Cục KTHT & PTNT', roles: [ROLES.DCRD_VIEWER] },
     { username: 'vvb', fullName: 'Kiểm định viên SGS', roles: [ROLES.VVB_AUDITOR] },
   ];
   for (const account of accounts) {
     createUser({ ...account, password: '123456' }, { name: 'seed' });
   }
+  // Uỷ quyền phạm vi: super admin cấp cho hai admin mẫu.
+  const superCtx = tryAdminContext(listUsers().find((u) => u.username === 'admin')!)!;
+  const byName = (name: string) => listUsers().find((u) => u.username === name)!;
+  const ag = provinceOf('AG');
+  if (ag) grantScope({ userId: byName('qtri_kn_ag').id, system: 'kn', scopeType: 'province', scopeId: ag, note: 'Trung tâm Khuyến nông tỉnh tự quản cán bộ tỉnh' }, superCtx, { name: 'seed' });
+  grantScope({ userId: byName('qtri_erp').id, system: 'erp', scopeType: 'system', note: 'Quản trị toàn ERP nội bộ, được uỷ quyền tiếp cấp dưới' }, superCtx, { name: 'seed' });
+
   // Hai tài khoản có Zalo id mẫu: khi chưa cấu hình Zalo OA, thông báo của họ nằm ở
   // trạng thái "chờ cấu hình" — để màn hình quản trị chỉ đúng chỗ đang thiếu.
   run(`UPDATE users SET zalo_user_id = '8421390055671234' WHERE username = 'hientruong'`);
@@ -1035,10 +1048,12 @@ export function seedWaterwayStructures(): void {
 
 /** Xoá toàn bộ dữ liệu nghiệp vụ (dùng cho `npm run seed -- --reset`). */
 export function resetAll(): void {
-  const tables = all<{ name: string }>(
-    "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'",
-  );
+  // Mỗi miền một tệp — duyệt sqlite_master của từng schema đã gắn.
+  const schemas = all<{ name: string }>('PRAGMA database_list').map((r) => r.name);
   run('PRAGMA foreign_keys = OFF');
-  for (const table of tables) run(`DELETE FROM ${table.name}`);
+  for (const schema of schemas) {
+    const tables = all<{ name: string }>(`SELECT name FROM ${schema}.sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'`);
+    for (const table of tables) run(`DELETE FROM ${schema}.${table.name}`);
+  }
   run('PRAGMA foreign_keys = ON');
 }

@@ -21,6 +21,7 @@ import {
   defaultPermissionsFor, invalidatePermissionCache, permissionLabel, permissionsFor,
 } from './rbac.ts';
 import { getUser, listUsers, resetPassword, setUserStatus, type User } from './users.ts';
+import { ROLE_SYSTEM } from './rbac.ts';
 
 /** Mọi mã quyền hợp lệ, lấy từ danh mục có nhãn. */
 function allPermissionCodes(): string[] {
@@ -47,6 +48,13 @@ function assertNotLastAdmin(userId: string, action: string): void {
     `Đây là tài khoản quản trị nền tảng đang hoạt động DUY NHẤT — không ${action} được. ` +
     'Hãy cấp quyền quản trị cho một tài khoản khác trước, nếu không sẽ không còn ai vào sửa lại hệ thống.',
   );
+}
+
+function hasSystemScope(actorId: string | undefined, system: string | undefined): boolean {
+  if (!actorId || !system || system === '*') return false;
+  try {
+    return Boolean(one('SELECT id FROM admin_scopes WHERE user_id = ? AND system = ? AND scope_type = ?', [actorId, system, 'system']));
+  } catch { return false; }
 }
 
 /** SA-03 — không cấp được quyền mà chính người thao tác không có. */
@@ -357,6 +365,9 @@ export function setUserRoles(userId: string, roles: string[], actor: AuditActor 
   if (!unique.length) {
     throw new Error('Tài khoản phải thuộc ít nhất một nhóm, nếu không sẽ không vào được cổng nào.');
   }
+  // Nhóm hệ thống phải có mặt trong bảng trước khi kiểm — CSDL vừa nạp lại chưa có dòng nào
+  // cho tới khi ai đó mở màn hình nhóm; gọi API thẳng sẽ bị "nhóm không tồn tại" oan.
+  syncSystemGroups();
   for (const role of unique) {
     if (!one('SELECT code FROM user_groups WHERE code = ?', [role])) {
       throw new Error(`Nhóm "${role}" không tồn tại.`);
@@ -382,7 +393,10 @@ export function setUserRoles(userId: string, roles: string[], actor: AuditActor 
       }
       continue;
     }
-    assertCanGrant(actor.id, [...permissionsFor([role])]);
+    // Admin được uỷ quyền TOÀN một hệ thống gán được mọi nhóm của hệ thống đó, kể cả
+    // nhóm có quyền mà bản thân họ không có (kế toán ERP không cần là kế toán). Còn
+    // lại giữ SA-03: không cấp thứ mình không có.
+    if (!hasSystemScope(actor.id, ROLE_SYSTEM[role])) assertCanGrant(actor.id, [...permissionsFor([role])]);
   }
 
   transaction(() => {

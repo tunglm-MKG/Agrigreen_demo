@@ -11,6 +11,7 @@ import { HttpError, sendJson } from './platform/http/router.ts';
 import { buildApi } from './api.ts';
 import { gateEnabled, handleGate } from './platform/http/accessGate.ts';
 import { seedIfEmpty } from './seed.ts';
+import { syncSystemGroups } from './platform/auth/admin.ts';
 import { processOutbox, runAlertScan } from './platform/notify/service.ts';
 import { purgeExpired } from './platform/http/idempotency.ts';
 
@@ -30,6 +31,7 @@ const MIME: Record<string, string> = {
 export async function start(port = Number(process.env.PORT ?? 4173)): Promise<void> {
   migrate();
   seedIfEmpty();
+  syncSystemGroups();
   const api = buildApi();
 
   // Tiến trình nền: quét cảnh báo mỗi 10 phút, gửi outbox mỗi 30 giây, dọn khoá

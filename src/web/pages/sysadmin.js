@@ -22,6 +22,9 @@ import {
 let lastGroupCode = null;
 let lastUserId = null;
 
+/** Gắn con vào khung nhìn, bỏ qua `null` của các điều kiện — nếu không DOM in ra chữ "null". */
+const mount = (view, ...kids) => view.replaceChildren(...kids.filter((k) => k !== null && k !== undefined));
+
 const STATUS = {
   active: { label: 'Hoạt động', tone: 'good' },
   locked: { label: 'Đã khoá', tone: 'bad' },
@@ -36,11 +39,16 @@ registerPage('sys-users', {
   title: 'Tài khoản người dùng',
   subtitle: 'Khởi tạo, phân nhóm, khoá và đặt lại mật khẩu — mọi thay đổi đều vào nhật ký truy vết',
   async render(view, actions) {
-    const [dashboard, users, groups] = await Promise.all([
-      guard(api('/admin/dashboard')), api('/admin/user-views'), api('/admin/groups'),
+    const [dashboard, users, groupsAll, lookups] = await Promise.all([
+      guard(api('/admin/dashboard')), api('/admin/user-views'), api('/admin/groups'), api('/admin/lookups'),
     ]);
+    // SA-09: admin theo phạm vi chỉ thấy và gán được nhóm thuộc hệ thống mình quản.
+    const assignable = new Set(lookups.assignableRoles.map((r) => r.code));
+    const groups = groupsAll.filter((g) => lookups.superAdmin || assignable.has(g.code));
     const refresh = async () => { actions.replaceChildren(); await this.render(view, actions); };
     const detail = el('div', { class: 'grid' });
+    const provinceName = (id) => lookups.provinces.find((p) => p.id === id)?.name ?? null;
+    const htxName = (id) => lookups.cooperatives.find((c) => c.id === id)?.name ?? null;
 
     const showDetail = async (userId) => {
       lastUserId = userId;
@@ -49,7 +57,10 @@ registerPage('sys-users', {
         el('div', { class: 'chip-row' }, [
           badge(STATUS[info.status]?.label ?? info.status, STATUS[info.status]?.tone ?? 'neutral'),
           ...info.roleLabels.map((label) => badge(label, 'info')),
+          info.provinceId ? badge(`Tỉnh: ${provinceName(info.provinceId) ?? info.provinceId}`, 'neutral') : null,
+          info.htxId ? badge(`HTX: ${htxName(info.htxId) ?? info.htxId}`, 'neutral') : null,
           info.mustChangePassword ? badge('Phải đổi mật khẩu', 'warn') : null,
+          ...(info.adminScopes ?? []).map((sc) => badge(`Quản trị: ${sc.label}`, 'good')),
         ]),
 
         el('h4', { text: 'Quyền đến từ nhóm nào' }),
@@ -94,20 +105,25 @@ registerPage('sys-users', {
       ]));
     };
 
-    view.replaceChildren(
+    mount(view,
+      dashboard.scoped
+        ? alert(`Bạn đang quản trị trong phạm vi: ${dashboard.scopes.join('; ')}. Chỉ thấy và chỉ thao tác được trên tài khoản thuộc phạm vi này (SA-08); chỉ gán được nhóm của hệ thống mình quản (SA-09).`, 'info')
+        : null,
       el('div', { class: 'grid cols-4' }, [
-        kpi('Tổng tài khoản', num(dashboard.totalUsers),
+        kpi(dashboard.scoped ? 'Tài khoản trong phạm vi' : 'Tổng tài khoản', num(dashboard.totalUsers),
           `${num(dashboard.activeUsers)} hoạt động · ${num(dashboard.lockedUsers)} đã khoá`),
-        kpi('Quản trị nền tảng', num(dashboard.platformAdmins),
-          'Hệ thống luôn phải còn ít nhất một',
-          dashboard.platformAdmins <= 1 ? 'warning' : 'good'),
+        dashboard.scoped
+          ? kpi('Phạm vi', num(lookups.scopes.length), lookups.scopes.map((sc) => sc.label).join(' · '))
+          : kpi('Quản trị nền tảng', num(dashboard.platformAdmins),
+            'Hệ thống luôn phải còn ít nhất một',
+            dashboard.platformAdmins <= 1 ? 'warning' : 'good'),
         kpi('Phiên đang mở', num(dashboard.activeSessions), 'Trên toàn hệ thống'),
         kpi('Phải đổi mật khẩu', num(dashboard.mustChangePassword),
           'Vừa được đặt lại mật khẩu tạm',
           dashboard.mustChangePassword ? 'warning' : 'good'),
       ]),
 
-      dashboard.platformAdmins <= 1
+      !dashboard.scoped && dashboard.platformAdmins <= 1
         ? alert(
             'Chỉ còn MỘT tài khoản quản trị nền tảng đang hoạt động. Mất tài khoản đó là không còn ai ' +
             'vào sửa lại hệ thống — nên cấp quyền quản trị cho thêm một người nữa.', 'warn')
@@ -125,9 +141,12 @@ registerPage('sys-users', {
                 name: 'role', label: 'Nhóm ban đầu', type: 'select', required: true,
                 options: groups.map((g) => ({ value: g.code, label: `${g.label}${g.isSystem ? '' : ' (tuỳ chỉnh)'}` })),
               },
+              // SA-12: phạm vi tỉnh / HTX thì danh sách chỉ còn tỉnh / HTX của mình.
+              { name: 'provinceId', label: 'Tỉnh', type: 'select', options: [{ value: '', label: '— không gắn tỉnh —' }, ...lookups.provinces.map((p) => ({ value: p.id, label: p.name }))] },
+              { name: 'htxId', label: 'Hợp tác xã (nếu là tài khoản HTX)', type: 'select', options: [{ value: '', label: '— không —' }, ...lookups.cooperatives.map((c) => ({ value: c.id, label: c.name }))] },
             ], async (values) => {
               const result = await api('/admin/users', {
-                body: { ...values, roles: [values.role] },
+                body: { ...values, roles: [values.role], provinceId: values.provinceId || undefined, htxId: values.htxId || undefined },
               });
               window.alert(
                 `Đã tạo tài khoản ${result.user.username}.\n\n` +
@@ -146,6 +165,7 @@ registerPage('sys-users', {
           key: 'roleLabels', label: 'Nhóm',
           render: (row) => el('span', { class: 'chip-row' }, row.roleLabels.map((l) => badge(l, 'info'))),
         },
+        { key: 'provinceId', label: 'Tỉnh / HTX', render: (row) => [provinceName(row.provinceId), htxName(row.htxId)].filter(Boolean).join(' · ') || '—' },
         { key: 'permissionCount', label: 'Số quyền', align: 'right', render: (row) => num(row.permissionCount) },
         {
           key: 'activeSessions', label: 'Phiên mở', align: 'right',
@@ -359,7 +379,7 @@ registerPage('sys-groups', {
         : null));
     };
 
-    view.replaceChildren(
+    mount(view,
       el('div', { class: 'grid cols-4' }, [
         kpi('Tổng số nhóm', num(groups.length),
           `${num(groups.filter((g) => !g.isSystem).length)} nhóm tuỳ chỉnh`),
@@ -456,7 +476,7 @@ registerPage('sys-notify', {
         : null,
     ]);
 
-    view.replaceChildren(
+    mount(view,
       el('p', { class: 'muted', text: 'Mỗi thông báo tạo một dòng cho từng người nhận × từng kênh. Kênh chưa cấu hình không bị bỏ qua âm thầm: dòng nằm ở trạng thái "chờ cấu hình" cho tới khi bạn điền bên dưới. Giá trị token không ghi vào nhật ký.' }),
       el('div', { class: 'grid cols-2' }, [
         channelCard('inapp', channels.inapp, null),
@@ -479,5 +499,146 @@ registerPage('sys-notify', {
         { key: 'last_error', label: 'Lỗi cuối', render: (row) => row.last_error ?? '—' },
       ], problems, { empty: 'Không có dòng nào chờ hay lỗi.' })),
     );
+  },
+});
+
+// ===========================================================================
+// Phân cấp quản trị — uỷ quyền phạm vi (SA-11)
+// ===========================================================================
+
+registerPage('sys-scopes', {
+  title: 'Phân cấp quản trị',
+  subtitle: 'Mỗi hệ thống con, mỗi cấp một admin riêng — super admin uỷ quyền, admin cấp hệ thống uỷ quyền tiếp trong hệ thống mình',
+  async render(view, actions) {
+    const [scopes, lookups, users] = await Promise.all([guard(api('/admin/scopes')), api('/admin/lookups'), api('/admin/user-views')]);
+    const refresh = async () => { actions.replaceChildren(); await this.render(view, actions); };
+    const systemLabel = (code) => lookups.allSystems.find((s) => s.code === code)?.label ?? code;
+    const bySystem = {};
+    for (const sc of scopes) (bySystem[sc.system] ??= []).push(sc);
+
+    const grantForm = () => {
+      const scopeType = el('select', { name: 'scopeType' }, [
+        ...(lookups.superAdmin ? [el('option', { value: 'system' }, ['Toàn hệ thống'])] : []),
+        el('option', { value: 'province' }, ['Cấp tỉnh']),
+        el('option', { value: 'htx' }, ['Cấp hợp tác xã']),
+      ]);
+      const system = el('select', { name: 'system' }, lookups.systems.map((s) => el('option', { value: s.code }, [s.label])));
+      const scopeId = el('select', { name: 'scopeId' });
+      const user = el('select', { name: 'userId' }, users.filter((u) => !u.isPlatformAdmin).map((u) => el('option', { value: u.id }, [`${u.username} — ${u.fullName} (${u.roleLabels.join(', ')})`])));
+      const note = el('input', { name: 'note', placeholder: 'Ghi chú (tuỳ chọn)' });
+      const fillScopeId = () => {
+        const type = scopeType.value;
+        scopeId.replaceChildren(...(type === 'province'
+          ? lookups.provinces.map((p) => el('option', { value: p.id }, [p.name]))
+          : type === 'htx' ? lookups.cooperatives.map((c) => el('option', { value: c.id }, [c.name])) : [el('option', { value: '' }, ['— không áp dụng —'])]));
+        scopeId.disabled = type === 'system';
+      };
+      scopeType.addEventListener('change', fillScopeId); fillScopeId();
+      const error = el('p', { class: 'login-error', hidden: true });
+      return el('div', {}, [
+        el('div', { class: 'row' }, [
+          el('label', {}, ['Tài khoản được uỷ quyền', user]),
+          el('label', {}, ['Hệ thống', system]),
+          el('label', {}, ['Cấp', scopeType]),
+          el('label', {}, ['Đơn vị', scopeId]),
+          el('label', {}, ['Ghi chú', note]),
+          el('button', { class: 'small', text: '+ Uỷ quyền', onclick: async () => {
+            error.hidden = true;
+            try {
+              const sc = await api('/admin/scopes', { body: { userId: user.value, system: system.value, scopeType: scopeType.value, scopeId: scopeId.value || undefined, note: note.value || undefined } });
+              toast(`Đã uỷ quyền: ${sc.label}.`); await refresh();
+            } catch (e) { error.textContent = e.message; error.hidden = false; }
+          } }),
+        ]),
+        error,
+      ]);
+    };
+
+    mount(view,
+      el('div', { class: 'grid cols-4' }, [
+        kpi('Phạm vi đã uỷ quyền', num(scopes.length), `${new Set(scopes.map((s) => s.userId)).size} tài khoản`),
+        kpi('Cấp hệ thống', num(scopes.filter((s) => s.scopeType === 'system').length), 'Được uỷ quyền tiếp trong hệ thống mình'),
+        kpi('Cấp tỉnh', num(scopes.filter((s) => s.scopeType === 'province').length), 'Chỉ quản cán bộ tỉnh mình'),
+        kpi('Cấp HTX', num(scopes.filter((s) => s.scopeType === 'htx').length), 'Chỉ quản người của HTX mình'),
+      ]),
+      alert(lookups.superAdmin
+        ? 'Bạn là quản trị nền tảng: uỷ quyền được mọi hệ thống, mọi cấp. Ma trận nhóm–quyền vẫn chỉ có bạn sửa (SA-10).'
+        : `Bạn quản trị toàn hệ thống ${lookups.systems.map((s) => s.label).join(', ')} — uỷ quyền được phạm vi tỉnh / HTX trong hệ thống đó; không nhân bản quyền toàn hệ thống (SA-11).`, 'info'),
+      card('Uỷ quyền mới', [
+        el('p', { class: 'muted', text: 'Người được uỷ quyền phải đã thuộc một nhóm của hệ thống đó — nếu không họ không vào được cổng để quản trị. Gán nhóm ở màn Tài khoản trước.' }),
+        grantForm(),
+      ]),
+      ...Object.entries(bySystem).map(([code, list]) => card(systemLabel(code), table([
+        { key: 'username', label: 'Tài khoản' },
+        { key: 'fullName', label: 'Họ tên' },
+        { key: 'scopeType', label: 'Cấp', render: (r) => badge(lookups.scopeTypes[r.scopeType], r.scopeType === 'system' ? 'good' : r.scopeType === 'province' ? 'info' : 'neutral') },
+        { key: 'scopeName', label: 'Đơn vị', render: (r) => r.scopeName ?? '— toàn hệ thống —' },
+        { key: 'grantedBy', label: 'Uỷ quyền bởi', render: (r) => `${r.grantedBy ?? '—'} · ${dateTime(r.grantedAt)}` },
+        { key: 'note', label: 'Ghi chú', render: (r) => r.note ?? '—' },
+        { key: 'act', label: '', render: (r) => el('button', { class: 'small ghost', text: 'Thu hồi', onclick: async () => {
+          if (!window.confirm(`Thu hồi phạm vi "${r.label}" của ${r.username}?`)) return;
+          await guard(api(`/admin/scopes/${r.id}`, { method: 'DELETE' })); toast('Đã thu hồi.'); await refresh();
+        } }) },
+      ], list))),
+      scopes.length ? null : alert('Chưa có phạm vi nào được uỷ quyền — mọi việc quản trị đang dồn về quản trị nền tảng.', 'warn'),
+    );
+  },
+});
+
+// ===========================================================================
+// Miền dữ liệu & luồng đồng bộ dữ liệu dùng chung
+// ===========================================================================
+
+registerPage('sys-data', {
+  title: 'Miền dữ liệu & đồng bộ',
+  subtitle: 'Mỗi hệ thống con một tệp CSDL riêng; dữ liệu dùng chung ở một tệp và chảy sang từng hệ thống theo luồng đã khai',
+  async render(view, actions) {
+    const data = await guard(api('/admin/data-domains'));
+    const refresh = async () => { actions.replaceChildren(); await this.render(view, actions); };
+    const mb = (b) => `${(b / 1_048_576).toFixed(2)} MB`;
+    const receiverOf = (code) => data.sync.receivers.find((r) => r.system === code);
+    mount(view,
+      el('div', { class: 'grid cols-4' }, [
+        kpi('Tệp CSDL', num(data.files.length), `${data.files.reduce((s, f) => s + f.tableCount, 0)} bảng`),
+        kpi('Dung lượng', mb(data.files.reduce((s, f) => s + f.sizeBytes, 0)), 'Gồm WAL đang mở'),
+        kpi('Luồng dùng chung', num(data.sync.flows.length), `${data.sync.flows.reduce((s, f) => s + f.events, 0)} thay đổi đã ghi`),
+        kpi('Hệ thống còn nợ đồng bộ', num(data.sync.receivers.filter((r) => r.pending > 0).length), 'Chưa ack hết feed', data.sync.receivers.some((r) => r.pending > 0) ? 'warning' : 'good'),
+      ]),
+      data.sync.uncovered.length ? alert(`Bảng dùng chung chưa có luồng: ${data.sync.uncovered.join(', ')} — khai trong sharedFlows.ts.`, 'warn') : null,
+      card('Tệp cơ sở dữ liệu theo miền', table([
+        { key: 'label', label: 'Miền', render: (f) => el('div', {}, [el('strong', { text: f.label }), el('div', { class: 'muted', text: f.description })]) },
+        { key: 'path', label: 'Tệp', render: (f) => el('code', { text: f.path.split(/[\\/]/).pop() }) },
+        { key: 'sizeBytes', label: 'Dung lượng', align: 'right', render: (f) => mb(f.sizeBytes) },
+        { key: 'tableCount', label: 'Bảng', align: 'right', render: (f) => `${f.tableCount}/${f.declared}` },
+      ], data.files)),
+      card('Luồng dữ liệu dùng chung: ai ghi, ai nhận', [
+        el('p', { class: 'muted', text: 'Mỗi thực thể dùng chung có một chủ sở hữu và danh sách hệ thống nhận. Hệ thống con chỉ được ghi vào thứ mình là chủ hoặc đồng chủ; nguồn sự thật của mọi thay đổi là nhật ký truy vết.' }),
+        table([
+          { key: 'label', label: 'Thực thể', render: (f) => el('div', {}, [el('strong', { text: f.label }), el('div', { class: 'muted', text: f.entity })]) },
+          { key: 'owner', label: 'Chủ (ghi)', render: (f) => el('span', { class: 'chip-row' }, [badge(f.owner, 'good'), ...(f.coWriters ?? []).map((w) => badge(w, 'info'))]) },
+          { key: 'receivers', label: 'Nhận', render: (f) => el('span', { class: 'chip-row' }, f.receivers.map((r) => badge(r === '*' ? 'mọi hệ thống' : r, 'neutral'))) },
+          { key: 'events', label: 'Thay đổi', align: 'right', render: (f) => num(f.events) },
+          { key: 'lastChange', label: 'Gần nhất', render: (f) => (f.lastChange ? dateTime(f.lastChange) : '—') },
+          { key: 'why', label: 'Vì sao', render: (f) => el('span', { class: 'muted', text: f.why }) },
+        ], data.sync.flows),
+      ]),
+      card('Con trỏ đồng bộ của từng hệ thống con', [
+        el('p', { class: 'muted', text: 'Cùng một tiến trình, các hệ thống đọc thẳng CSDL dùng chung nên không cần sao chép. Con trỏ ở đây là cho hệ thống con tách ra chạy riêng: kéo feed qua API, xử lý, rồi ack.' }),
+        table([
+          { key: 'system', label: 'Hệ thống' },
+          { key: 'flows', label: 'Nhận', render: (r) => `${r.flows.length} thực thể` },
+          { key: 'cursor', label: 'Đã ack tới', align: 'right' },
+          { key: 'pending', label: 'Còn chờ', align: 'right', render: (r) => (r.pending ? badge(num(r.pending), 'warn') : badge('0', 'good')) },
+          { key: 'acked', label: 'Ack lần cuối', render: (r) => (r.acked ? dateTime(r.acked) : '—') },
+          { key: 'act', label: '', render: (r) => el('button', { class: 'small', text: 'Kéo feed & ack', onclick: async () => {
+            const feed = await guard(api(`/sync/shared/feed?system=${r.system}&limit=500`));
+            if (feed.events.length) await api('/sync/shared/ack', { body: { system: r.system, seq: feed.cursor } });
+            toast(`${r.system}: nhận ${feed.events.length} thay đổi${feed.events.length ? `, ack tới #${feed.cursor}` : ''}.`);
+            await refresh();
+          } }) },
+        ], data.sync.receivers),
+      ]),
+    );
+    void receiverOf;
   },
 });

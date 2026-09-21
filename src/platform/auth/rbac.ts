@@ -96,6 +96,11 @@ export const PERMISSIONS = {
   REPORT_READ: 'reporting.read',
   ADMIN_USERS: 'admin.users',
   ADMIN_CONFIG: 'admin.config',
+  // Ma trận nhóm–quyền là toàn hệ thống — chỉ quản trị nền tảng (SA-10). Không nhóm
+  // nào có sẵn quyền này; super admin có qua `*`.
+  ADMIN_GROUPS: 'admin.groups',
+  // Uỷ quyền phạm vi quản trị (SA-11). Cấp qua phạm vi cấp hệ thống, không qua nhóm.
+  ADMIN_DELEGATE: 'admin.delegate',
   // Hiện trường: xem / ghi nhận tại ruộng / lập kế hoạch và phân công.
   FIELD_READ: 'field.read',
   FIELD_WRITE: 'field.write',
@@ -202,11 +207,37 @@ export const PERMISSION_GROUPS: { group: string; permissions: { code: string; la
   {
     group: 'Quản trị hệ thống',
     permissions: [
-      { code: 'admin.users', label: 'Quản lý tài khoản và phân quyền' },
+      { code: 'admin.users', label: 'Quản lý tài khoản và phân quyền (trong phạm vi)' },
+      { code: 'admin.groups', label: 'Sửa ma trận nhóm–quyền toàn hệ thống' },
+      { code: 'admin.delegate', label: 'Uỷ quyền phạm vi quản trị' },
       { code: 'admin.config', label: 'Cấu hình hệ thống' },
     ],
   },
 ];
+
+/**
+ * HỆ THỐNG CON và nhóm thuộc mỗi hệ thống — cơ sở của phân quyền theo phạm vi.
+ *
+ * Một tài khoản "thuộc" hệ thống nào là do nhóm của nó; admin của hệ thống nào chỉ
+ * thấy và chỉ gán được nhóm của hệ thống đó (SA-08, SA-09). `platform_admin` không
+ * thuộc hệ thống nào — nó đứng trên tất cả.
+ */
+export type SystemCode = 'kn' | 'htx' | 'cgh' | 'gis' | 'erp' | 'field';
+
+export const SYSTEMS: { code: SystemCode; label: string; portal: string; roles: string[] }[] = [
+  { code: 'kn', label: 'Hệ thống Khuyến nông', portal: 'portal.kn', roles: [ROLES.KN_TRUNG_UONG, ROLES.KN_TINH, ROLES.KN_XA] },
+  { code: 'htx', label: 'Hệ thống Hợp tác xã', portal: 'portal.htx', roles: [ROLES.HTX_MANAGER, ROLES.FARMER] },
+  { code: 'cgh', label: 'Hệ thống Cơ giới hoá', portal: 'portal.cgh', roles: [ROLES.DCRD_VIEWER] },
+  { code: 'gis', label: 'Nền tảng GIS', portal: 'portal.gis', roles: [] },
+  { code: 'erp', label: 'ERP nội bộ Mekong Green', portal: 'portal.erp', roles: [ROLES.SUPPLY_CHAIN, ROLES.FINANCE, ROLES.WAREHOUSE_OP, ROLES.LOGISTICS, ROLES.EXECUTIVE, ROLES.VVB_AUDITOR] },
+  { code: 'field', label: 'Hệ thống Hiện trường', portal: 'portal.field', roles: [ROLES.FIELD_MANAGER, ROLES.FIELD_CREW] },
+];
+
+/** Nhóm → hệ thống. `*` là quản trị nền tảng. */
+export const ROLE_SYSTEM: Record<string, SystemCode | '*'> = Object.fromEntries([
+  [ROLES.PLATFORM_ADMIN, '*'],
+  ...SYSTEMS.flatMap((s) => s.roles.map((r) => [r, s.code] as [string, SystemCode])),
+]) as Record<string, SystemCode | '*'>;
 
 /** Nhãn tiếng Việt của một quyền; trả về chính mã khi chưa có nhãn. */
 export function permissionLabel(code: string): string {

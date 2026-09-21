@@ -14,6 +14,11 @@ chỗ hệ thống biết mà không báo, và chỗ vận hành thật sẽ v�
 > phiếu nhập kho tự tham chiếu chuyến. Mục 5 (B5 giả định – thực tế) cũng đã làm. Chi tiết
 > xem README mục 1I, 1J và 1K.
 >
+> **Cập nhật 21/09/2026:** bổ sung ngoài danh sách theo yêu cầu CEO — phân quyền theo phạm vi (admin
+> từng hệ thống con, từng cấp; super admin) và tách CSDL mỗi hệ thống con một tệp với luồng đồng bộ
+> dữ liệu dùng chung (README mục 1N). Việc này đóng luôn C6 phần khoá ngoại: FK cùng miền được giữ
+> và cưỡng chế, FK xuyên miền gỡ có chủ đích.
+>
 > **Cập nhật 06/09/2026:** đã làm nốt B1 (phiếu nhập kho tự tham chiếu chuyến), B3 (phiếu mua rơm
 > và công nợ HTX), D1 (hợp đồng thu mua) và D2 (danh mục ghe) — README mục 1M. Đợt 1 và phần lớn
 > đợt 3 của lộ trình đã xong.

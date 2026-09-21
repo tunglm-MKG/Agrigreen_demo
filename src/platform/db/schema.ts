@@ -10,9 +10,16 @@
  *  - Mọi phân hệ đều audit-trail: bảng `event_log` append-only là nguồn sự thật.
  */
 import { all, db } from './db.ts';
+import { qualifyStatement, splitStatements } from './domains.ts';
 
+/**
+ * Lược đồ hợp nhất được viết một lần; lúc chạy, từng câu CREATE được gắn tiền tố
+ * miền (`kn.`, `erp.`, …) theo `domains.ts` để bảng rơi đúng tệp của hệ thống con.
+ * FOREIGN KEY xuyên miền bị gỡ vì SQLite không cho khoá ngoại trỏ sang tệp khác.
+ */
 export function migrate(): void {
-  db().exec(SCHEMA);
+  const handle = db();
+  for (const statement of splitStatements(SCHEMA)) handle.exec(qualifyStatement(statement));
   applyColumnMigrations();
 }
 
@@ -45,6 +52,8 @@ function applyColumnMigrations(): void {
     { table: 'cooperatives', column: 'claimed_at', definition: 'TEXT' },
     // Zalo user id để gửi thông báo qua Zalo OA.
     { table: 'users', column: 'zalo_user_id', definition: 'TEXT' },
+    // Tỉnh của tài khoản — phạm vi quản trị cấp tỉnh (SA-08) bám vào đây.
+    { table: 'users', column: 'province_id', definition: 'TEXT' },
     // Rơm bán theo CUỘN, cân chỉ có ở nhà máy: lượt ghe mang cả số cuộn (đếm ở
     // ruộng) và số cân (ghi ở nhà máy); tấn lúc xuống ghe là ước tính.
     { table: 'field_loadings', column: 'tons_source', definition: "TEXT NOT NULL DEFAULT 'uoc_theo_cuon'" },
@@ -383,6 +392,27 @@ CREATE TABLE IF NOT EXISTS vessels (
 );
 CREATE INDEX IF NOT EXISTS idx_straw_contracts_htx ON straw_contracts(htx_id, status);
 CREATE INDEX IF NOT EXISTS idx_straw_tickets_htx ON straw_purchase_tickets(htx_id, status);
+
+-- Phạm vi quản trị được uỷ quyền (platform/auth/scopes.ts): mỗi hệ thống con,
+-- mỗi cấp một admin riêng; super admin (platform_admin) không cần dòng nào ở đây.
+CREATE TABLE IF NOT EXISTS admin_scopes (
+  id          TEXT PRIMARY KEY,
+  user_id     TEXT NOT NULL,
+  system      TEXT NOT NULL,          -- kn | htx | cgh | gis | erp | field
+  scope_type  TEXT NOT NULL,          -- system | province | htx
+  scope_id    TEXT,                   -- admin_units.id (tỉnh) hoặc cooperatives.id (HTX); NULL với cấp hệ thống
+  granted_by  TEXT,
+  granted_at  TEXT NOT NULL,
+  note        TEXT,
+  FOREIGN KEY (user_id) REFERENCES users(id)
+);
+CREATE INDEX IF NOT EXISTS idx_admin_scopes_user ON admin_scopes(user_id);
+-- Con trỏ đồng bộ dữ liệu dùng chung của từng hệ thống con (platform/sync/sharedFlows.ts).
+CREATE TABLE IF NOT EXISTS shared_sync_cursor (
+  system    TEXT PRIMARY KEY,
+  last_seq  INTEGER NOT NULL DEFAULT 0,
+  acked_at  TEXT NOT NULL
+);
 
 CREATE TABLE IF NOT EXISTS sessions (
   token       TEXT PRIMARY KEY,
