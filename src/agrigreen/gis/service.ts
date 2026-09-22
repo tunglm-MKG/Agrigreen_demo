@@ -122,7 +122,7 @@ export function buildMapBundle(query: MapQuery = {}): MapBundle {
 
   if (wanted.has('facilities')) {
     const rows = all<{ id: string; code: string; name: string; kind: string; lat: number; lng: number; capacity_tons: number; current_stock_tons: number }>(
-      'SELECT id, code, name, kind, lat, lng, capacity_tons, current_stock_tons FROM facilities',
+      'SELECT id, code, name, kind, lat, lng, capacity_tons, current_stock_tons FROM facilities WHERE deleted_at IS NULL',
     );
     layers.facilities = rows;
     points.push(...rows.map((row) => ({ lat: row.lat, lng: row.lng })));
@@ -187,12 +187,13 @@ function routeFeature(route: Record<string, unknown>) {
 function plotsInViewport(bbox?: MapQuery['bbox']) {
   if (!bbox) {
     return all(
-      'SELECT id, code, name, htx_id, area_ha, boundary, status FROM plots LIMIT 500',
+      'SELECT id, code, name, htx_id, area_ha, boundary, status FROM plots WHERE deleted_at IS NULL LIMIT 1000',
     ).map((row) => ({ ...row, boundary: parseJson((row as any).boundary, null) }));
   }
+  // BR-25: tối đa 1.000 polygon/viewport.
   return all(
     `SELECT id, code, name, htx_id, area_ha, boundary, status FROM plots
-     WHERE centroid_lat BETWEEN ? AND ? AND centroid_lng BETWEEN ? AND ? LIMIT 2000`,
+     WHERE deleted_at IS NULL AND centroid_lat BETWEEN ? AND ? AND centroid_lng BETWEEN ? AND ? LIMIT 1000`,
     [bbox.south, bbox.north, bbox.west, bbox.east],
   ).map((row) => ({ ...row, boundary: parseJson((row as any).boundary, null) }));
 }
@@ -260,7 +261,7 @@ export function harvestAlerts(horizonDays = 3): Record<string, unknown>[] {
 export function capacityWidgets(): Record<string, unknown>[] {
   const thresholds = capacityThresholds();
   return all<{ id: string; code: string; name: string; kind: string; lat: number; lng: number; capacity_tons: number; current_stock_tons: number }>(
-    "SELECT id, code, name, kind, lat, lng, capacity_tons, current_stock_tons FROM facilities WHERE kind IN ('hub','warehouse','yard')",
+    "SELECT id, code, name, kind, lat, lng, capacity_tons, current_stock_tons FROM facilities WHERE kind IN ('hub','warehouse','yard') AND deleted_at IS NULL",
   ).map((row) => {
     const pct = row.capacity_tons > 0 ? (row.current_stock_tons / row.capacity_tons) * 100 : 0;
     const band = thresholds.find((t) => pct < t.maxPct) ?? thresholds[thresholds.length - 1];

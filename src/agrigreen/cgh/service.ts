@@ -21,19 +21,42 @@ import { runSync } from '../../platform/sync/sync.ts';
 
 export type CoverageLevel = 'du' | 'can_chu_y' | 'thieu' | 'thua' | 'chua_co_du_lieu';
 
-export const COVERAGE_BANDS: { level: CoverageLevel; label: string; color: string }[] = [
-  { level: 'thieu', label: 'Thiếu (<60%)', color: '#A3372A' },
-  { level: 'can_chu_y', label: 'Cần chú ý (60–<85%)', color: '#9C6414' },
-  { level: 'du', label: 'Đủ (≥85%)', color: '#1F7A38' },
-  { level: 'thua', label: 'Thừa (≥120%)', color: '#2A78D6' },
-  { level: 'chua_co_du_lieu', label: 'Chưa có dữ liệu', color: '#9AA5A0' },
-];
+/**
+ * Ngưỡng cảnh báo cung–cầu là DỮ LIỆU cấu hình do DCRD ban hành, có ngày hiệu lực
+ * (US-CFG-03) — lưu ở system_config, mặc định theo BRD: Đủ ≥85 · Cần chú ý 60–<85 ·
+ * Thiếu <60 · Thừa ≥120.
+ */
+export interface CoverageThresholds { du: number; canChuY: number; thua: number; effectiveFrom: string; documentRef?: string }
+export const DEFAULT_COVERAGE_THRESHOLDS: CoverageThresholds = { du: 85, canChuY: 60, thua: 120, effectiveFrom: '2026-01-01', documentRef: 'QĐ 128/QĐ-KTHT (minh hoạ)' };
 
-export function classifyCoverage(pct: number | null): CoverageLevel {
+export function coverageThresholds(onDate = nowIso().slice(0, 10)): CoverageThresholds {
+  const row = one<{ value_json: string }>("SELECT value_json FROM system_config WHERE key = 'cgh.coverage_thresholds'");
+  if (!row) return DEFAULT_COVERAGE_THRESHOLDS;
+  try {
+    const versions = JSON.parse(row.value_json) as CoverageThresholds[];
+    // Áp đúng phiên bản hiệu lực tại thời điểm của vụ (AC-2 của US-CFG-02 áp tương tự cho ngưỡng).
+    const applicable = [...versions].filter((v) => v.effectiveFrom <= onDate).sort((a, b) => b.effectiveFrom.localeCompare(a.effectiveFrom))[0];
+    return applicable ?? DEFAULT_COVERAGE_THRESHOLDS;
+  } catch { return DEFAULT_COVERAGE_THRESHOLDS; }
+}
+
+export function coverageBands(onDate?: string): { level: CoverageLevel; label: string; color: string }[] {
+  const t = coverageThresholds(onDate);
+  return [
+    { level: 'thieu', label: `Thiếu (<${t.canChuY}%)`, color: '#A3372A' },
+    { level: 'can_chu_y', label: `Cần chú ý (${t.canChuY}–<${t.du}%)`, color: '#9C6414' },
+    { level: 'du', label: `Đủ (≥${t.du}%)`, color: '#1F7A38' },
+    { level: 'thua', label: `Thừa (≥${t.thua}%)`, color: '#2A78D6' },
+    { level: 'chua_co_du_lieu', label: 'Chưa có dữ liệu', color: '#9AA5A0' },
+  ];
+}
+
+export function classifyCoverage(pct: number | null, onDate?: string): CoverageLevel {
   if (pct === null || !Number.isFinite(pct)) return 'chua_co_du_lieu';
-  if (pct >= 120) return 'thua';
-  if (pct >= 85) return 'du';
-  if (pct >= 60) return 'can_chu_y';
+  const t = coverageThresholds(onDate);
+  if (pct >= t.thua) return 'thua';
+  if (pct >= t.du) return 'du';
+  if (pct >= t.canChuY) return 'can_chu_y';
   return 'thieu';
 }
 
@@ -63,10 +86,23 @@ export function upsertMachineType(
  * Khoá: Chủng loại × Khâu × Ngày hiệu lực.
  */
 export function addProductivityNorm(
-  input: { machineTypeId: string; stage: string; haPerMachineSeason: number; effectiveFrom: string; effectiveTo?: string; documentRef: string },
+  input: { machineTypeId: string; stage: string; haPerMachineSeason: number; effectiveFrom: string; effectiveTo?: string; documentRef: string; documentDate?: string },
   actor: AuditActor = {},
 ): void {
   if (input.haPerMachineSeason <= 0) throw new Error('Định mức năng suất phải lớn hơn 0.');
+  if (!input.effectiveFrom) throw new Error('Vui lòng nhập Ngày hiệu lực của Định mức.');
+  if (!input.documentRef?.trim()) throw new Error('Vui lòng nhập Số/ngày văn bản DCRD trước khi lưu Định mức');
+  if (input.effectiveTo && input.effectiveTo < input.effectiveFrom) throw new Error('Ngày hiệu lực kết thúc phải sau ngày hiệu lực bắt đầu');
+  // US-CFG-02 AC-3: không chồng lấp hiệu lực cho cùng Chủng loại × Khâu.
+  const overlapping = one<{ id: string; effective_from: string; effective_to: string | null }>(
+    `SELECT id, effective_from, effective_to FROM productivity_norms
+     WHERE active = 1 AND machine_type_id = ? AND stage = ?
+       AND effective_from <= ? AND (effective_to IS NULL OR effective_to >= ?)`,
+    [input.machineTypeId, input.stage, input.effectiveTo ?? '9999-12-31', input.effectiveFrom],
+  );
+  if (overlapping) {
+    throw new Error(`Định mức đã có bản ghi chồng lấp hiệu lực cho Chủng loại × Khâu này trong khoảng thời gian đã chọn (${overlapping.effective_from} → ${overlapping.effective_to ?? 'không giới hạn'}). Hãy đóng hiệu lực bản cũ trước.`);
+  }
   const record = {
     id: uuid(),
     machine_type_id: input.machineTypeId,
@@ -75,6 +111,7 @@ export function addProductivityNorm(
     effective_from: input.effectiveFrom,
     effective_to: input.effectiveTo ?? null,
     document_ref: input.documentRef,
+    document_date: input.documentDate ?? null,
     active: 1,
   };
   insert('productivity_norms', record);
@@ -96,18 +133,46 @@ export function effectiveNorms(onDate = nowIso().slice(0, 10)): Record<string, u
 // FN-04 / FN-05 — Chủ sở hữu và hồ sơ máy (mã tự sinh)
 // ---------------------------------------------------------------------------
 
+export const OWNER_TYPES: Record<string, string> = {
+  thanh_vien_htx: 'Thành viên HTX', htx: 'Hợp tác xã', doanh_nghiep: 'Doanh nghiệp', khac: 'Đơn vị khác',
+};
+
+/** Mã tỉnh viết tắt của HTX (AG, DT…) — dùng cho quy tắc sinh mã CSH-AG-00001 / MAY-AG-00001 (FN-04 BR-02, FN-05 BR-02). */
+export function provinceCodeOfHtx(htxId: string | null | undefined): string {
+  if (!htxId) return 'XX';
+  return one<{ code: string }>('SELECT a.code FROM cooperatives c JOIN admin_units a ON a.id = c.province_id WHERE c.id = ?', [htxId])?.code ?? 'XX';
+}
+
+function nextProvinceCode(table: string, prefix: string, province: string): string {
+  const like = `${prefix}-${province}-%`;
+  const last = one<{ code: string }>(`SELECT code FROM ${table} WHERE code LIKE ? ORDER BY code DESC LIMIT 1`, [like]);
+  const seq = last ? Number(last.code.split('-').pop()) + 1 : 1;
+  return `${prefix}-${province}-${String(seq).padStart(5, '0')}`;
+}
+
 export function createMachineOwner(
   input: { name: string; ownerType: string; htxId?: string; phone?: string },
   actor: AuditActor = {},
 ): Record<string, unknown> {
-  const count = one<{ n: number }>('SELECT COUNT(*) AS n FROM machine_owners');
+  if (!input.name?.trim()) throw new Error('Tên chủ sở hữu là trường bắt buộc.');
+  if (!OWNER_TYPES[input.ownerType]) throw new Error('Loại chủ sở hữu phải là một trong: Thành viên HTX / HTX / Doanh nghiệp / Đơn vị khác.');
+  // FN-04 BR-04: Thành viên HTX / HTX phải liên kết đúng một HTX; DN / đơn vị khác có thể không gắn.
+  if ((input.ownerType === 'thanh_vien_htx' || input.ownerType === 'htx') && !input.htxId) {
+    throw new Error('Chủ sở hữu loại Thành viên HTX / HTX phải liên kết đúng một HTX.');
+  }
+  if (input.phone && !/^0\d{9}$/.test(input.phone.replace(/\s+/g, ''))) throw new Error('SĐT không đúng định dạng, VD: 09xxxxxxxx');
+  if (input.phone && one('SELECT id FROM machine_owners WHERE name = ? AND phone = ?', [input.name.trim(), input.phone.replace(/\s+/g, '')])) {
+    throw new Error('Chủ sở hữu trùng định danh (Tên + SĐT) đã tồn tại.');
+  }
+  const province = input.ownerType === 'doanh_nghiep' || input.ownerType === 'khac' ? (input.htxId ? provinceCodeOfHtx(input.htxId) : 'XX') : provinceCodeOfHtx(input.htxId);
   const record = {
     id: uuid(),
-    code: sequenceCode('CSH', (count?.n ?? 0) + 1, 5),
-    name: input.name,
+    code: nextProvinceCode('machine_owners', 'CSH', province),
+    name: input.name.trim(),
     owner_type: input.ownerType,
     htx_id: input.htxId ?? null,
-    phone: input.phone ?? null,
+    phone: input.phone ? input.phone.replace(/\s+/g, '') : null,
+    status: 'active',
     created_at: nowIso(),
   };
   insert('machine_owners', record);
@@ -119,22 +184,37 @@ export function createMachine(
   input: {
     machineTypeId: string; ownerId: string; htxId?: string; brand?: string; model?: string;
     serialNumber?: string; chassisNumber?: string; yearMade?: number; capacityHaPerSeason?: number; condition?: string;
+    ownedSince?: string; fuel?: string; powerHp?: number;
   },
   actor: AuditActor = {},
 ): Record<string, unknown> {
-  const type = one<{ id: string; stage: string }>('SELECT id, stage FROM machine_types WHERE id = ?', [input.machineTypeId]);
-  if (!type) throw new Error('Chủng loại máy không có trong danh mục chuẩn.');
+  const type = one<{ id: string; stage: string }>('SELECT id, stage FROM machine_types WHERE id = ? AND active = 1', [input.machineTypeId]);
+  if (!type) throw new Error('Chủng loại máy không có trong danh mục chuẩn (hoặc đã ngừng sử dụng).');
+  const htxId = input.htxId ?? one<{ htx_id: string }>('SELECT htx_id FROM machine_owners WHERE id = ?', [input.ownerId])?.htx_id ?? null;
+  if (!htxId) throw new Error('Vui lòng chọn HTX');
+  if (!one('SELECT id FROM machine_owners WHERE id = ?', [input.ownerId])) throw new Error('Chủ sở hữu không tồn tại — tạo ở tab "Chủ sở hữu" trước.');
+  // FN-05 BR-01: Số máy/SN hoặc Số khung là định danh vật lý, duy nhất toàn hệ thống.
+  if (!input.serialNumber && !input.chassisNumber) throw new Error('Cần nhập Số máy/SN hoặc Số khung.');
   if (input.serialNumber) {
-    const duplicate = one('SELECT id FROM machines WHERE serial_number = ?', [input.serialNumber]);
-    if (duplicate) throw new Error(`Số máy (SN) "${input.serialNumber}" đã tồn tại.`);
+    const duplicate = one<{ htx_name: string | null }>('SELECT c.name AS htx_name FROM machines m LEFT JOIN cooperatives c ON c.id = m.htx_id WHERE m.serial_number = ?', [input.serialNumber]);
+    if (duplicate) throw new Error(`Số máy/SN "${input.serialNumber}" đã tồn tại trên hệ thống${duplicate.htx_name ? `, thuộc ${duplicate.htx_name}` : ''}.`);
   }
-  const count = one<{ n: number }>('SELECT COUNT(*) AS n FROM machines');
+  if (input.chassisNumber) {
+    const duplicate = one('SELECT id FROM machines WHERE chassis_number = ?', [input.chassisNumber]);
+    if (duplicate) throw new Error(`Số khung "${input.chassisNumber}" đã tồn tại trên hệ thống.`);
+  }
+  // FN-05 BR-08: Ngày HTX sở hữu/tiếp nhận là bắt buộc và không ở tương lai.
+  const ownedSince = input.ownedSince ?? nowIso().slice(0, 10);
+  if (ownedSince > nowIso().slice(0, 10)) throw new Error('Ngày HTX sở hữu không được sau ngày hiện tại');
+  if (input.yearMade !== undefined && input.yearMade !== null && (input.yearMade < 1950 || input.yearMade > new Date().getFullYear())) {
+    throw new Error('Năm sản xuất không hợp lý.');
+  }
   const record = {
     id: uuid(),
-    code: sequenceCode('MAY', (count?.n ?? 0) + 1, 6),
+    code: nextProvinceCode('machines', 'MAY', provinceCodeOfHtx(htxId)),
     machine_type_id: input.machineTypeId,
     owner_id: input.ownerId,
-    htx_id: input.htxId ?? one<{ htx_id: string }>('SELECT htx_id FROM machine_owners WHERE id = ?', [input.ownerId])?.htx_id ?? null,
+    htx_id: htxId,
     brand: input.brand ?? null,
     model: input.model ?? null,
     serial_number: input.serialNumber ?? null,
@@ -146,6 +226,11 @@ export function createMachine(
     condition_source: 'nhap_tay',
     condition_locked: 0,
     condition_updated_at: nowIso(),
+    owned_since: ownedSince,
+    deactivated_at: null,
+    status: 'active',
+    fuel: input.fuel ?? null,
+    power_hp: input.powerHp ?? null,
     created_at: nowIso(),
   };
   insert('machines', record);
@@ -153,7 +238,7 @@ export function createMachine(
   return record;
 }
 
-export function listMachines(filter: { htxId?: string; stage?: string; condition?: string } = {}): Record<string, unknown>[] {
+export function listMachines(filter: { htxId?: string; stage?: string; condition?: string; includeInactive?: boolean } = {}): Record<string, unknown>[] {
   const clauses: string[] = [];
   const params: unknown[] = [];
   if (filter.htxId) {
@@ -168,14 +253,16 @@ export function listMachines(filter: { htxId?: string; stage?: string; condition
     clauses.push('m.condition = ?');
     params.push(filter.condition);
   }
+  if (!filter.includeInactive) clauses.push("COALESCE(m.status, 'active') = 'active'");
   const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
   return all(
-    `SELECT m.*, mt.name AS machine_type_name, mt.stage, mo.name AS owner_name, mo.code AS owner_code,
-            c.code AS htx_code, c.name AS htx_name
+    `SELECT m.*, mt.name AS machine_type_name, mt.stage, mo.name AS owner_name, mo.code AS owner_code, mo.owner_type,
+            c.code AS htx_code, c.name AS htx_name, a.code AS province_code, a.name AS province_name
      FROM machines m
      JOIN machine_types mt ON mt.id = m.machine_type_id
      JOIN machine_owners mo ON mo.id = m.owner_id
      LEFT JOIN cooperatives c ON c.id = m.htx_id
+     LEFT JOIN admin_units a ON a.id = c.province_id
      ${where} ORDER BY m.code`,
     params,
   );
@@ -257,6 +344,8 @@ export interface BalanceRow {
   htxId: string;
   htxCode: string;
   htxName: string;
+  provinceId: string | null;
+  provinceName: string | null;
   lat: number | null;
   lng: number | null;
   seasonId: string;
@@ -290,12 +379,15 @@ export function balanceSupplyDemand(seasonId?: string): { rows: BalanceRow[]; su
     });
   }
 
-  const plans = all<{ htx_id: string; season_id: string; area_ha: number; source: string; code: string; name: string; lat: number | null; lng: number | null; season_name: string }>(
-    `SELECT cp.htx_id, cp.season_id, cp.area_ha, cp.source, c.code, c.name, c.lat, c.lng, s.name AS season_name
+  // BR-03 FN-08: chỉ HTX đang hoạt động; FN-05 BR-06: máy vô hiệu hoá không tính cân đối.
+  const plans = all<{ htx_id: string; season_id: string; area_ha: number; source: string; code: string; name: string; lat: number | null; lng: number | null; season_name: string; province_id: string | null; province_name: string | null }>(
+    `SELECT cp.htx_id, cp.season_id, cp.area_ha, cp.source, c.code, c.name, c.lat, c.lng, s.name AS season_name,
+            c.province_id, a.name AS province_name
      FROM cultivation_plans cp
      JOIN cooperatives c ON c.id = cp.htx_id
      JOIN seasons s ON s.id = cp.season_id
-     ${seasonId ? 'WHERE cp.season_id = ?' : ''}
+     LEFT JOIN admin_units a ON a.id = c.province_id
+     WHERE c.status = 'active' ${seasonId ? 'AND cp.season_id = ?' : ''}
      ORDER BY c.code`,
     seasonId ? [seasonId] : [],
   );
@@ -304,6 +396,7 @@ export function balanceSupplyDemand(seasonId?: string): { rows: BalanceRow[]; su
     `SELECT m.htx_id, mt.stage, COUNT(*) AS total,
             SUM(CASE WHEN m.condition = 'hoat_dong' THEN 1 ELSE 0 END) AS operational
      FROM machines m JOIN machine_types mt ON mt.id = m.machine_type_id
+     WHERE COALESCE(m.status, 'active') = 'active'
      GROUP BY m.htx_id, mt.stage`,
   );
   const machineIndex = new Map<string, { total: number; operational: number }>();
@@ -324,11 +417,13 @@ export function balanceSupplyDemand(seasonId?: string): { rows: BalanceRow[]; su
       const coveragePct =
         requiredMachines && requiredMachines > 0 ? (counts.operational / requiredMachines) * 100 : null;
       const level = counts.total === 0 && plan.area_ha === 0 ? 'chua_co_du_lieu' : classifyCoverage(coveragePct);
-      const band = COVERAGE_BANDS.find((b) => b.level === level)!;
+      const band = coverageBands().find((b) => b.level === level)!;
       rows.push({
         htxId: plan.htx_id,
         htxCode: plan.code,
         htxName: plan.name,
+        provinceId: plan.province_id,
+        provinceName: plan.province_name,
         lat: plan.lat,
         lng: plan.lng,
         seasonId: plan.season_id,
@@ -416,7 +511,8 @@ export function dashboard(seasonId?: string): Record<string, unknown> {
     byCondition,
     byStage,
     dataFreshness,
-    coverageBands: COVERAGE_BANDS,
+    coverageBands: coverageBands(),
+    thresholds: coverageThresholds(),
     criticalHtx: balance.rows.filter((r) => r.level === 'thieu').slice(0, 20),
     forecast: forecastDemand(),
   };

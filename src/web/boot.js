@@ -11,6 +11,7 @@ import { bootstrap } from '/app.js';
 
 // Nền tảng dùng chung
 import '/pages/gis.js';
+import '/pages/gis-admin.js';
 import '/pages/waterway-network.js';
 import '/pages/import.js';
 import '/pages/admin.js';

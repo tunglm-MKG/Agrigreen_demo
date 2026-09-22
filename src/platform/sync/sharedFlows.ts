@@ -56,6 +56,8 @@ export const SHARED_FLOWS: SharedFlow[] = [
   { entity: 'partners', label: 'Đối tác', owner: 'erp', receivers: ['htx'], why: 'HTX thấy ai mua rơm của mình' },
   { entity: 'items', label: 'Danh mục hàng hoá', owner: 'erp', receivers: ['htx', 'field'], why: 'Rơm cuộn / rơm xá — một mã cho cả chuỗi' },
   { entity: 'attachments', label: 'Tệp đính kèm / bằng chứng', owner: 'platform', receivers: ['*'], why: 'Bằng chứng nộp ở cổng nào cũng kiểm được ở ERP / MRV' },
+  { entity: 'rice_varieties', label: 'Danh mục giống lúa', owner: 'htx', coWriters: ['kn'], receivers: ['kn', 'cgh', 'gis', 'erp'], why: 'Một mã giống cho mở vụ, báo cáo gieo sạ và tham số mô phỏng' },
+  { entity: 'report_schedules', label: 'Lịch gửi báo cáo định kỳ', owner: 'platform', receivers: ['*'], why: 'Lịch đặt ở cổng nào cũng do một bộ hẹn giờ nền tảng chạy' },
   { entity: 'notifications', label: 'Thông báo', owner: 'platform', receivers: ['*'], why: 'Chuông trên mọi cổng đọc cùng một hộp' },
 ];
 

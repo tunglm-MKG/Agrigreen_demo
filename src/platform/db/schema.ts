@@ -71,6 +71,57 @@ function applyColumnMigrations(): void {
     // Việc thu gom biết mình thuộc hợp đồng nào → ưu tiên và đơn giá phiếu mua.
     { table: 'field_jobs', column: 'contract_id', definition: 'TEXT' },
     { table: 'cooperatives', column: 'claimed_by', definition: 'TEXT' },
+
+    // ---- Cập nhật theo BRD/User Story 09/2026 (GIS v1.5, KN v1.0, HTX v4.0, CGH v4.0) ----
+    // Đăng nhập: khoá tạm sau 5 lần sai trong 15 phút (GIS BR-09, CGH US-ADM-01), lý do khoá
+    // để kích hoạt lại HTX chỉ mở đúng tài khoản bị khoá vì HTX (HTX US-HTXSTATUS-02).
+    { table: 'users', column: 'failed_attempts', definition: 'INTEGER NOT NULL DEFAULT 0' },
+    { table: 'users', column: 'locked_until', definition: 'TEXT' },
+    { table: 'users', column: 'lock_reason', definition: 'TEXT' },
+    { table: 'users', column: 'last_login_at', definition: 'TEXT' },
+    // Nhật ký canh tác: duyệt (US-LOG-05), nhãn GPS (US-GPS-01), máy móc đã dùng (US-LOG-01 AC-2).
+    { table: 'farm_logs', column: 'approval_status', definition: "TEXT NOT NULL DEFAULT 'cho_duyet'" },
+    { table: 'farm_logs', column: 'approved_by', definition: 'TEXT' },
+    { table: 'farm_logs', column: 'approved_at', definition: 'TEXT' },
+    { table: 'farm_logs', column: 'review_note', definition: 'TEXT' },
+    { table: 'farm_logs', column: 'gps_status', definition: 'TEXT' },
+    { table: 'farm_logs', column: 'gps_distance_m', definition: 'REAL' },
+    { table: 'farm_logs', column: 'machines_json', definition: 'TEXT' },
+    // Xoá mềm & lưu vết (GIS BR-14/17/19): thửa, cơ sở, HTX ẩn khỏi bản đồ nhưng còn lịch sử.
+    { table: 'plots', column: 'deleted_at', definition: 'TEXT' },
+    { table: 'plots', column: 'deleted_by', definition: 'TEXT' },
+    { table: 'plots', column: 'deleted_reason', definition: 'TEXT' },
+    { table: 'facilities', column: 'deleted_at', definition: 'TEXT' },
+    { table: 'facilities', column: 'deleted_reason', definition: 'TEXT' },
+    { table: 'facilities', column: 'capacity_unit', definition: "TEXT NOT NULL DEFAULT 'tấn'" },
+    { table: 'facilities', column: 'address', definition: 'TEXT' },
+    { table: 'facilities', column: 'boundary', definition: 'TEXT' },
+    { table: 'cooperatives', column: 'deleted_at', definition: 'TEXT' },
+    { table: 'cooperatives', column: 'status_reason', definition: 'TEXT' },
+    { table: 'cooperatives', column: 'deactivated_at', definition: 'TEXT' },
+    // Thư viện: chuyên mục, cảnh báo khẩn (US-NEWS-03), hướng dẫn địa phương gắn bản gốc (US-LIB-02).
+    { table: 'knowledge_articles', column: 'category', definition: "TEXT NOT NULL DEFAULT 'ky_thuat'" },
+    { table: 'knowledge_articles', column: 'urgent', definition: 'INTEGER NOT NULL DEFAULT 0' },
+    { table: 'knowledge_articles', column: 'parent_id', definition: 'TEXT' },
+    { table: 'knowledge_articles', column: 'region_label', definition: 'TEXT' },
+    { table: 'knowledge_articles', column: 'view_count', definition: 'INTEGER NOT NULL DEFAULT 0' },
+    // CGH: chủ sở hữu & máy có vòng đời (US-OWN-01, US-MAC-01/03), ngày HTX sở hữu để đếm máy theo thời điểm (BR-09).
+    { table: 'machine_owners', column: 'status', definition: "TEXT NOT NULL DEFAULT 'active'" },
+    { table: 'machine_owners', column: 'deactivated_at', definition: 'TEXT' },
+    { table: 'machines', column: 'owned_since', definition: 'TEXT' },
+    { table: 'machines', column: 'deactivated_at', definition: 'TEXT' },
+    { table: 'machines', column: 'status', definition: "TEXT NOT NULL DEFAULT 'active'" },
+    { table: 'machines', column: 'fuel', definition: 'TEXT' },
+    { table: 'machines', column: 'power_hp', definition: 'REAL' },
+    { table: 'productivity_norms', column: 'document_date', definition: 'TEXT' },
+    // Nhiệm vụ hỗ trợ: SLA 24 giờ và leo thang (US-TASK-02).
+    { table: 'support_tasks', column: 'escalated_at', definition: 'TEXT' },
+    { table: 'support_tasks', column: 'escalated_to', definition: 'TEXT' },
+    { table: 'support_tasks', column: 'sla_hours', definition: 'INTEGER NOT NULL DEFAULT 24' },
+    // Danh bạ trực: mốc cập nhật để tự chuyển "Không xác định" (US-DIR-01).
+    { table: 'extension_officers', column: 'duty_updated_at', definition: 'TEXT' },
+    // Vụ canh tác gắn giống lúa từ danh mục (US-CAT-01, US-SEASON-01).
+    { table: 'crop_cycles', column: 'variety_id', definition: 'TEXT' },
   ];
   for (const addition of additions) {
     const columns = all<{ name: string }>(`PRAGMA table_info(${addition.table})`);
@@ -1738,5 +1789,75 @@ CREATE TABLE IF NOT EXISTS system_config (
   value_json TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   updated_by TEXT
+);
+
+-- =====================================================================
+-- 8. BỔ SUNG THEO BRD / USER STORY 09-2026
+-- =====================================================================
+
+-- HTX US-CAT-01 / US-SEASON-01: danh mục giống lúa dùng chung; mở vụ chọn giống từ đây,
+-- hệ thống tự gán quy trình SOP mặc định theo giống. Ngưỡng năng suất dùng cho US-YIELD-03.
+CREATE TABLE IF NOT EXISTS rice_varieties (
+  id                  TEXT PRIMARY KEY,
+  code                TEXT NOT NULL UNIQUE,
+  name                TEXT NOT NULL,
+  growth_days         INTEGER NOT NULL DEFAULT 95,
+  yield_min_t_ha      REAL NOT NULL DEFAULT 4,
+  yield_max_t_ha      REAL NOT NULL DEFAULT 9,
+  default_protocol_id TEXT,
+  status              TEXT NOT NULL DEFAULT 'active',    -- active | hidden
+  created_at          TEXT NOT NULL,
+  updated_at          TEXT NOT NULL
+);
+
+-- KN US-HTX-04: cán bộ khuyến nông khai báo máy móc cơ giới hoá và số lượng của từng HTX.
+CREATE TABLE IF NOT EXISTS htx_machinery_declarations (
+  id              TEXT PRIMARY KEY,
+  htx_id          TEXT NOT NULL,
+  machine_type_id TEXT NOT NULL,
+  quantity        INTEGER NOT NULL DEFAULT 0,
+  note            TEXT,
+  declared_by     TEXT,
+  declared_at     TEXT NOT NULL,
+  updated_at      TEXT NOT NULL,
+  UNIQUE (htx_id, machine_type_id)
+);
+
+-- KN US-PRICE-04: danh sách mặt hàng theo dõi theo ngưỡng biến động của từng tài khoản.
+CREATE TABLE IF NOT EXISTS price_watchlist (
+  id            TEXT PRIMARY KEY,
+  user_id       TEXT NOT NULL,
+  commodity     TEXT NOT NULL,
+  threshold_pct REAL NOT NULL DEFAULT 5,
+  created_at    TEXT NOT NULL,
+  UNIQUE (user_id, commodity)
+);
+
+-- CGH US-ANL-01 / US-RPT-02 / FN-09 BR-05: kết quả cân đối LƯU theo vụ để đối chiếu & xu hướng,
+-- báo cáo đọc số đã lưu, không tính lại tại thời điểm xuất.
+CREATE TABLE IF NOT EXISTS cgh_balance_snapshots (
+  id           TEXT PRIMARY KEY,
+  season_id    TEXT NOT NULL,
+  season_name  TEXT NOT NULL,
+  computed_at  TEXT NOT NULL,
+  computed_by  TEXT,
+  summary_json TEXT NOT NULL,
+  payload_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_cgh_balance_season ON cgh_balance_snapshots(season_id, computed_at);
+
+-- KN US-DASH-03 / HTX US-DASH-03: lịch tự tổng hợp & gửi báo cáo định kỳ qua email.
+CREATE TABLE IF NOT EXISTS report_schedules (
+  id          TEXT PRIMARY KEY,
+  system      TEXT NOT NULL,          -- kn | htx | cgh
+  scope_id    TEXT,                   -- htx_id / province_id, NULL = toàn hệ thống
+  report      TEXT NOT NULL,          -- mã báo cáo
+  frequency   TEXT NOT NULL,          -- tuan | thang | quy
+  emails      TEXT NOT NULL,          -- danh sách email, phân tách bằng dấu phẩy
+  next_run_at TEXT NOT NULL,
+  last_run_at TEXT,
+  active      INTEGER NOT NULL DEFAULT 1,
+  created_by  TEXT,
+  created_at  TEXT NOT NULL
 );
 `;

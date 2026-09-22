@@ -145,7 +145,15 @@ export function resetPassword(id: string, actor = {}): string {
   return temporaryPassword;
 }
 
-export function changePassword(id: string, newPassword: string): void {
+/**
+ * Đổi mật khẩu. Chính sách độ mạnh (≥ 8 ký tự, hoa, thường, số — KN US-AUTH) được
+ * áp ở lối vào người dùng (`enforcePolicy`); quản trị viên đặt lại/tự động hoá không bị chặn.
+ */
+export function changePassword(id: string, newPassword: string, options: { enforcePolicy?: boolean } = {}): void {
+  if (options.enforcePolicy) {
+    const weaknesses = passwordWeaknesses(newPassword);
+    if (weaknesses.length) throw new Error(`Mật khẩu chưa đạt độ mạnh tối thiểu: ${weaknesses.join('; ')}.`);
+  }
   const salt = randomBytes(12).toString('hex');
   update('users', id, {
     password_salt: salt,
@@ -157,11 +165,52 @@ export function changePassword(id: string, newPassword: string): void {
 
 const SESSION_HOURS = 12;
 
-export function login(username: string, password: string): { token: string; user: User } | null {
-  const row = one<UserRow>('SELECT * FROM users WHERE username = ?', [username]);
-  if (!row || row.status !== 'active') return null;
-  if (hashPassword(password, row.password_salt) !== row.password_hash) return null;
+/** GIS BR-09 / CGH US-ADM-01 AC-3: sai 5 lần trong 15 phút → khoá tạm 15 phút. */
+export const LOCKOUT_ATTEMPTS = 5;
+export const LOCKOUT_MINUTES = 15;
 
+export class LoginError extends Error {
+  code: 'locked' | 'temporarily_locked' | 'invalid';
+  constructor(message: string, code: 'locked' | 'temporarily_locked' | 'invalid') {
+    super(message);
+    this.code = code;
+  }
+}
+
+/**
+ * Đăng nhập bằng TÊN ĐĂNG NHẬP hoặc SỐ ĐIỆN THOẠI (HTX US-LOGIN-01: nông dân nhớ số điện thoại
+ * hơn tên tài khoản). Thông báo lỗi trung tính — không nói rõ sai tên hay sai mật khẩu (CGH US-ADM-01).
+ */
+export function login(identifier: string, password: string): { token: string; user: User } | null {
+  const key = identifier.trim();
+  const row = one<UserRow & { failed_attempts?: number; locked_until?: string | null; lock_reason?: string | null }>(
+    'SELECT * FROM users WHERE username = ? OR (phone IS NOT NULL AND phone = ?)', [key, key.replace(/\s+/g, '')]);
+  if (!row) return null;
+  if (row.status !== 'active') {
+    throw new LoginError('Tài khoản đã bị khoá, vui lòng liên hệ quản trị viên để mở khoá.', 'locked');
+  }
+  const now = nowIso();
+  if (row.locked_until && row.locked_until > now) {
+    const minutes = Math.max(1, Math.ceil((new Date(row.locked_until).getTime() - Date.now()) / 60_000));
+    throw new LoginError(`Tài khoản bị khoá tạm thời do đăng nhập sai nhiều lần. Vui lòng thử lại sau ${minutes} phút.`, 'temporarily_locked');
+  }
+  if (hashPassword(password, row.password_salt) !== row.password_hash) {
+    // Cửa sổ 15 phút: đã hết khoá tạm thì đếm lại từ đầu.
+    const attempts = (row.locked_until && row.locked_until <= now ? 0 : (row.failed_attempts ?? 0)) + 1;
+    const values: Record<string, unknown> = { failed_attempts: attempts, updated_at: now };
+    if (attempts >= LOCKOUT_ATTEMPTS) {
+      values.locked_until = new Date(Date.now() + LOCKOUT_MINUTES * 60_000).toISOString();
+      values.failed_attempts = 0;
+      logEvent({ module: 'admin', entityType: 'users', entityId: row.id, action: 'update', note: 'temporary_lockout', source: 'system' });
+    }
+    update('users', row.id, values);
+    if (attempts >= LOCKOUT_ATTEMPTS) {
+      throw new LoginError(`Tài khoản bị khoá tạm thời ${LOCKOUT_MINUTES} phút do đăng nhập sai ${LOCKOUT_ATTEMPTS} lần.`, 'temporarily_locked');
+    }
+    return null;
+  }
+
+  update('users', row.id, { failed_attempts: 0, locked_until: null, last_login_at: now, updated_at: now });
   const token = randomBytes(24).toString('hex');
   const created = new Date();
   const expires = new Date(created.getTime() + SESSION_HOURS * 3600_000);
@@ -171,7 +220,18 @@ export function login(username: string, password: string): { token: string; user
     created_at: created.toISOString(),
     expires_at: expires.toISOString(),
   });
+  logEvent({ module: 'admin', entityType: 'login', entityId: row.id, action: 'create', note: 'login', source: 'ui' }, { id: row.id, name: row.full_name });
   return { token, user: hydrate(row) };
+}
+
+/** CGH US-ADM-01 AC-1: mật khẩu mới phải đạt độ mạnh tối thiểu. Trả về danh sách tiêu chí chưa đạt. */
+export function passwordWeaknesses(password: string): string[] {
+  const issues: string[] = [];
+  if (password.length < 8) issues.push('Tối thiểu 8 ký tự');
+  if (!/[A-Z]/.test(password)) issues.push('Có ít nhất 1 chữ hoa');
+  if (!/[a-z]/.test(password)) issues.push('Có ít nhất 1 chữ thường');
+  if (!/[0-9]/.test(password)) issues.push('Có ít nhất 1 chữ số');
+  return issues;
 }
 
 export function logout(token: string): void {

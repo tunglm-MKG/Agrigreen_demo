@@ -5,6 +5,7 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { userFromToken, type User } from '../auth/users.ts';
 import { can } from '../auth/rbac.ts';
+import { logEvent } from '../audit/audit.ts';
 import { findReplay, storeResponse } from './idempotency.ts';
 
 export interface Context {
@@ -114,6 +115,11 @@ export class Router {
     if (found.route.permission) {
       if (!user) throw unauthorized();
       if (!can(user.roles, found.route.permission)) {
+        // CGH US-LOG-01 / FN-12 BR-01: truy cập bị từ chối do không đủ quyền phải vào nhật ký (ai, đường dẫn, quyền thiếu).
+        try {
+          logEvent({ module: 'admin', entityType: 'access_denied', entityId: user.id, action: 'update',
+            after: { method: req.method, path: url.pathname, permission: found.route.permission }, source: 'api' }, { id: user.id, name: user.fullName });
+        } catch { /* không để lỗi ghi log chặn phản hồi 403 */ }
         throw forbidden(`Vai trò hiện tại không có quyền "${found.route.permission}"`);
       }
     }

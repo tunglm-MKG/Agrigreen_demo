@@ -42,15 +42,18 @@ export const TABLE_DOMAIN: Record<string, Domain> = {
   harvest_statistics: 'shared', crop_status: 'shared', commune_crop_seasons: 'shared', commune_harvest_progress: 'shared',
   weather_observations: 'shared', facilities: 'shared', partners: 'shared', items: 'shared',
   machine_types: 'shared', machine_owners: 'shared', machines: 'shared',
+  rice_varieties: 'shared', report_schedules: 'shared',
   // ---- khuyến nông ----
   org_nodes: 'kn', knowledge_articles: 'kn', support_tasks: 'kn', extension_officers: 'kn', market_prices: 'kn',
   training_courses: 'kn', training_enrollments: 'kn', survey_templates: 'kn', survey_questions: 'kn', survey_responses: 'kn', survey_answers: 'kn',
+  htx_machinery_declarations: 'kn', price_watchlist: 'kn',
   // ---- hợp tác xã ----
   crop_cycles: 'htx', farm_logs: 'htx', production_protocols: 'htx', protocol_steps: 'htx', production_plans: 'htx',
   production_plan_steps: 'htx', plan_step_evidence: 'htx', plan_step_assignments: 'htx', input_items: 'htx', input_purchases: 'htx',
   input_purchase_lines: 'htx', input_stock: 'htx', input_issues: 'htx', harvest_declarations: 'htx', gps_logs: 'htx',
   // ---- cơ giới hoá ----
   productivity_norms: 'cgh', cultivation_plans: 'cgh', rental_listings: 'cgh', rental_orders: 'cgh', rental_disputes: 'cgh',
+  cgh_balance_snapshots: 'cgh',
   // ---- GIS ----
   gis_layers: 'gis', transport_routes: 'gis', waterway_structures: 'gis', distance_cache: 'gis',
   // ---- ERP ----

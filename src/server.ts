@@ -14,6 +14,10 @@ import { seedIfEmpty } from './seed.ts';
 import { syncSystemGroups } from './platform/auth/admin.ts';
 import { processOutbox, runAlertScan } from './platform/notify/service.ts';
 import { purgeExpired } from './platform/http/idempotency.ts';
+import { seedVarietiesIfEmpty } from './mdm/varieties.ts';
+import { seedHtxFieldDemoIfEmpty } from './seedDemoHtx.ts';
+import { escalateOverdueTasks, scanWatchlists } from './agrigreen/khuyennong/ops.ts';
+import { runDueReportSchedules } from './agrigreen/htx/fieldOps.ts';
 
 const HERE = fileURLToPath(new URL('.', import.meta.url));
 const WEB_ROOT = resolve(HERE, 'web');
@@ -32,12 +36,19 @@ export async function start(port = Number(process.env.PORT ?? 4173)): Promise<vo
   migrate();
   seedIfEmpty();
   syncSystemGroups();
+  // Danh mục giống lúa mặc định cho CSDL đã có từ trước đợt cập nhật 09/2026.
+  seedVarietiesIfEmpty();
+  // Nông hộ, thửa, mùa vụ, nhật ký mẫu cho App HTX khi CSDL chưa có (chỉ chạy một lần).
+  seedHtxFieldDemoIfEmpty();
   const api = buildApi();
 
   // Tiến trình nền: quét cảnh báo mỗi 10 phút, gửi outbox mỗi 30 giây, dọn khoá
-  // chống trùng quá hạn. unref() để chúng không giữ tiến trình sống khi tắt máy chủ.
+  // chống trùng quá hạn; leo thang nhiệm vụ quá SLA (KN US-TASK-02), theo dõi giá theo
+  // ngưỡng (US-PRICE-04), chạy lịch gửi báo cáo (US-DASH-03). unref() để chúng không giữ
+  // tiến trình sống khi tắt máy chủ.
   const scan = () => {
     try { runAlertScan(); purgeExpired(); } catch (error) { console.error('[notify] quét lỗi:', (error as Error).message); }
+    try { escalateOverdueTasks(); scanWatchlists(); runDueReportSchedules(); } catch (error) { console.error('[brd] quét lỗi:', (error as Error).message); }
   };
   scan();
   setInterval(scan, 10 * 60_000).unref();

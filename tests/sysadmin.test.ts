@@ -237,7 +237,8 @@ test('SA-04 — khoá tài khoản huỷ mọi phiên đang mở ngay lập tứ
     users.userFromToken(session.token), null,
     'phiên cũ phải chết ngay, không đợi tới lúc hết hạn 12 giờ',
   );
-  assert.equal(users.login('bikhoa01', 'matkhau123'), null, 'không đăng nhập lại được');
+  // KN US-AUTH: tài khoản bị khoá phải nhận thông điệp rõ (mã 'locked'), không phải lỗi "sai mật khẩu" chung.
+  assert.throws(() => users.login('bikhoa01', 'matkhau123'), (error: Error & { code?: string }) => error.code === 'locked' && /bị khoá/.test(error.message), 'không đăng nhập lại được');
 });
 
 test('Đặt lại mật khẩu cũng huỷ phiên đang mở', () => {

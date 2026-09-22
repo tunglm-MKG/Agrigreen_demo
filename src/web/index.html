@@ -1,81 +1,103 @@
 <!doctype html>
-<html lang="vi">
+<html lang="vi" data-portal="">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#0B5F3C" />
   <title>Mekong Green — AgriGreen Platform &amp; ERP</title>
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='22' fill='%230E3B34'/%3E%3Ctext x='50' y='70' font-size='58' text-anchor='middle'%3E%F0%9F%8C%BE%3C/text%3E%3C/svg%3E" />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='22' fill='%230B5F3C'/%3E%3Ctext x='50' y='70' font-size='58' text-anchor='middle'%3E%F0%9F%8C%BE%3C/text%3E%3C/svg%3E" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:wght@400;500;600;700;800&family=Bricolage+Grotesque:wght@500;600;700&family=JetBrains+Mono:wght@400;600&display=swap" />
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
         onerror="window.__leafletMissing = true" />
   <link rel="stylesheet" href="/styles.css" />
 </head>
 <body>
+  <!-- ĐĂNG NHẬP: bố cục hai cột theo bản mẫu — trái là thông điệp & số liệu, phải là form -->
   <div id="login" class="login-screen">
-    <form class="login-card" id="login-form">
-      <div class="brand">
-        <span class="brand-mark">🌾</span>
-        <div>
-          <h1>Mekong Green</h1>
-          <p>AgriGreen Platform &amp; ERP nội bộ</p>
+    <section class="login-hero" aria-hidden="true">
+      <div class="login-hero-veil"></div>
+      <div class="login-brand">
+        <span class="login-mark">🌾</span>
+        <div><b>Mekong Green</b><span>AgriGreen Platform · Đề án 1 triệu ha</span></div>
+      </div>
+      <div class="login-copy">
+        <div class="eyebrow"><i></i> Nền tảng dữ liệu dùng chung</div>
+        <h1>Ở đâu có nông dân,<br />ở đó có <em>khuyến nông</em>.</h1>
+        <p>Khuyến nông · Hợp tác xã · Cơ giới hoá · GIS · Hiện trường · ERP — một nền dữ liệu, sáu cổng nghiệp vụ, mọi số liệu đều truy được nguồn.</p>
+        <div class="login-stats" id="login-stats">
+          <div><b>27</b><span>Hợp tác xã</span></div>
+          <div><b>6</b><span>Tỉnh ĐBSCL &amp; Tây Ninh</span></div>
+          <div><b>12</b><span>Lớp dữ liệu GIS</span></div>
         </div>
       </div>
-      <label>Tên đăng nhập
-        <input name="username" autocomplete="username" value="admin" required />
-      </label>
-      <label>Mật khẩu
-        <input name="password" type="password" autocomplete="current-password" value="123456" required />
-      </label>
-      <button type="submit">Đăng nhập</button>
-      <p class="login-error" id="login-error"></p>
-      <details class="login-hint">
-        <summary>Tài khoản mẫu (mật khẩu <code>123456</code>)</summary>
-        <ul>
-          <li><code>admin</code> — Quản trị nền tảng (toàn quyền)</li>
-          <li><code>supplychain</code> — Supply Chain: dựng &amp; chạy kịch bản Hub</li>
-          <li><code>taichinh</code> — Tài chính: phê duyệt tham số giả định</li>
-          <li><code>banlanhdao</code> — Ban lãnh đạo: đánh dấu kịch bản "Chính thức"</li>
-          <li><code>khonhap</code> — Vận hành kho/bãi</li>
-          <li><code>canbo_xa</code> — Cán bộ Khuyến nông xã</li>
-          <li><code>htx01</code> — Ban quản lý HTX</li>
-          <li><code>cuc_ktht</code> — Cục KTHT &amp; PTNT (chỉ xem)</li>
-        </ul>
-      </details>
-    </form>
+    </section>
+    <section class="login-form-wrap">
+      <form class="login-card" id="login-form" autocomplete="on">
+        <h2>Đăng nhập</h2>
+        <p class="sub">Dùng tên đăng nhập <b>hoặc số điện thoại</b> đã được quản trị viên cấp. Không có đăng ký công khai.</p>
+        <div class="seg" id="login-roles" aria-label="Chọn nhanh tài khoản mẫu"></div>
+        <label>Tên đăng nhập / Số điện thoại
+          <div class="inp"><input name="username" autocomplete="username" value="admin" required /></div>
+        </label>
+        <label>Mật khẩu
+          <div class="inp"><input name="password" type="password" autocomplete="current-password" value="123456" required /><button type="button" class="eye" id="toggle-pw" aria-label="Hiện / ẩn mật khẩu">👁</button></div>
+        </label>
+        <button type="submit" class="btn-primary btn-block">Vào hệ thống →</button>
+        <p class="login-error" id="login-error" role="alert"></p>
+        <details class="login-hint">
+          <summary>Tài khoản mẫu (mật khẩu <code>123456</code>)</summary>
+          <ul>
+            <li><code>admin</code> — Quản trị nền tảng (toàn quyền)</li>
+            <li><code>canbo_tw</code> — Khuyến nông Trung ương · <code>qtri_kn_ag</code> — Khuyến nông tỉnh An Giang · <code>canbo_xa</code> — Cán bộ xã</li>
+            <li><code>htx01</code> — Ban quản lý HTX · <code>nongdan</code> — Nông dân</li>
+            <li><code>cuc_ktht</code> — Cục KTHT &amp; PTNT (chỉ xem bản đồ cơ giới hoá)</li>
+            <li><code>supplychain</code> · <code>taichinh</code> · <code>khonhap</code> · <code>hientruong</code> · <code>doitruong</code> — ERP &amp; Hiện trường</li>
+          </ul>
+          <p class="muted">Sai mật khẩu 5 lần trong 15 phút sẽ khoá tạm tài khoản 15 phút.</p>
+        </details>
+      </form>
+    </section>
   </div>
 
   <div id="portal-picker" class="portal-picker" hidden></div>
 
   <div id="shell" class="shell" hidden>
-    <aside class="sidebar">
-      <a class="brand small" href="/" title="Về màn hình chọn cổng">
-        <span class="brand-mark" id="portal-mark">🌾</span>
-        <div>
-          <strong id="portal-name">Mekong Green</strong>
-          <span class="muted" id="portal-tagline">AgriGreen Platform</span>
+    <aside class="sidebar" id="sidebar">
+      <a class="side-brand" href="/" title="Về màn hình chọn cổng">
+        <span class="side-mark" id="portal-mark">🌾</span>
+        <div class="side-brand-text">
+          <b id="portal-name">Mekong Green</b>
+          <span id="portal-tagline">AgriGreen Platform</span>
         </div>
       </a>
-      <nav id="nav"></nav>
+      <div class="side-user" id="user-box"></div>
+      <nav id="nav" class="nav"></nav>
       <div class="sidebar-footer">
         <div id="portal-switch" class="portal-switch"></div>
-        <div id="user-box"></div>
-        <button class="ghost" id="logout">Đăng xuất</button>
+        <button class="side-logout" id="logout" type="button">Đăng xuất</button>
       </div>
     </aside>
     <main>
       <header class="topbar">
-        <div>
+        <button class="menu-btn" id="menu-btn" type="button" aria-label="Mở menu">☰</button>
+        <div class="topbar-title">
           <h2 id="page-title">Bảng điều hành</h2>
           <p class="muted" id="page-subtitle"></p>
         </div>
         <div class="topbar-actions" id="page-actions"></div>
         <div class="topbar-tools" id="topbar-tools"></div>
+        <div class="topbar-user" id="topbar-user"></div>
       </header>
       <section id="view" class="view"></section>
     </main>
+    <nav class="bottom-nav" id="bottom-nav" aria-label="Điều hướng nhanh"></nav>
   </div>
 
   <div id="toast" class="toast" hidden></div>
   <div id="offline-bar" class="offline-bar" hidden></div>
+  <div id="modal-root"></div>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
           onerror="window.__leafletMissing = true"></script>

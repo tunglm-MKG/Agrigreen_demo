@@ -31,6 +31,7 @@ import { createVessel } from './erp/tms/vessels.ts';
 import { confirmTicket, listTickets } from './erp/straw/tickets.ts';
 import { ROLES } from './platform/auth/rbac.ts';
 import { captureSnapshot } from './platform/audit/audit.ts';
+import { seedVarietiesIfEmpty } from './mdm/varieties.ts';
 
 interface ProvinceSeed {
   code: string;
@@ -340,13 +341,16 @@ export function seedAll(): void {
   for (const [name, htxId] of htxIds) {
     const ownerId = uuid();
     ownerIndex += 1;
+    const provinceCode = COOPERATIVES.find((c) => c.name === name)?.province ?? 'XX';
     insert('machine_owners', {
       id: ownerId,
-      code: `CSH-${String(ownerIndex).padStart(5, '0')}`,
+      // FN-04 BR-02: CSH + mã tỉnh + số thứ tự trong tỉnh.
+      code: `CSH-${provinceCode}-${String(ownerIndex).padStart(5, '0')}`,
       name: `Tổ dịch vụ cơ giới ${name}`,
       owner_type: 'htx',
       htx_id: htxId,
       phone: null,
+      status: 'active',
       created_at: timestamp,
     });
     for (const type of MACHINE_TYPES) {
@@ -356,7 +360,8 @@ export function seedAll(): void {
         machineIndex += 1;
         insert('machines', {
           id: uuid(),
-          code: `MAY-${String(machineIndex).padStart(6, '0')}`,
+          // FN-05 BR-02: MAY + mã tỉnh + số thứ tự (dùng chỉ số toàn cục để mã không trùng trong seed).
+          code: `MAY-${provinceCode}-${String(machineIndex).padStart(5, '0')}`,
           machine_type_id: machineTypeIds.get(type.code)!,
           owner_id: ownerId,
           htx_id: htxId,
@@ -370,6 +375,12 @@ export function seedAll(): void {
           condition_source: 'nhap_tay',
           condition_locked: 0,
           condition_updated_at: timestamp,
+          // FN-05 BR-08/09: mốc HTX sở hữu máy để truy vấn số máy theo thời điểm; vài máy mua gần đây.
+          owned_since: new Date(Date.now() - (30 + (machineIndex % 9) * 60) * 86_400_000).toISOString().slice(0, 10),
+          deactivated_at: null,
+          status: 'active',
+          fuel: ['Diesel', 'Diesel', 'Xăng', 'Điện'][machineIndex % 4],
+          power_hp: 40 + (machineIndex % 6) * 15,
           created_at: timestamp,
         });
       }
@@ -452,18 +463,35 @@ export function seedAll(): void {
   }
 
   // ---------- Nội dung khuyến nông & giá thị trường ----------
+  const awdId = uuid();
   insert('knowledge_articles', {
-    id: uuid(), code: 'KB-00001', title: 'Quy trình canh tác lúa giảm phát thải theo AWD',
-    kind: 'quy_trinh', summary: 'Kỹ thuật tưới ngập – khô xen kẽ (AWD) áp dụng cho Đề án 1 triệu ha lúa chất lượng cao.',
+    id: awdId, code: 'KB-00001', title: 'Quy trình canh tác lúa giảm phát thải theo AWD',
+    kind: 'quy_trinh', category: 'ky_thuat', urgent: 0, summary: 'Kỹ thuật tưới ngập – khô xen kẽ (AWD) áp dụng cho Đề án 1 triệu ha lúa chất lượng cao.',
     body: 'Nội dung quy trình kỹ thuật: chuẩn bị đất, gieo sạ, quản lý nước theo AWD, bón phân, thu hoạch và xử lý rơm rạ.',
-    crop: 'lúa', status: 'published', scope_node_id: null, published_at: timestamp, author_id: null,
+    crop: 'lúa', status: 'published', scope_node_id: null, parent_id: null, region_label: null, view_count: 128, published_at: timestamp, author_id: null,
     created_at: timestamp, updated_at: timestamp,
   });
   insert('knowledge_articles', {
     id: uuid(), code: 'KB-00002', title: 'Thu gom và bảo quản rơm sau thu hoạch',
-    kind: 'tai_lieu', summary: 'Hướng dẫn cuộn kiện, kiểm soát độ ẩm ≤ 14% và bảo quản rơm trước khi nhập Hub.',
+    kind: 'tai_lieu', category: 'ky_thuat', urgent: 0, summary: 'Hướng dẫn cuộn kiện, kiểm soát độ ẩm ≤ 14% và bảo quản rơm trước khi nhập Hub.',
     body: 'Rơm cần được phơi đạt độ ẩm ≤ 14% trước khi ép kiện; tránh chất đống khi còn ẩm để không tự bốc nhiệt.',
-    crop: 'lúa', status: 'published', scope_node_id: null, published_at: timestamp, author_id: null,
+    crop: 'lúa', status: 'published', scope_node_id: null, parent_id: null, region_label: null, view_count: 64, published_at: timestamp, author_id: null,
+    created_at: timestamp, updated_at: timestamp,
+  });
+  // US-LIB-02: hướng dẫn đặc thù địa phương gắn với quy trình gốc, nhãn riêng theo tỉnh.
+  insert('knowledge_articles', {
+    id: uuid(), code: 'KB-00003', title: 'Hướng dẫn AWD cho vùng phèn Đồng Tháp Mười',
+    kind: 'quy_trinh', category: 'ky_thuat', urgent: 0, summary: 'Bổ sung của TTKN Đồng Tháp: rút nước nông hơn (−10 cm) ở ruộng phèn nặng, kèm bón vôi đầu vụ.',
+    body: 'Áp dụng cùng quy trình AWD chuẩn quốc gia. Riêng vùng phèn: ngưỡng rút nước −10 cm thay cho −15 cm; bón 300–500 kg vôi/ha trước sạ.',
+    crop: 'lúa', status: 'published', scope_node_id: provinceNodeIds.get('DT') ?? null, parent_id: awdId, region_label: 'Đồng Tháp', view_count: 21, published_at: timestamp, author_id: null,
+    created_at: timestamp, updated_at: timestamp,
+  });
+  // US-NEWS-03: tin cảnh báo khẩn (dịch hại) — hiện đầu danh sách tin của nông dân.
+  insert('knowledge_articles', {
+    id: uuid(), code: 'KB-00004', title: 'Cảnh báo rầy nâu phát sinh diện rộng đầu vụ Thu Đông',
+    kind: 'tin_tuc', category: 'canh_bao', urgent: 1, summary: 'Mật độ rầy 1.500–3.000 con/m² tại An Giang, Đồng Tháp. Thăm đồng 3 ngày/lần, không phun ngừa khi chưa tới ngưỡng.',
+    body: 'Theo Chi cục Trồng trọt & BVTV: rầy nâu tuổi 2–3 xuất hiện diện rộng. Khuyến cáo: giữ nước ruộng, dùng thuốc trong danh mục khi mật độ > 3 con/tép, tuyệt đối không phun ngừa.',
+    crop: 'lúa', status: 'published', scope_node_id: null, parent_id: null, region_label: 'ĐBSCL', view_count: 340, published_at: timestamp, author_id: null,
     created_at: timestamp, updated_at: timestamp,
   });
 
@@ -488,6 +516,8 @@ export function seedAll(): void {
 
   // ---------- Quy trình sản xuất chuẩn VietGAP ----------
   seedVietGapProtocol();
+  // ---------- Danh mục giống lúa (HTX US-CAT-01) — gắn SOP VietGAP làm quy trình mặc định ----------
+  seedVarietiesIfEmpty();
 
   // ---------- Thôn/ấp, danh mục vật tư, mẫu khảo sát ----------
   seedHamlets();

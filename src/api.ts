@@ -5,7 +5,7 @@
  * tham số thứ 3 của mỗi route là quyền bắt buộc. Endpoint không khai báo quyền
  * là endpoint công khai (đăng nhập, health-check).
  */
-import { Router, badRequest, notFound, unauthorized, forbidden, type Context } from './platform/http/router.ts';
+import { Router, HttpError, badRequest, notFound, unauthorized, forbidden, type Context } from './platform/http/router.ts';
 import { can as roleCan } from './platform/auth/rbac.ts';
 import * as files from './platform/files/attachments.ts';
 import * as notifyService from './platform/notify/service.ts';
@@ -51,6 +51,7 @@ import * as field from './erp/field/service.ts';
 import * as contracts from './erp/straw/contracts.ts';
 import * as tickets from './erp/straw/tickets.ts';
 import * as vessels from './erp/tms/vessels.ts';
+import { registerBrdRoutes } from './api-brd.ts';
 
 const body = (ctx: Context) => (ctx.body ?? {}) as Record<string, any>;
 const num = (value: unknown, fallback?: number): number => {
@@ -66,8 +67,16 @@ export function buildApi(): Router {
   // ===================== Xác thực & phân quyền =====================
   api.post('/auth/login', (ctx) => {
     const { username, password } = body(ctx);
-    const session = users.login(String(username ?? ''), String(password ?? ''));
-    if (!session) throw badRequest('Sai tên đăng nhập hoặc mật khẩu');
+    let session: ReturnType<typeof users.login>;
+    try {
+      session = users.login(String(username ?? ''), String(password ?? ''));
+    } catch (error) {
+      // Khoá tạm / khoá hẳn: nói rõ lý do (GIS BR-09, HTX US-ACC-01 AC-5) — mã 423 Locked.
+      if (error instanceof users.LoginError) throw new HttpError(423, error.message, { code: error.code });
+      throw error;
+    }
+    // Thông báo trung tính, không nêu sai trường nào (CGH US-ADM-01 AC-3).
+    if (!session) throw badRequest('Tên đăng nhập / số điện thoại hoặc mật khẩu không đúng');
     ctx.res.setHeader('Set-Cookie', `mg_session=${session.token}; Path=/; HttpOnly; SameSite=Lax`);
     return { token: session.token, user: users.describeUser(session.user) };
   });
@@ -83,7 +92,7 @@ export function buildApi(): Router {
 
   api.post('/auth/password', (ctx) => {
     if (!ctx.user) throw badRequest('Chưa đăng nhập');
-    users.changePassword(ctx.user.id, String(body(ctx).password ?? ''));
+    users.changePassword(ctx.user.id, String(body(ctx).password ?? ''), { enforcePolicy: true });
     return { ok: true };
   });
 
@@ -736,6 +745,7 @@ export function buildApi(): Router {
       htxId: ctx.query.get('htxId') ?? undefined,
       stage: ctx.query.get('stage') ?? undefined,
       condition: ctx.query.get('condition') ?? undefined,
+      includeInactive: ctx.query.get('includeInactive') === '1',
     }), P.CGH_READ);
   api.post('/cgh/machines', (ctx) => cgh.createMachine(body(ctx) as never, ctx.actor), P.CGH_WRITE);
   api.post('/cgh/machine-owners', (ctx) => cgh.createMachineOwner(body(ctx) as never, ctx.actor), P.CGH_WRITE);
@@ -1002,6 +1012,9 @@ export function buildApi(): Router {
       ctx.query.get('from') ?? `${new Date().getUTCFullYear()}-01-01`,
       ctx.query.get('to') ?? new Date().toISOString().slice(0, 10),
     ), P.REPORT_READ);
+
+  // Bổ sung theo BRD / User Story 09-2026 — xem api-brd.ts.
+  registerBrdRoutes(api);
 
   return api;
 }

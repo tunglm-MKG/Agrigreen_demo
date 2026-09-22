@@ -293,9 +293,10 @@ export function getPlot(id: string): Plot | null {
 }
 
 export function listPlots(htxId?: string): (Plot & { boundaryGeo: unknown })[] {
+  // Thửa xoá mềm (GIS BR-17) không xuất hiện ở danh sách vận hành; xem ở tab "Đã xoá".
   const rows = htxId
-    ? all<Plot>('SELECT * FROM plots WHERE htx_id = ? ORDER BY code', [htxId])
-    : all<Plot>('SELECT * FROM plots ORDER BY code LIMIT 1000');
+    ? all<Plot>('SELECT * FROM plots WHERE htx_id = ? AND deleted_at IS NULL ORDER BY code', [htxId])
+    : all<Plot>('SELECT * FROM plots WHERE deleted_at IS NULL ORDER BY code LIMIT 1000');
   return rows.map((row) => ({ ...row, boundaryGeo: parseJson(row.boundary, null) }));
 }
 
@@ -453,8 +454,8 @@ export function updateFacility(
 
 export function listFacilities(kind?: string): Record<string, unknown>[] {
   return kind
-    ? all('SELECT * FROM facilities WHERE kind = ? ORDER BY code', [kind])
-    : all('SELECT * FROM facilities ORDER BY kind, code');
+    ? all('SELECT * FROM facilities WHERE kind = ? AND deleted_at IS NULL ORDER BY code', [kind])
+    : all('SELECT * FROM facilities WHERE deleted_at IS NULL ORDER BY kind, code');
 }
 
 export function listStorageZones(facilityId: string): Record<string, unknown>[] {
