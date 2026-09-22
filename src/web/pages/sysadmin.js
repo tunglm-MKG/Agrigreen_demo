@@ -9,7 +9,7 @@
  */
 import {
   api, registerPage, el, card, kpi, table, badge, alert, num, dateTime,
-  toast, guard, can, form, state,
+  toast, guard, can, form, state, navigate,
 } from '/app.js';
 
 /**
@@ -39,8 +39,8 @@ registerPage('sys-users', {
   title: 'Tài khoản người dùng',
   subtitle: 'Khởi tạo, phân nhóm, khoá và đặt lại mật khẩu — mọi thay đổi đều vào nhật ký truy vết',
   async render(view, actions) {
-    const [dashboard, users, groupsAll, lookups] = await Promise.all([
-      guard(api('/admin/dashboard')), api('/admin/user-views'), api('/admin/groups'), api('/admin/lookups'),
+    const [dashboard, users, groupsAll, lookups, meta] = await Promise.all([
+      guard(api('/admin/dashboard')), api('/admin/user-views'), api('/admin/groups'), api('/admin/lookups'), api('/admin/permissions'),
     ]);
     // SA-09: admin theo phạm vi chỉ thấy và gán được nhóm thuộc hệ thống mình quản.
     const assignable = new Set(lookups.assignableRoles.map((r) => r.code));
@@ -63,19 +63,14 @@ registerPage('sys-users', {
           ...(info.adminScopes ?? []).map((sc) => badge(`Quản trị: ${sc.label}`, 'good')),
         ]),
 
-        el('h4', { text: 'Quyền đến từ nhóm nào' }),
-        el('p', { class: 'muted', text: 'Bảng này trả lời câu hỏi hay gặp nhất khi phân quyền: vì sao người này vào được màn hình đó.' }),
+        el('h4', { text: 'Quyền của tài khoản — theo từng nhóm' }),
+        el('p', { class: 'muted', text: 'Hàng là quyền, cột là nhóm tài khoản đang thuộc; ô tick là quyền nhóm đó mang lại. Bảng chỉ để xem — đổi quyền của nhóm ở màn "Nhóm & phân quyền" (ảnh hưởng mọi người trong nhóm).' }),
         info.hasAllPermissions
           ? alert('Tài khoản có toàn quyền hệ thống (nhóm quản trị nền tảng).', 'warn')
-          : table([
-              { key: 'label', label: 'Nhóm' },
-              {
-                key: 'permissions', label: 'Quyền',
-                render: (row) => (row.permissions.length
-                  ? el('span', { class: 'chip-row' }, row.permissions.map((p) => badge(p, 'neutral')))
-                  : el('span', { class: 'muted', text: 'Nhóm này chưa được cấp quyền nào' })),
-              },
-            ], info.byGroup),
+          : permissionMatrixReadOnly(meta, info.byGroup),
+        can('admin.groups') && !info.hasAllPermissions
+          ? el('button', { class: 'small ghost', text: '🛡️ Mở bảng phân quyền nhóm', onclick: () => navigate('sys-groups') })
+          : null,
 
         can('admin.users')
           ? el('div', { class: 'grid cols-2' }, [
@@ -237,6 +232,35 @@ registerPage('sys-users', {
     if (lastUserId && users.some((user) => user.id === lastUserId)) await showDetail(lastUserId);
   },
 });
+
+/**
+ * Ma trận CHỈ XEM: hàng là quyền (nhãn tiếng Việt, gom theo mảng), cột là các nhóm của
+ * một tài khoản, ô tick khi nhóm đó cấp quyền. Cột cuối "Hiệu lực" là hợp của các nhóm.
+ */
+function permissionMatrixReadOnly(meta, byGroup) {
+  const groups = byGroup ?? [];
+  const has = (g, code) => g.permissions.includes(code);
+  const head = el('tr', {}, [
+    el('th', { class: 'perm-sticky', text: 'Quyền' }),
+    ...groups.map((g) => el('th', { class: 'perm-col' }, [el('div', { class: 'perm-col-name', text: g.label })])),
+    el('th', { class: 'perm-col' }, [el('div', { class: 'perm-col-name', text: 'Hiệu lực' })]),
+  ]);
+  const rows = [];
+  for (const section of meta.groups) {
+    const perms = section.permissions.filter((p) => groups.some((g) => has(g, p.code)));
+    if (!perms.length) continue; // bỏ mảng tài khoản không có quyền nào — bảng ngắn hơn, dễ đọc hơn
+    rows.push(el('tr', { class: 'perm-section-row' }, [el('td', { colspan: groups.length + 2, text: section.group })]));
+    for (const p of perms) {
+      rows.push(el('tr', {}, [
+        el('td', { class: 'perm-sticky' }, [el('div', { text: p.label }), el('div', { class: 'muted perm-code', text: p.code })]),
+        ...groups.map((g) => el('td', { class: 'perm-tick' }, [el('input', { type: 'checkbox', checked: has(g, p.code), disabled: true })])),
+        el('td', { class: 'perm-tick effective' }, [el('input', { type: 'checkbox', checked: true, disabled: true })]),
+      ]));
+    }
+  }
+  if (!rows.length) return el('p', { class: 'muted', text: 'Các nhóm của tài khoản này chưa được cấp quyền nào.' });
+  return el('div', { class: 'perm-matrix-wrap compact' }, [el('table', { class: 'perm-matrix' }, [el('thead', {}, [head]), el('tbody', {}, rows)])]);
+}
 
 /** Danh sách nhóm có ô chọn, kèm nút lưu. */
 function groupPicker(groups, current, onSave) {

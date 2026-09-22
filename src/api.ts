@@ -272,7 +272,8 @@ export function buildApi(): Router {
   api.post('/admin/users/:id/reset-password', (ctx) => { scopes.assertCanManage(adminCtx(ctx), ctx.params.id); return sysadmin.resetUserPassword(ctx.params.id, ctx.actor); });
 
   // Ma trận nhóm–quyền: toàn hệ thống → chỉ super admin (SA-10).
-  api.get('/admin/permissions', (ctx) => { superOnly(ctx); return { groups: PERMISSION_GROUPS, roles: ROLE_LABELS, defaults: ROLE_PERMISSIONS }; });
+  // Danh mục quyền (nhãn tiếng Việt) — admin phạm vi cũng cần để đọc ma trận, chỉ SỬA mới là super admin.
+  api.get('/admin/permissions', (ctx) => { adminCtx(ctx); return { groups: PERMISSION_GROUPS, roles: ROLE_LABELS, defaults: ROLE_PERMISSIONS }; });
   api.get('/admin/groups', (ctx) => { adminCtx(ctx); return sysadmin.listGroups(); });
   api.post('/admin/groups', (ctx) => { superOnly(ctx); return sysadmin.createGroup(body(ctx) as never, ctx.actor); });
   api.put('/admin/groups/:code', (ctx) => { superOnly(ctx); return sysadmin.updateGroup(ctx.params.code, body(ctx) as never, ctx.actor); });

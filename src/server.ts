@@ -101,13 +101,14 @@ async function serveStatic(pathname: string, res: import('node:http').ServerResp
     const info = await stat(filePath);
     if (!info.isFile()) throw new Error('not a file');
     const content = await readFile(filePath);
-    res.writeHead(200, { 'Content-Type': MIME[extname(filePath)] ?? 'application/octet-stream' });
+    // no-cache = trình duyệt phải hỏi lại máy chủ mỗi lần; không có thì JS cũ nằm lại sau khi triển khai bản mới.
+    res.writeHead(200, { 'Content-Type': MIME[extname(filePath)] ?? 'application/octet-stream', 'Cache-Control': 'no-cache' });
     res.end(content);
   } catch {
     // SPA fallback.
     try {
       const html = await readFile(join(WEB_ROOT, 'index.html'));
-      res.writeHead(200, { 'Content-Type': MIME['.html'] });
+      res.writeHead(200, { 'Content-Type': MIME['.html'], 'Cache-Control': 'no-cache' });
       res.end(html);
     } catch {
       sendJson(res, 404, { error: 'Không tìm thấy tài nguyên', path: pathname });
