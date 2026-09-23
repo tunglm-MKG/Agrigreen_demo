@@ -1046,29 +1046,9 @@ function mountBell() {
 // ---------------------------------------------------------------------------
 // Màn hình đăng nhập
 // ---------------------------------------------------------------------------
-const SAMPLE_ACCOUNTS = [
-  { u: 'admin', label: 'Quản trị' },
-  { u: 'canbo_tw', label: 'KN Trung ương' },
-  { u: 'qtri_kn_ag', label: 'KN tỉnh' },
-  { u: 'canbo_xa', label: 'Cán bộ xã' },
-  { u: 'htx01', label: 'Ban quản lý HTX' },
-  { u: 'nongdan', label: 'Nông dân' },
-  { u: 'cuc_ktht', label: 'Cục KTHT' },
-  { u: 'supplychain', label: 'ERP' },
-];
-
 function mountLogin() {
   const formEl = document.getElementById('login-form');
-  const roles = document.getElementById('login-roles');
-  if (roles) {
-    const userInput = formEl.elements.username;
-    const draw = () => roles.replaceChildren(...SAMPLE_ACCOUNTS.map((a) => el('button', {
-      type: 'button', class: userInput.value === a.u ? 'on' : '', text: a.label,
-      onclick: () => { userInput.value = a.u; formEl.elements.password.value = '123456'; draw(); },
-    })));
-    draw();
-    userInput.addEventListener('input', draw);
-  }
+  // Không hiển thị bất kỳ tài khoản/mật khẩu mẫu nào trên trang đăng nhập.
   document.getElementById('toggle-pw')?.addEventListener('click', () => {
     const pw = formEl.elements.password;
     pw.type = pw.type === 'password' ? 'text' : 'password';

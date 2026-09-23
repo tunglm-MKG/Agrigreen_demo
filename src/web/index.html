@@ -37,26 +37,15 @@
       <form class="login-card" id="login-form" autocomplete="on">
         <h2>Đăng nhập</h2>
         <p class="sub">Dùng tên đăng nhập <b>hoặc số điện thoại</b> đã được quản trị viên cấp. Không có đăng ký công khai.</p>
-        <div class="seg" id="login-roles" aria-label="Chọn nhanh tài khoản mẫu"></div>
         <label>Tên đăng nhập / Số điện thoại
-          <div class="inp"><input name="username" autocomplete="username" value="admin" required /></div>
+          <div class="inp"><input name="username" autocomplete="username" placeholder="Tên đăng nhập hoặc số điện thoại" required autofocus /></div>
         </label>
         <label>Mật khẩu
-          <div class="inp"><input name="password" type="password" autocomplete="current-password" value="123456" required /><button type="button" class="eye" id="toggle-pw" aria-label="Hiện / ẩn mật khẩu">👁</button></div>
+          <div class="inp"><input name="password" type="password" autocomplete="current-password" placeholder="Mật khẩu" required /><button type="button" class="eye" id="toggle-pw" aria-label="Hiện / ẩn mật khẩu">👁</button></div>
         </label>
         <button type="submit" class="btn-primary btn-block">Vào hệ thống →</button>
         <p class="login-error" id="login-error" role="alert"></p>
-        <details class="login-hint">
-          <summary>Tài khoản mẫu (mật khẩu <code>123456</code>)</summary>
-          <ul>
-            <li><code>admin</code> — Quản trị nền tảng (toàn quyền)</li>
-            <li><code>canbo_tw</code> — Khuyến nông Trung ương · <code>qtri_kn_ag</code> — Khuyến nông tỉnh An Giang · <code>canbo_xa</code> — Cán bộ xã</li>
-            <li><code>htx01</code> — Ban quản lý HTX · <code>nongdan</code> — Nông dân</li>
-            <li><code>cuc_ktht</code> — Cục KTHT &amp; PTNT (chỉ xem bản đồ cơ giới hoá)</li>
-            <li><code>supplychain</code> · <code>taichinh</code> · <code>khonhap</code> · <code>hientruong</code> · <code>doitruong</code> — ERP &amp; Hiện trường</li>
-          </ul>
-          <p class="muted">Sai mật khẩu 5 lần trong 15 phút sẽ khoá tạm tài khoản 15 phút.</p>
-        </details>
+        <p class="login-hint">Tài khoản do quản trị viên cấp; quên mật khẩu hãy liên hệ quản trị viên để được đặt lại. Sai mật khẩu 5 lần trong 15 phút sẽ khoá tạm tài khoản 15 phút.</p>
       </form>
     </section>
   </div>

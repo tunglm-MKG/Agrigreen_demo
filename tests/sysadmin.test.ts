@@ -25,12 +25,12 @@ seedAll();
 admin.syncSystemGroups();
 
 /** Tài khoản quản trị nền tảng có sẵn trong bộ seed. */
-const rootAdmin = users.listUsers().find((u) => u.username === 'admin')!;
+const rootAdmin = users.listUsers().find((u) => u.username === 'SAdmin')!;
 const rootActor = { id: rootAdmin.id, name: rootAdmin.fullName };
 
 function newUser(username: string, roles: string[]) {
   const created = users.createUser(
-    { username, fullName: `Người dùng ${username}`, roles, password: 'matkhau123' },
+    { username, fullName: `Người dùng ${username}`, roles, password: 'MatKhau123' },
     rootActor,
   ) as { user: { id: string } };
   return created.user;
@@ -225,9 +225,9 @@ test('SA-03 — không cấp được quyền mà chính mình không có', () =
 
 test('SA-04 — khoá tài khoản huỷ mọi phiên đang mở ngay lập tức', () => {
   const user = newUser('bikhoa01', ['farmer']);
-  users.changePassword(user.id, 'matkhau123');
+  users.changePassword(user.id, 'MatKhau123');
 
-  const session = users.login('bikhoa01', 'matkhau123')!;
+  const session = users.login('bikhoa01', 'MatKhau123')!;
   assert.ok(session, 'đăng nhập được trước khi khoá');
   assert.ok(users.userFromToken(session.token), 'phiên hợp lệ');
 
@@ -238,13 +238,13 @@ test('SA-04 — khoá tài khoản huỷ mọi phiên đang mở ngay lập tứ
     'phiên cũ phải chết ngay, không đợi tới lúc hết hạn 12 giờ',
   );
   // KN US-AUTH: tài khoản bị khoá phải nhận thông điệp rõ (mã 'locked'), không phải lỗi "sai mật khẩu" chung.
-  assert.throws(() => users.login('bikhoa01', 'matkhau123'), (error: Error & { code?: string }) => error.code === 'locked' && /bị khoá/.test(error.message), 'không đăng nhập lại được');
+  assert.throws(() => users.login('bikhoa01', 'MatKhau123'), (error: Error & { code?: string }) => error.code === 'locked' && /bị khoá/.test(error.message), 'không đăng nhập lại được');
 });
 
 test('Đặt lại mật khẩu cũng huỷ phiên đang mở', () => {
   const user = newUser('resetpw01', ['farmer']);
-  users.changePassword(user.id, 'matkhau123');
-  const session = users.login('resetpw01', 'matkhau123')!;
+  users.changePassword(user.id, 'MatKhau123');
+  const session = users.login('resetpw01', 'MatKhau123')!;
 
   const result = admin.resetUserPassword(user.id, rootActor);
   assert.ok(result.temporaryPassword.length >= 8);
@@ -261,27 +261,27 @@ test('Đặt lại mật khẩu cũng huỷ phiên đang mở', () => {
 
 test('Buộc đăng xuất mọi thiết bị mà không đổi mật khẩu', () => {
   const user = newUser('dangxuat01', ['farmer']);
-  users.changePassword(user.id, 'matkhau123');
-  const a = users.login('dangxuat01', 'matkhau123')!;
-  const b = users.login('dangxuat01', 'matkhau123')!;
+  users.changePassword(user.id, 'MatKhau123');
+  const a = users.login('dangxuat01', 'MatKhau123')!;
+  const b = users.login('dangxuat01', 'MatKhau123')!;
 
   assert.equal(admin.revokeSessions(user.id, rootActor), 2);
   assert.equal(users.userFromToken(a.token), null);
   assert.equal(users.userFromToken(b.token), null);
   // Mật khẩu cũ vẫn dùng được — chỉ đăng xuất, không đặt lại.
-  assert.ok(users.login('dangxuat01', 'matkhau123'));
+  assert.ok(users.login('dangxuat01', 'MatKhau123'));
 });
 
 test('Cập nhật hồ sơ không đụng tới vai trò hay mật khẩu', () => {
   const user = newUser('hoso01', ['farmer']);
-  users.changePassword(user.id, 'matkhau123');
+  users.changePassword(user.id, 'MatKhau123');
 
   const updated = admin.updateProfile(
     user.id, { fullName: 'Trần Thị Hồ Sơ', email: 'hoso@example.com', phone: '0900000001' }, rootActor,
   );
   assert.equal(updated.fullName, 'Trần Thị Hồ Sơ');
   assert.deepEqual(updated.roles, ['farmer'], 'vai trò giữ nguyên');
-  assert.ok(users.login('hoso01', 'matkhau123'), 'mật khẩu giữ nguyên');
+  assert.ok(users.login('hoso01', 'MatKhau123'), 'mật khẩu giữ nguyên');
 
   assert.throws(() => admin.updateProfile(user.id, { fullName: '  ' }, rootActor), /không được để trống/);
 });

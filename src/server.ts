@@ -16,6 +16,7 @@ import { processOutbox, runAlertScan } from './platform/notify/service.ts';
 import { purgeExpired } from './platform/http/idempotency.ts';
 import { seedVarietiesIfEmpty } from './mdm/varieties.ts';
 import { seedHtxFieldDemoIfEmpty } from './seedDemoHtx.ts';
+import { ensureSuperAdmin } from './platform/auth/users.ts';
 import { escalateOverdueTasks, scanWatchlists } from './agrigreen/khuyennong/ops.ts';
 import { runDueReportSchedules } from './agrigreen/htx/fieldOps.ts';
 
@@ -36,6 +37,8 @@ export async function start(port = Number(process.env.PORT ?? 4173)): Promise<vo
   migrate();
   seedIfEmpty();
   syncSystemGroups();
+  // Super Admin toàn hệ thống (SAdmin) — đổi tên tài khoản `admin` cũ nếu còn.
+  ensureSuperAdmin();
   // Danh mục giống lúa mặc định cho CSDL đã có từ trước đợt cập nhật 09/2026.
   seedVarietiesIfEmpty();
   // Nông hộ, thửa, mùa vụ, nhật ký mẫu cho App HTX khi CSDL chưa có (chỉ chạy một lần).
@@ -89,14 +92,7 @@ export async function start(port = Number(process.env.PORT ?? 4173)): Promise<vo
   if (gateEnabled()) {
     console.log('  Cong ma truy cap DANG BAT (bien DEMO_ACCESS_CODE) - nguoi xem phai nhap ma truoc.');
   }
-  console.log('  Tài khoản mẫu (mật khẩu: 123456):');
-  console.log('    admin      — Quản trị nền tảng (toàn quyền)');
-  console.log('    supplychain— Supply Chain / Kế hoạch (mô phỏng Hub)');
-  console.log('    taichinh   — Tài chính (phê duyệt tham số giả định)');
-  console.log('    khonhap    — Vận hành kho/bãi');
-  console.log('    canbo_xa   — Cán bộ Khuyến nông xã');
-  console.log('    htx01      — Ban quản lý HTX');
-  console.log('    cuc_ktht   — Cục KTHT & PTNT (chỉ xem)\n');
+  console.log('  Đăng nhập bằng tài khoản Super Admin "SAdmin". Tài khoản trình diễn khác: xem README.md.\n');
 }
 
 async function serveStatic(pathname: string, res: import('node:http').ServerResponse): Promise<void> {

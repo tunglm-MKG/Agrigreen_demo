@@ -9,8 +9,38 @@
  */
 import {
   api, registerPage, el, card, kpi, table, badge, alert, num, dateTime,
-  toast, guard, can, form, state, navigate,
+  toast, guard, can, form, state, navigate, modal, confirmDialog, icon,
 } from '/app.js';
+
+/** Nhãn trạng thái gửi email mật khẩu tạm (trả về từ máy chủ). */
+const EMAIL_STATUS = {
+  cho_gui: ['Đã xếp hàng gửi email', 'good'],
+  cho_cau_hinh: ['Chưa cấu hình kênh email — email sẽ gửi khi quản trị viên cấu hình ở "Thông báo & kênh gửi"; hãy copy mật khẩu và gửi trực tiếp', 'warn'],
+  khong_co_email: ['Tài khoản chưa có địa chỉ email — không gửi được', 'warn'],
+};
+
+/**
+ * Hộp thoại hiện mật khẩu tạm MỘT lần: ô chữ đơn cách có nút Sao chép (cả cặp tên đăng nhập +
+ * mật khẩu) và trạng thái gửi email. Đóng là mất — máy chủ không lưu mật khẩu dạng đọc được.
+ */
+function credentialDialog({ title, username, temporaryPassword, email, revokedSessions }) {
+  const copy = async (text, label) => {
+    try { await navigator.clipboard.writeText(text); toast(`Đã sao chép ${label}.`); } catch { toast('Trình duyệt không cho phép sao chép tự động — hãy bôi đen và copy thủ công.', true); }
+  };
+  const pwBox = el('code', { class: 'mono', style: 'font-size:20px;letter-spacing:.08em;padding:8px 14px;border-radius:10px;background:var(--surface-2);user-select:all', text: temporaryPassword });
+  const dlg = modal(title, [
+    el('div', { class: 'kv' }, [el('span', { class: 'k', text: 'Tên đăng nhập' }), el('span', { class: 'v mono', text: username })]),
+    el('div', { class: 'kv' }, [el('span', { class: 'k', text: 'Mật khẩu tạm' }), el('span', { class: 'v' }, [pwBox])]),
+    el('div', { class: 'chip-row' }, [
+      el('button', { class: 'small', onclick: () => copy(temporaryPassword, 'mật khẩu tạm') }, [icon('copy', 14), 'Sao chép mật khẩu']),
+      el('button', { class: 'ghost small', onclick: () => copy(`Tên đăng nhập: ${username}\nMật khẩu tạm: ${temporaryPassword}\nĐăng nhập tại: ${location.origin}`, 'thông tin đăng nhập') }, [icon('copy', 14), 'Sao chép cả cặp']),
+    ]),
+    email ? alert(EMAIL_STATUS[email.status]?.[0] ?? email.status, EMAIL_STATUS[email.status]?.[1] ?? 'info') : el('p', { class: 'muted', text: 'Không gửi email — hãy chuyển mật khẩu tạm cho người dùng qua kênh an toàn.' }),
+    revokedSessions !== undefined ? el('p', { class: 'muted', text: `Đã huỷ ${revokedSessions} phiên đang mở của tài khoản này.` }) : null,
+    alert('Mật khẩu tạm chỉ hiện MỘT lần và không thể xem lại. Người dùng sẽ phải đổi mật khẩu mới (tối thiểu 8 ký tự, có chữ thường, chữ in hoa và chữ số) ở lần đăng nhập đầu.', 'warn'),
+  ], [el('button', { text: 'Đã ghi lại, đóng', onclick: () => dlg.close() })], { dismissible: false });
+  return dlg;
+}
 
 /**
  * Nhóm và tài khoản đang xem, giữ ở phạm vi module.
@@ -126,7 +156,7 @@ registerPage('sys-users', {
 
       can('admin.users')
         ? card('Tạo tài khoản mới', [
-            el('p', { class: 'muted', text: 'Không đặt mật khẩu thì hệ thống sinh mật khẩu tạm và buộc người dùng đổi ở lần đăng nhập đầu. Mật khẩu tạm chỉ hiện MỘT lần.' }),
+            el('p', { class: 'muted', text: 'Hệ thống sinh mật khẩu tạm đạt chuẩn (≥ 8 ký tự, chữ thường, chữ hoa, chữ số) và buộc người dùng đổi ở lần đăng nhập đầu. Mật khẩu tạm hiện MỘT lần để copy; có thể gửi kèm qua email.' }),
             form([
               { name: 'username', label: 'Tên đăng nhập', required: true },
               { name: 'fullName', label: 'Họ tên', required: true },
@@ -139,15 +169,13 @@ registerPage('sys-users', {
               // SA-12: phạm vi tỉnh / HTX thì danh sách chỉ còn tỉnh / HTX của mình.
               { name: 'provinceId', label: 'Tỉnh', type: 'select', options: [{ value: '', label: '— không gắn tỉnh —' }, ...lookups.provinces.map((p) => ({ value: p.id, label: p.name }))] },
               { name: 'htxId', label: 'Hợp tác xã (nếu là tài khoản HTX)', type: 'select', options: [{ value: '', label: '— không —' }, ...lookups.cooperatives.map((c) => ({ value: c.id, label: c.name }))] },
+              { name: 'sendEmail', label: 'Gửi email mật khẩu tạm tới địa chỉ email ở trên', type: 'checkbox', value: true },
             ], async (values) => {
+              if (values.sendEmail && !values.email) throw new Error('Đã chọn gửi email nhưng chưa nhập địa chỉ email.');
               const result = await api('/admin/users', {
-                body: { ...values, roles: [values.role], provinceId: values.provinceId || undefined, htxId: values.htxId || undefined },
+                body: { ...values, roles: [values.role], provinceId: values.provinceId || undefined, htxId: values.htxId || undefined, sendEmail: Boolean(values.sendEmail) },
               });
-              window.alert(
-                `Đã tạo tài khoản ${result.user.username}.\n\n` +
-                `Mật khẩu tạm: ${result.temporaryPassword}\n\n` +
-                'Ghi lại ngay — mật khẩu này không hiện lại lần nào nữa.',
-              );
+              credentialDialog({ title: `Đã tạo tài khoản ${result.user.username}`, username: result.user.username, temporaryPassword: result.temporaryPassword, email: result.email });
               await refresh();
             }, { submitLabel: '+ Tạo tài khoản' }),
           ])
@@ -194,16 +222,14 @@ registerPage('sys-users', {
                 el('button', {
                   class: 'ghost small', text: '🔑 Đặt lại mật khẩu',
                   onclick: async () => {
-                    if (!window.confirm(
-                      `Đặt lại mật khẩu cho ${row.username}?\n\n` +
-                      'Người này bị đăng xuất khỏi mọi thiết bị và phải dùng mật khẩu tạm để vào lại.',
-                    )) return;
-                    const result = await guard(api(`/admin/users/${row.id}/reset-pw`, { body: {} }));
-                    window.alert(
-                      `Mật khẩu tạm của ${row.username}: ${result.temporaryPassword}\n\n` +
-                      `Đã huỷ ${result.revokedSessions} phiên đang mở.\n` +
-                      'Ghi lại ngay — mật khẩu này không hiện lại lần nào nữa.',
-                    );
+                    const sendEmail = el('input', { type: 'checkbox', checked: row.email ? true : null, disabled: row.email ? null : true });
+                    const ok = await confirmDialog(`Đặt lại mật khẩu cho ${row.username}? Người này bị đăng xuất khỏi mọi thiết bị và phải dùng mật khẩu tạm để vào lại.`, {
+                      title: 'Đặt lại mật khẩu', okLabel: 'Đặt lại',
+                      extra: [el('label', { class: 'pick-item' }, [sendEmail, row.email ? `Gửi mật khẩu tạm qua email (${row.email})` : 'Tài khoản chưa có email — sẽ chỉ hiện mật khẩu để copy'])],
+                    });
+                    if (!ok) return;
+                    const result = await guard(api(`/admin/users/${row.id}/reset-pw`, { body: { sendEmail: sendEmail.checked } }));
+                    credentialDialog({ title: `Đã đặt lại mật khẩu cho ${row.username}`, username: row.username, temporaryPassword: result.temporaryPassword, email: result.email, revokedSessions: result.revokedSessions });
                     await refresh();
                   },
                 }),
@@ -463,6 +489,11 @@ registerPage('sys-notify', {
         channelCard('sms', channels.sms, [
           { name: 'notify.sms_gateway_url', label: 'URL cổng SMS (POST JSON {to, text})', placeholder: 'https://sms.nhacungcap.vn/api/send' },
           { name: 'notify.sms_gateway_token', label: 'Token cổng SMS', type: 'password' },
+        ]),
+        channelCard('email', channels.email, [
+          { name: 'notify.email_webhook_url', label: 'URL webhook email (POST JSON {to, subject, text, from})', placeholder: 'https://mail.donvi.vn/api/send' },
+          { name: 'notify.email_webhook_token', label: 'Token webhook email', type: 'password' },
+          { name: 'notify.email_from', label: 'Địa chỉ người gửi', placeholder: 'no-reply@mekonggreen.vn' },
         ]),
         channelCard('webpush', channels.webpush, null),
       ]),

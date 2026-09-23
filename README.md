@@ -47,13 +47,17 @@ npm test
 
 - `npm run seed -- --reset` — xoá và nạp lại dữ liệu nền (26 HTX ĐBSCL, 3 mùa vụ, 378 máy cơ giới, 7 tuyến đường thuỷ, nhà máy VFT, 49 tham số).
 - `npm run demo` — chạy trọn vẹn nghiệp vụ trên dòng lệnh: đặt 5 Hub ứng viên → dựng 3 kịch bản → mô phỏng → so sánh → khuyến nghị → độ nhạy → phê duyệt tham số → kết xuất Hub sang kho → nhập kho → định tuyến TMS → cân đối cơ giới hoá.
-- `npm test` — 282 test kiểm chứng các Acceptance Criteria trong BRD và luồng nhập Excel.
+- `npm test` — hơn 300 test kiểm chứng các Acceptance Criteria trong BRD và luồng nhập Excel.
 
-### Tài khoản mẫu (mật khẩu `123456`)
+### Tài khoản
+
+Trang đăng nhập **không** liệt kê tài khoản hay mật khẩu. Super Admin toàn hệ thống là `SAdmin` (mật khẩu ban đầu `TungLM18@`, đổi được bằng biến môi trường `SUPER_ADMIN_PASSWORD` khi khởi động lần đầu; tài khoản `admin` cũ được tự đổi tên thành `SAdmin`). Mọi mật khẩu đặt mới phải có tối thiểu 8 ký tự gồm chữ thường, chữ in hoa và chữ số; mật khẩu tạm do hệ thống sinh luôn đạt chuẩn và có thể gửi qua email (kênh cấu hình ở *Thông báo & kênh gửi*) hoặc copy trực tiếp từ hộp thoại.
+
+Các tài khoản trình diễn dưới đây dùng mật khẩu `123456` để thử nhanh trên máy cá nhân — không mang lên môi trường công khai.
 
 | Tài khoản | Vai trò | Dùng để thử |
 | --- | --- | --- |
-| `admin` | Quản trị nền tảng | Toàn quyền |
+| `SAdmin` | Super Admin toàn hệ thống | Toàn quyền (mật khẩu `TungLM18@`) |
 | `supplychain` | Supply Chain / Kế hoạch | Dựng & chạy kịch bản Hub, số hoá tuyến |
 | `taichinh` | Tài chính | Phê duyệt tham số giả định (FN-01 BR-02) |
 | `banlanhdao` | Ban lãnh đạo | Đánh dấu kịch bản "Chính thức", chốt ngưỡng ROI/Payback |
@@ -379,8 +383,8 @@ Mã nguồn: [`vessels.ts`](src/platform/geo/vessels.ts) ·
 
 ### Cổng mã truy cập
 
-Mọi tài khoản demo đều dùng mật khẩu `123456` và màn hình đăng nhập liệt kê sẵn danh sách —
-trên máy thì tiện, đưa lên Internet thì ai có link cũng vào được quyền quản trị. Vì vậy có một
+Các tài khoản trình diễn dùng mật khẩu `123456` (Super Admin `SAdmin` dùng mật khẩu riêng) —
+trên máy thì tiện, đưa lên Internet thì ai đoán được tên tài khoản demo cũng vào được. Vì vậy có một
 **cổng mã truy cập** đứng trước toàn bộ hệ thống:
 
 ```bash

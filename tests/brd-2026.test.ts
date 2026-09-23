@@ -35,7 +35,7 @@ migrate();
 seedAll();
 
 const actor = { name: 'test-brd' };
-const admin = users.listUsers().find((u) => u.username === 'admin')!;
+const admin = users.listUsers().find((u) => u.username === 'SAdmin')!;
 const cooperatives = mdm.listCooperatives() as { id: string; code: string; lat: number; lng: number; province_id: string }[];
 const [htxA, htxB] = cooperatives;
 const seasons = mdm.listSeasons() as { id: string; name: string }[];
@@ -63,13 +63,62 @@ test('Đăng nhập được bằng số điện thoại thay cho tên đăng nh
   assert.ok(session?.token, 'số điện thoại là định danh hợp lệ');
 });
 
-test('Mật khẩu yếu bị từ chối khi người dùng tự đổi, nhưng quy trình quản trị không bị chặn', () => {
+test('Mọi mật khẩu đặt mới phải ≥ 8 ký tự, có chữ thường, chữ in hoa và chữ số — khi tự đổi lẫn khi quản trị viên tạo tài khoản', () => {
   const weaknesses = users.passwordWeaknesses('abc');
   assert.ok(weaknesses.length >= 3);
   assert.equal(users.passwordWeaknesses('MatKhau123').length, 0);
   const u = users.listUsers().find((x) => x.username === 'sdt_user')!;
-  assert.throws(() => users.changePassword(u.id, 'yeu', { enforcePolicy: true }), /độ mạnh/);
-  assert.doesNotThrow(() => users.changePassword(u.id, 'tam-thoi'));
+  assert.throws(() => users.changePassword(u.id, 'yeu'), /độ mạnh/);
+  assert.throws(() => users.changePassword(u.id, 'toanchuthuong1'), /chữ hoa/);
+  assert.throws(() => users.changePassword(u.id, 'KhongCoSo'), /chữ số/);
+  assert.doesNotThrow(() => users.changePassword(u.id, 'MatKhauMoi9'));
+  assert.throws(() => users.createUser({ username: 'yeu_user', fullName: 'Yếu', roles: ['farmer'], password: '123456' }, { id: admin.id, name: admin.fullName }), /độ mạnh/);
+});
+
+test('Mật khẩu tạm do hệ thống sinh luôn đạt chính sách và không lặp lại', () => {
+  const seen = new Set<string>();
+  for (let i = 0; i < 50; i += 1) {
+    const pw = users.generateTemporaryPassword();
+    assert.deepEqual(users.passwordWeaknesses(pw), [], `mật khẩu tạm "${pw}" phải đạt chuẩn`);
+    seen.add(pw);
+  }
+  assert.ok(seen.size > 45, 'mật khẩu tạm phải ngẫu nhiên');
+  const created = users.createUser({ username: 'tao_khong_mk', fullName: 'Không đặt mật khẩu', roles: ['farmer'], email: 'a@b.vn' }, { id: admin.id, name: admin.fullName });
+  assert.deepEqual(users.passwordWeaknesses(created.temporaryPassword), []);
+  assert.equal(created.user.mustChangePassword, true, 'phải đổi mật khẩu ở lần đăng nhập đầu');
+  const temp = users.resetPassword(created.user.id, { name: 'test' });
+  assert.deepEqual(users.passwordWeaknesses(temp), []);
+});
+
+test('Super Admin SAdmin: tài khoản admin cũ được đổi tên và đặt mật khẩu ban đầu; gọi lại không ghi đè mật khẩu đã đổi', () => {
+  assert.equal(users.ensureSuperAdmin().action, 'kept', 'seed đã có SAdmin');
+  // Mô phỏng CSDL cũ còn tài khoản `admin`.
+  run("UPDATE users SET username = 'admin' WHERE username = 'SAdmin'");
+  const renamed = users.ensureSuperAdmin();
+  assert.equal(renamed.action, 'renamed');
+  assert.ok(users.login('SAdmin', 'TungLM18@')?.token, 'đăng nhập được bằng SAdmin / mật khẩu ban đầu');
+  assert.equal(users.login('admin', 'TungLM18@'), null, 'tên đăng nhập cũ không còn');
+  users.changePassword(renamed.userId, 'MatKhauRieng9');
+  assert.equal(users.ensureSuperAdmin().action, 'kept');
+  assert.ok(users.login('SAdmin', 'MatKhauRieng9')?.token, 'mật khẩu quản trị viên đã đổi được giữ nguyên');
+  users.changePassword(renamed.userId, 'TungLM18@');
+});
+
+test('Email mật khẩu tạm: xếp hàng gửi khi có email, báo rõ khi thiếu email; nội dung bị xoá sau khi gửi', async () => {
+  const notify = await import('../src/platform/notify/service.ts');
+  const withEmail = users.listUsers().find((x) => x.username === 'tao_khong_mk')!;
+  const queued = notify.sendCredentialEmail(withEmail.id, { username: withEmail.username, temporaryPassword: 'TamThoi123', kind: 'created' }, actor);
+  assert.equal(queued.to, 'a@b.vn');
+  assert.ok(['cho_gui', 'cho_cau_hinh'].includes(queued.status));
+  const noEmail = users.listUsers().find((x) => x.username === 'sdt_user')!;
+  assert.equal(notify.sendCredentialEmail(noEmail.id, { username: noEmail.username, temporaryPassword: 'x', kind: 'reset' }, actor).status, 'khong_co_email');
+  // Giả lập webhook email gửi thành công → outbox xoá nội dung chứa mật khẩu.
+  notify.overrideSender('email', async () => undefined);
+  run("UPDATE notifications SET status = 'cho_gui' WHERE id = ?", [queued.notificationId]);
+  await notify.processOutbox();
+  const row = one<{ status: string; body: string }>('SELECT status, body FROM notifications WHERE id = ?', [queued.notificationId]);
+  assert.equal(row?.status, 'da_gui');
+  assert.ok(!row?.body.includes('TamThoi123'), 'mật khẩu tạm không được nằm lại trong CSDL sau khi gửi');
 });
 
 // ===========================================================================

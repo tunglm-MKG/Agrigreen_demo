@@ -89,7 +89,7 @@ test('Cùng khoá nhưng đường dẫn khác → từ chối, vì đó là l�
 test('Khoá thuộc về người dùng: người khác dùng trùng khoá vẫn chạy bình thường', async () => {
   const key = 'test-key-0004-abcdef';
   await post('/field/teams', { name: 'Đội của hientruong' }, key);
-  const adminLogin = await fetch(`${base}/auth/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: 'admin', password: '123456' }) });
+  const adminLogin = await fetch(`${base}/auth/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: 'SAdmin', password: 'TungLM18@' }) });
   const adminToken = ((await adminLogin.json()) as { token: string }).token;
   const before = all('SELECT id FROM field_teams').length;
   const res = await fetch(`${base}/field/teams`, {

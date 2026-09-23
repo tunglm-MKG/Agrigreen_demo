@@ -9,7 +9,7 @@ import { randomBytes } from 'node:crypto';
 import { all, insert, one, run, transaction, update } from '../db/db.ts';
 import { hashPassword, nowIso, uuid } from '../util/ids.ts';
 import { logEvent } from '../audit/audit.ts';
-import { permissionsFor, ROLE_LABELS } from './rbac.ts';
+import { permissionsFor, ROLE_LABELS, ROLES } from './rbac.ts';
 
 export interface User {
   id: string;
@@ -72,13 +72,20 @@ export interface CreateUserInput {
   provinceId?: string;
 }
 
-export function createUser(input: CreateUserInput, actor = {}): { user: User; temporaryPassword: string } {
+/**
+ * Tạo tài khoản. Mật khẩu do quản trị viên đặt phải đạt chính sách độ mạnh
+ * (≥ 8 ký tự, chữ thường, chữ hoa, chữ số); không đặt thì hệ thống sinh mật khẩu
+ * tạm đạt chuẩn và buộc đổi ở lần đăng nhập đầu. `enforcePolicy: false` chỉ dành
+ * cho dữ liệu trình diễn (seed).
+ */
+export function createUser(input: CreateUserInput, actor = {}, options: { enforcePolicy?: boolean } = {}): { user: User; temporaryPassword: string } {
   const existing = one('SELECT id FROM users WHERE username = ?', [input.username]);
   if (existing) throw new Error(`Tên đăng nhập "${input.username}" đã tồn tại`);
+  if (input.password && options.enforcePolicy !== false) assertStrongPassword(input.password);
 
   const id = uuid();
   const salt = randomBytes(12).toString('hex');
-  const temporaryPassword = input.password ?? randomBytes(4).toString('hex');
+  const temporaryPassword = input.password ?? generateTemporaryPassword();
   const timestamp = nowIso();
 
   transaction(() => {
@@ -134,7 +141,7 @@ export function setUserStatus(id: string, status: 'active' | 'locked', actor = {
 
 export function resetPassword(id: string, actor = {}): string {
   const salt = randomBytes(12).toString('hex');
-  const temporaryPassword = randomBytes(4).toString('hex');
+  const temporaryPassword = generateTemporaryPassword();
   update('users', id, {
     password_salt: salt,
     password_hash: hashPassword(temporaryPassword, salt),
@@ -145,15 +152,9 @@ export function resetPassword(id: string, actor = {}): string {
   return temporaryPassword;
 }
 
-/**
- * Đổi mật khẩu. Chính sách độ mạnh (≥ 8 ký tự, hoa, thường, số — KN US-AUTH) được
- * áp ở lối vào người dùng (`enforcePolicy`); quản trị viên đặt lại/tự động hoá không bị chặn.
- */
+/** Đổi mật khẩu. Mọi mật khẩu đặt mới phải đạt chính sách độ mạnh (≥ 8 ký tự, chữ thường, chữ hoa, chữ số). */
 export function changePassword(id: string, newPassword: string, options: { enforcePolicy?: boolean } = {}): void {
-  if (options.enforcePolicy) {
-    const weaknesses = passwordWeaknesses(newPassword);
-    if (weaknesses.length) throw new Error(`Mật khẩu chưa đạt độ mạnh tối thiểu: ${weaknesses.join('; ')}.`);
-  }
+  if (options.enforcePolicy !== false) assertStrongPassword(newPassword);
   const salt = randomBytes(12).toString('hex');
   update('users', id, {
     password_salt: salt,
@@ -232,6 +233,81 @@ export function passwordWeaknesses(password: string): string[] {
   if (!/[a-z]/.test(password)) issues.push('Có ít nhất 1 chữ thường');
   if (!/[0-9]/.test(password)) issues.push('Có ít nhất 1 chữ số');
   return issues;
+}
+
+export function assertStrongPassword(password: string): void {
+  const weaknesses = passwordWeaknesses(password);
+  if (weaknesses.length) throw new Error(`Mật khẩu chưa đạt độ mạnh tối thiểu: ${weaknesses.join('; ')}.`);
+}
+
+// Bỏ các ký tự dễ nhầm (O/0, I/l/1) vì mật khẩu tạm thường được đọc qua điện thoại.
+const TEMP_UPPER = 'ABCDEFGHJKLMNPQRSTUVWXYZ';
+const TEMP_LOWER = 'abcdefghijkmnpqrstuvwxyz';
+const TEMP_DIGIT = '23456789';
+
+/** Mật khẩu tạm luôn đạt chính sách: ≥ 2 chữ hoa, ≥ 2 chữ thường, ≥ 2 chữ số, xáo trộn ngẫu nhiên. */
+export function generateTemporaryPassword(length = 10): string {
+  const pick = (set: string) => set[randomBytes(1)[0] % set.length];
+  const chars = [pick(TEMP_UPPER), pick(TEMP_UPPER), pick(TEMP_LOWER), pick(TEMP_LOWER), pick(TEMP_DIGIT), pick(TEMP_DIGIT)];
+  const pool = TEMP_UPPER + TEMP_LOWER + TEMP_DIGIT;
+  while (chars.length < Math.max(8, length)) chars.push(pick(pool));
+  for (let i = chars.length - 1; i > 0; i -= 1) {
+    const j = randomBytes(1)[0] % (i + 1);
+    [chars[i], chars[j]] = [chars[j], chars[i]];
+  }
+  return chars.join('');
+}
+
+// ---------------------------------------------------------------------------
+// Super Admin toàn hệ thống
+// ---------------------------------------------------------------------------
+
+export const SUPER_ADMIN_USERNAME = 'SAdmin';
+const DEFAULT_SUPER_ADMIN_PASSWORD = 'TungLM18@';
+
+/**
+ * Bảo đảm tài khoản Super Admin `SAdmin` tồn tại khi khởi động.
+ *  - Đã có `SAdmin`: giữ nguyên mật khẩu hiện tại (quản trị viên có thể đã đổi), chỉ bảo đảm vai trò.
+ *  - Còn tài khoản `admin` cũ: đổi tên thành `SAdmin`, đặt mật khẩu ban đầu và huỷ mọi phiên cũ.
+ *  - Chưa có gì: tạo mới với vai trò quản trị nền tảng.
+ * Mật khẩu ban đầu lấy từ biến môi trường SUPER_ADMIN_PASSWORD nếu có.
+ */
+export function ensureSuperAdmin(initialPassword = process.env.SUPER_ADMIN_PASSWORD ?? DEFAULT_SUPER_ADMIN_PASSWORD): { action: 'created' | 'renamed' | 'kept'; userId: string } {
+  const timestamp = nowIso();
+  const ensureRole = (userId: string) => {
+    if (!one('SELECT 1 FROM user_roles WHERE user_id = ? AND role = ?', [userId, ROLES.PLATFORM_ADMIN])) insert('user_roles', { user_id: userId, role: ROLES.PLATFORM_ADMIN });
+  };
+  const existing = one<UserRow>('SELECT * FROM users WHERE username = ?', [SUPER_ADMIN_USERNAME]);
+  if (existing) {
+    ensureRole(existing.id);
+    if (existing.status !== 'active') update('users', existing.id, { status: 'active', locked_until: null, failed_attempts: 0, updated_at: timestamp });
+    return { action: 'kept', userId: existing.id };
+  }
+  const salt = randomBytes(12).toString('hex');
+  const legacy = one<UserRow>("SELECT * FROM users WHERE username = 'admin'");
+  if (legacy) {
+    transaction(() => {
+      update('users', legacy.id, {
+        username: SUPER_ADMIN_USERNAME, full_name: 'Quản trị hệ thống (Super Admin)', password_salt: salt,
+        password_hash: hashPassword(initialPassword, salt), must_change_pw: 0, status: 'active', failed_attempts: 0, locked_until: null, updated_at: timestamp,
+      });
+      ensureRole(legacy.id);
+      run('DELETE FROM sessions WHERE user_id = ?', [legacy.id]);
+    });
+    logEvent({ module: 'admin', entityType: 'users', entityId: legacy.id, action: 'update', note: 'super_admin_renamed', source: 'system' });
+    return { action: 'renamed', userId: legacy.id };
+  }
+  const id = uuid();
+  transaction(() => {
+    insert('users', {
+      id, username: SUPER_ADMIN_USERNAME, full_name: 'Quản trị hệ thống (Super Admin)', email: null, phone: null,
+      password_hash: hashPassword(initialPassword, salt), password_salt: salt, must_change_pw: 0, status: 'active',
+      org_node_id: null, htx_id: null, province_id: null, created_at: timestamp, updated_at: timestamp,
+    });
+    insert('user_roles', { user_id: id, role: ROLES.PLATFORM_ADMIN });
+  });
+  logEvent({ module: 'admin', entityType: 'users', entityId: id, action: 'create', note: 'super_admin_created', source: 'system' });
+  return { action: 'created', userId: id };
 }
 
 export function logout(token: string): void {

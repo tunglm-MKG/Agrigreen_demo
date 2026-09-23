@@ -45,9 +45,9 @@ test('Seed: admin KN An Giang có phạm vi tỉnh; admin ERP có phạm vi toà
   const erp = ctxOf('qtri_erp');
   assert.deepEqual(erp.scopes.map((s) => [s.system, s.scopeType]), [['erp', 'system']]);
   assert.equal(erp.canDelegate, true);
-  const root = ctxOf('admin');
+  const root = ctxOf('SAdmin');
   assert.equal(root.superAdmin, true);
-  assert.equal(all('SELECT id FROM admin_scopes WHERE user_id = ?', [byName('admin').id]).length, 0);
+  assert.equal(all('SELECT id FROM admin_scopes WHERE user_id = ?', [byName('SAdmin').id]).length, 0);
   assert.equal(scopes.tryAdminContext(byName('nongdan')), null, 'nông dân không quản trị gì');
   assert.throws(() => scopes.adminContext(byName('nongdan')), /không có quyền quản trị/);
 });
@@ -60,10 +60,10 @@ test('SA-08: admin KN tỉnh An Giang thấy cán bộ An Giang, KHÔNG thấy �
   assert.ok(!visible.has(byName('canbo_tw').id), 'cán bộ TW không có tỉnh');
   assert.ok(!visible.has(byName('taichinh').id), 'ERP là hệ thống khác');
   assert.ok(!visible.has(byName('htx01').id), 'htx01 ở An Giang nhưng thuộc hệ thống HTX');
-  assert.ok(!visible.has(byName('admin').id), 'super admin ngoài mọi phạm vi con');
-  assert.equal(scopes.visibleUserIds(ctxOf('admin')), null, 'super admin thấy tất cả');
+  assert.ok(!visible.has(byName('SAdmin').id), 'super admin ngoài mọi phạm vi con');
+  assert.equal(scopes.visibleUserIds(ctxOf('SAdmin')), null, 'super admin thấy tất cả');
   assert.throws(() => scopes.assertCanManage(ctxOf('qtri_kn_ag'), byName('canbo_xa_dt').id), /SA-08/);
-  assert.throws(() => scopes.assertCanManage(ctxOf('qtri_kn_ag'), byName('admin').id), /SA-08/);
+  assert.throws(() => scopes.assertCanManage(ctxOf('qtri_kn_ag'), byName('SAdmin').id), /SA-08/);
   scopes.assertCanManage(ctxOf('qtri_kn_ag'), byName('canbo_xa').id);
 });
 
@@ -79,11 +79,11 @@ test('SA-09: nhóm gán được chỉ thuộc hệ thống mình; không bao gi
   assert.deepEqual(new Set(kn), new Set([rbac.ROLES.KN_TRUNG_UONG, rbac.ROLES.KN_TINH, rbac.ROLES.KN_XA]));
   assert.throws(() => scopes.assertRolesAllowed(ctxOf('qtri_kn_ag'), [rbac.ROLES.FINANCE]), /SA-09/);
   assert.throws(() => scopes.assertRolesAllowed(ctxOf('qtri_erp'), [rbac.ROLES.PLATFORM_ADMIN]), /SA-09/);
-  assert.ok(scopes.assignableRoles(ctxOf('admin')).includes(rbac.ROLES.PLATFORM_ADMIN));
+  assert.ok(scopes.assignableRoles(ctxOf('SAdmin')).includes(rbac.ROLES.PLATFORM_ADMIN));
 });
 
 test('Admin cấp hệ thống ERP gán được nhóm Tài chính cho nhân viên dù bản thân không có quyền tài chính (SA-03 nhường chỗ)', () => {
-  const target = users.createUser({ username: 'nv_kho_moi', fullName: 'Nhân viên kho mới', roles: [rbac.ROLES.WAREHOUSE_OP], password: 'x1234567' }, actorOf('qtri_erp'));
+  const target = users.createUser({ username: 'nv_kho_moi', fullName: 'Nhân viên kho mới', roles: [rbac.ROLES.WAREHOUSE_OP], password: 'Xa1234567' }, actorOf('qtri_erp'));
   const erpCtx = ctxOf('qtri_erp');
   scopes.assertCanManage(erpCtx, target.user.id);
   scopes.assertRolesAllowed(erpCtx, [rbac.ROLES.FINANCE]);
@@ -100,16 +100,16 @@ test('SA-12: tài khoản tạo trong phạm vi tỉnh bị gán cứng tỉnh �
   assert.equal(coerced.provinceId, province('AG'));
   assert.throws(() => scopes.coerceCreateInput(kn, { username: 'cb', fullName: 'x', roles: [rbac.ROLES.KN_XA], provinceId: province('DT') }), /SA-12/);
   assert.throws(() => scopes.coerceCreateInput(kn, { username: 'cb', fullName: 'x', roles: [rbac.ROLES.HTX_MANAGER] }), /SA-09/);
-  const created = users.createUser({ ...coerced, password: 'matkhau123' }, actorOf('qtri_kn_ag'));
+  const created = users.createUser({ ...coerced, password: 'MatKhau123' }, actorOf('qtri_kn_ag'));
   assert.equal(created.user.provinceId, province('AG'));
   assert.ok(scopes.visibleUserIds(kn)!.has(created.user.id), 'người vừa tạo lập tức nằm trong phạm vi');
   // Super admin không bị ép.
-  const free = scopes.coerceCreateInput(ctxOf('admin'), { username: 'a', fullName: 'a', roles: [rbac.ROLES.KN_XA] });
+  const free = scopes.coerceCreateInput(ctxOf('SAdmin'), { username: 'a', fullName: 'a', roles: [rbac.ROLES.KN_XA] });
   assert.equal(free.provinceId, undefined);
 });
 
 test('SA-11: super admin uỷ quyền bất kỳ; admin cấp hệ thống chỉ uỷ quyền tỉnh/HTX trong hệ thống mình; admin tỉnh không uỷ quyền', () => {
-  const root = ctxOf('admin');
+  const root = ctxOf('SAdmin');
   const erp = ctxOf('qtri_erp');
   const kn = ctxOf('qtri_kn_ag');
   const staff = byName('khonhap');
@@ -120,15 +120,15 @@ test('SA-11: super admin uỷ quyền bất kỳ; admin cấp hệ thống chỉ
   assert.throws(() => scopes.grantScope({ userId: byName('canbo_xa').id, system: 'kn', scopeType: 'province', scopeId: province('AG') }, erp, actorOf('qtri_erp')), /SA-11.*không quản trị toàn hệ thống/);
   assert.throws(() => scopes.grantScope({ userId: byName('canbo_xa').id, system: 'kn', scopeType: 'province', scopeId: province('AG') }, kn, actorOf('qtri_kn_ag')), /SA-11.*không uỷ quyền tiếp/);
   // Người được uỷ quyền phải thuộc nhóm của hệ thống đó.
-  assert.throws(() => scopes.grantScope({ userId: byName('canbo_xa').id, system: 'erp', scopeType: 'system' }, root, actorOf('admin')), /không thuộc nhóm nào/);
+  assert.throws(() => scopes.grantScope({ userId: byName('canbo_xa').id, system: 'erp', scopeType: 'system' }, root, actorOf('SAdmin')), /không thuộc nhóm nào/);
   // Super admin: cấp hệ thống cho cán bộ TW KN.
-  const knSys = scopes.grantScope({ userId: byName('canbo_tw').id, system: 'kn', scopeType: 'system' }, root, actorOf('admin'));
+  const knSys = scopes.grantScope({ userId: byName('canbo_tw').id, system: 'kn', scopeType: 'system' }, root, actorOf('SAdmin'));
   assert.equal(ctxOf('canbo_tw').canDelegate, true);
-  assert.throws(() => scopes.grantScope({ userId: staff.id, system: 'erp', scopeType: 'province', scopeId: province('CT') }, root, actorOf('admin')), /đã được cấp/);
+  assert.throws(() => scopes.grantScope({ userId: staff.id, system: 'erp', scopeType: 'province', scopeId: province('CT') }, root, actorOf('SAdmin')), /đã được cấp/);
   // Thu hồi: ERP admin thu hồi được phạm vi tỉnh mình cấp; không thu hồi được phạm vi KN.
   scopes.revokeScope(granted.id, erp, actorOf('qtri_erp'));
   assert.throws(() => scopes.revokeScope(knSys.id, erp, actorOf('qtri_erp')), /SA-11/);
-  scopes.revokeScope(knSys.id, root, actorOf('admin'));
+  scopes.revokeScope(knSys.id, root, actorOf('SAdmin'));
   assert.equal(scopes.tryAdminContext(byName('canbo_tw')), null);
 });
 

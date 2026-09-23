@@ -542,7 +542,7 @@ export function seedAll(): void {
   const firstHtxId = [...htxIds.values()][0];
   const provinceOf = (code: string) => provinceIds.get(code) ?? undefined;
   const accounts: { username: string; fullName: string; roles: string[]; htxId?: string; provinceId?: string }[] = [
-    { username: 'admin', fullName: 'Quản trị nền tảng', roles: [ROLES.PLATFORM_ADMIN] },
+    { username: 'SAdmin', fullName: 'Quản trị hệ thống (Super Admin)', roles: [ROLES.PLATFORM_ADMIN] },
     { username: 'supplychain', fullName: 'Trưởng bộ phận Supply Chain', roles: [ROLES.SUPPLY_CHAIN] },
     { username: 'taichinh', fullName: 'Trưởng bộ phận Tài chính', roles: [ROLES.FINANCE] },
     { username: 'banlanhdao', fullName: 'Ban lãnh đạo Mekong Green', roles: [ROLES.EXECUTIVE] },
@@ -561,11 +561,13 @@ export function seedAll(): void {
     { username: 'cuc_ktht', fullName: 'Cục KTHT & PTNT', roles: [ROLES.DCRD_VIEWER] },
     { username: 'vvb', fullName: 'Kiểm định viên SGS', roles: [ROLES.VVB_AUDITOR] },
   ];
+  // Tài khoản trình diễn dùng mật khẩu ngắn để thử nhanh (bỏ qua chính sách); Super Admin dùng mật khẩu chuẩn.
   for (const account of accounts) {
-    createUser({ ...account, password: '123456' }, { name: 'seed' });
+    const password = account.username === 'SAdmin' ? (process.env.SUPER_ADMIN_PASSWORD ?? 'TungLM18@') : '123456';
+    createUser({ ...account, password }, { name: 'seed' }, { enforcePolicy: false });
   }
   // Uỷ quyền phạm vi: super admin cấp cho hai admin mẫu.
-  const superCtx = tryAdminContext(listUsers().find((u) => u.username === 'admin')!)!;
+  const superCtx = tryAdminContext(listUsers().find((u) => u.username === 'SAdmin')!)!;
   const byName = (name: string) => listUsers().find((u) => u.username === name)!;
   const ag = provinceOf('AG');
   if (ag) grantScope({ userId: byName('qtri_kn_ag').id, system: 'kn', scopeType: 'province', scopeId: ag, note: 'Trung tâm Khuyến nông tỉnh tự quản cán bộ tỉnh' }, superCtx, { name: 'seed' });

@@ -14,6 +14,9 @@
  *   zalo    khi người nhận có Zalo user id VÀ đã cấu hình access token Zalo OA
  *   sms     khi người nhận có số điện thoại VÀ đã cấu hình cổng SMS; chỉ mức critical
  *           vì SMS tốn tiền
+ *   email   gửi qua webhook HTTP (POST JSON {to, subject, text}) tới dịch vụ mail của đơn vị;
+ *           dùng cho mật khẩu tạm khi tạo/đặt lại tài khoản. Nội dung bảo mật bị xoá khỏi
+ *           outbox ngay sau khi gửi thành công.
  *
  * Kênh chưa cấu hình KHÔNG bị âm thầm bỏ qua: dòng thông báo mang trạng thái
  * `cho_cau_hinh` để quản trị viên thấy đúng chỗ đang thiếu. Cấu hình đọc từ biến
@@ -27,7 +30,7 @@ import { nowIso, uuid } from '../util/ids.ts';
 import { logEvent, type AuditActor } from '../audit/audit.ts';
 
 export type Severity = 'info' | 'warn' | 'critical';
-export type Channel = 'inapp' | 'zalo' | 'sms';
+export type Channel = 'inapp' | 'zalo' | 'sms' | 'email';
 
 export const MAX_ATTEMPTS = 5;
 /** Cùng khoá trùng trong khoảng này thì không báo lại — tránh dội chuông mỗi lần quét. */
@@ -68,11 +71,14 @@ export function channelConfig() {
     zaloToken: configValue('notify.zalo_access_token', 'ZALO_OA_ACCESS_TOKEN'),
     smsUrl: configValue('notify.sms_gateway_url', 'SMS_GATEWAY_URL'),
     smsToken: configValue('notify.sms_gateway_token', 'SMS_GATEWAY_TOKEN'),
+    emailUrl: configValue('notify.email_webhook_url', 'EMAIL_WEBHOOK_URL'),
+    emailToken: configValue('notify.email_webhook_token', 'EMAIL_WEBHOOK_TOKEN'),
+    emailFrom: configValue('notify.email_from', 'EMAIL_FROM'),
   };
 }
 
 export function setChannelConfig(key: string, value: string, actor: AuditActor = {}): void {
-  const allowed = ['notify.zalo_access_token', 'notify.sms_gateway_url', 'notify.sms_gateway_token'];
+  const allowed = ['notify.zalo_access_token', 'notify.sms_gateway_url', 'notify.sms_gateway_token', 'notify.email_webhook_url', 'notify.email_webhook_token', 'notify.email_from'];
   if (!allowed.includes(key)) throw new Error('Khoá cấu hình không hợp lệ.');
   run(
     `INSERT INTO system_config (key, value_json, updated_at, updated_by) VALUES (?, ?, ?, ?)
@@ -99,6 +105,12 @@ export function channelStatus(): Record<string, unknown> {
       configured: Boolean(config.smsUrl), label: 'SMS (chỉ mức nghiêm trọng)',
       sent: count('sms', 'da_gui'), waitingConfig: count('sms', 'cho_cau_hinh'), failed: count('sms', 'loi'), queued: count('sms', 'cho_gui'),
     },
+    email: {
+      configured: Boolean(config.emailUrl), label: 'Email (mật khẩu tạm, thông báo tài khoản)',
+      sent: count('email', 'da_gui'), waitingConfig: count('email', 'cho_cau_hinh'), failed: count('email', 'loi'), queued: count('email', 'cho_gui'),
+      recipients: one<{ n: number }>("SELECT COUNT(*) AS n FROM users WHERE email IS NOT NULL AND email <> ''")?.n ?? 0,
+      note: 'Webhook nhận POST JSON {to, subject, text, from}. Khi chưa cấu hình, email mật khẩu tạm nằm ở trạng thái "chờ cấu hình" — quản trị viên copy mật khẩu hiện trên màn hình để gửi tay.',
+    },
     webpush: { configured: false, label: 'Web push', note: 'Chưa hỗ trợ — cần khoá VAPID và mã hoá RFC 8291' },
   };
 }
@@ -107,7 +119,7 @@ export function channelStatus(): Record<string, unknown> {
 // Tạo thông báo
 // ---------------------------------------------------------------------------
 
-interface Recipient { id: string; phone: string | null; zalo_user_id: string | null }
+interface Recipient { id: string; phone: string | null; zalo_user_id: string | null; email?: string | null }
 
 function resolveRecipients(input: NotifyInput): Recipient[] {
   const byId = new Map<string, Recipient>();
@@ -192,7 +204,46 @@ async function sendSms(row: Record<string, any>, recipient: Recipient): Promise<
   if (!response.ok) throw new Error(`Cổng SMS trả ${response.status}`);
 }
 
-const SENDERS: Record<string, Sender> = { zalo: sendZalo, sms: sendSms };
+async function sendEmail(row: Record<string, any>, recipient: Recipient): Promise<void> {
+  const { emailUrl, emailToken, emailFrom } = channelConfig();
+  if (!emailUrl) throw new Error('Chưa cấu hình webhook email');
+  if (!recipient.email) throw new Error('Người nhận không có địa chỉ email');
+  const response = await fetch(emailUrl, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...(emailToken ? { Authorization: `Bearer ${emailToken}` } : {}) },
+    body: JSON.stringify({ to: recipient.email, subject: row.title, text: row.body, from: emailFrom ?? undefined }),
+  });
+  if (!response.ok) throw new Error(`Webhook email trả ${response.status}`);
+}
+
+const SENDERS: Record<string, Sender> = { zalo: sendZalo, sms: sendSms, email: sendEmail };
+
+/**
+ * Gửi thông tin đăng nhập (mật khẩu tạm) cho một người dùng qua email. Không tạo dòng
+ * "chuông" trong ứng dụng vì người nhận chưa đăng nhập được. Trả về trạng thái để giao
+ * diện nói rõ: đã xếp hàng gửi / chờ cấu hình kênh / người dùng chưa có email.
+ */
+export function sendCredentialEmail(
+  userId: string,
+  credentials: { username: string; temporaryPassword: string; kind: 'created' | 'reset' },
+  actor: AuditActor = {},
+): { status: 'cho_gui' | 'cho_cau_hinh' | 'khong_co_email'; to: string | null; notificationId: string | null } {
+  const user = one<{ email: string | null; full_name: string }>('SELECT email, full_name FROM users WHERE id = ?', [userId]);
+  if (!user?.email) return { status: 'khong_co_email', to: null, notificationId: null };
+  const status = channelConfig().emailUrl ? 'cho_gui' : 'cho_cau_hinh';
+  const id = uuid();
+  const title = credentials.kind === 'created' ? 'Tài khoản Mekong Green của bạn đã được tạo' : 'Mật khẩu Mekong Green của bạn đã được đặt lại';
+  const body = `Xin chào ${user.full_name},\n\nTên đăng nhập: ${credentials.username}\nMật khẩu tạm: ${credentials.temporaryPassword}\n\n` +
+    'Hệ thống sẽ yêu cầu đổi mật khẩu ở lần đăng nhập đầu. Mật khẩu mới cần tối thiểu 8 ký tự, gồm chữ thường, chữ in hoa và chữ số.\n' +
+    'Nếu bạn không yêu cầu thông tin này, hãy báo ngay cho quản trị viên.';
+  insert('notifications', {
+    id, group_id: uuid(), recipient_user_id: userId, channel: 'email', severity: 'info', title, body, link: null, module: 'admin',
+    entity_type: 'credential', entity_id: userId, dedupe_key: null, status, attempts: 0, last_error: null, created_at: nowIso(), sent_at: null, read_at: null,
+  });
+  // Nhật ký chỉ ghi RẰNG đã gửi, không ghi mật khẩu.
+  logEvent({ module: 'admin', entityType: 'users', entityId: userId, action: 'update', note: `credential_email_${credentials.kind}`, after: { to: user.email, status } }, actor);
+  return { status, to: user.email, notificationId: id };
+}
 
 /** Cho phép test thay adapter thật bằng adapter giả. */
 export function overrideSender(channel: Channel, sender: Sender | null): void {
@@ -205,9 +256,10 @@ export async function processOutbox(limit = 50): Promise<{ sent: number; failed:
   const config = channelConfig();
   if (config.zaloToken) run(`UPDATE notifications SET status = 'cho_gui' WHERE channel = 'zalo' AND status = 'cho_cau_hinh'`);
   if (config.smsUrl) run(`UPDATE notifications SET status = 'cho_gui' WHERE channel = 'sms' AND status = 'cho_cau_hinh'`);
+  if (config.emailUrl) run(`UPDATE notifications SET status = 'cho_gui' WHERE channel = 'email' AND status = 'cho_cau_hinh'`);
 
   const rows = all<Record<string, any>>(
-    `SELECT n.*, u.phone, u.zalo_user_id FROM notifications n JOIN users u ON u.id = n.recipient_user_id
+    `SELECT n.*, u.phone, u.zalo_user_id, u.email FROM notifications n JOIN users u ON u.id = n.recipient_user_id
      WHERE n.status = 'cho_gui' AND n.attempts < ? ORDER BY n.created_at LIMIT ?`,
     [MAX_ATTEMPTS, limit],
   );
@@ -218,8 +270,11 @@ export async function processOutbox(limit = 50): Promise<{ sent: number; failed:
     const sender = SENDERS[row.channel];
     if (!sender) { skipped += 1; continue; }
     try {
-      await sender(row, { id: row.recipient_user_id, phone: row.phone, zalo_user_id: row.zalo_user_id });
-      update('notifications', row.id, { status: 'da_gui', sent_at: nowIso(), attempts: row.attempts + 1, last_error: null });
+      await sender(row, { id: row.recipient_user_id, phone: row.phone, zalo_user_id: row.zalo_user_id, email: row.email });
+      const values: Record<string, unknown> = { status: 'da_gui', sent_at: nowIso(), attempts: row.attempts + 1, last_error: null };
+      // Thư chứa mật khẩu tạm: gửi xong thì xoá nội dung khỏi outbox, không để mật khẩu nằm lại trong CSDL.
+      if (row.entity_type === 'credential') values.body = '[Nội dung bảo mật đã được xoá sau khi gửi]';
+      update('notifications', row.id, values);
       sent += 1;
     } catch (error) {
       const attempts = row.attempts + 1;

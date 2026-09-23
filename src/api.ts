@@ -269,16 +269,26 @@ export function buildApi(): Router {
     return sysadmin.setUserRoles(ctx.params.id, roles, ctx.actor);
   });
   api.post('/admin/users/:id/set-status', (ctx) => { scopes.assertCanManage(adminCtx(ctx), ctx.params.id); return sysadmin.setStatus(ctx.params.id, body(ctx).status, ctx.actor); });
-  api.post('/admin/users/:id/reset-pw', (ctx) => { scopes.assertCanManage(adminCtx(ctx), ctx.params.id); return sysadmin.resetUserPassword(ctx.params.id, ctx.actor); });
+  api.post('/admin/users/:id/reset-pw', (ctx) => resetWithEmail(ctx));
   api.post('/admin/users/:id/revoke-sessions', (ctx) => { scopes.assertCanManage(adminCtx(ctx), ctx.params.id); return { revokedSessions: sysadmin.revokeSessions(ctx.params.id, ctx.actor) }; });
   api.get('/admin/users', (ctx) => { const visible = scopes.visibleUserIds(adminCtx(ctx)); const list = users.listUsers(); return visible ? list.filter((u) => visible.has(u.id)) : list; });
+  // Tạo tài khoản: trả mật khẩu tạm MỘT lần để quản trị viên copy; tuỳ chọn gửi email cho người dùng.
   api.post('/admin/users', (ctx) => {
     const a = adminCtx(ctx);
     const input = scopes.coerceCreateInput(a, body(ctx) as never);
-    return users.createUser(input as never, ctx.actor);
+    const created = users.createUser(input as never, ctx.actor);
+    const email = body(ctx).sendEmail ? notifyService.sendCredentialEmail(created.user.id, { username: created.user.username, temporaryPassword: created.temporaryPassword, kind: 'created' }, ctx.actor) : null;
+    return { ...created, email };
   });
+  const resetWithEmail = (ctx: Context) => {
+    scopes.assertCanManage(adminCtx(ctx), ctx.params.id);
+    const result = sysadmin.resetUserPassword(ctx.params.id, ctx.actor);
+    const target = users.getUser(ctx.params.id);
+    const email = body(ctx)?.sendEmail && target ? notifyService.sendCredentialEmail(target.id, { username: target.username, temporaryPassword: result.temporaryPassword, kind: 'reset' }, ctx.actor) : null;
+    return { ...result, email };
+  };
   api.post('/admin/users/:id/status', (ctx) => { scopes.assertCanManage(adminCtx(ctx), ctx.params.id); return sysadmin.setStatus(ctx.params.id, body(ctx).status, ctx.actor); });
-  api.post('/admin/users/:id/reset-password', (ctx) => { scopes.assertCanManage(adminCtx(ctx), ctx.params.id); return sysadmin.resetUserPassword(ctx.params.id, ctx.actor); });
+  api.post('/admin/users/:id/reset-password', (ctx) => resetWithEmail(ctx));
 
   // Ma trận nhóm–quyền: toàn hệ thống → chỉ super admin (SA-10).
   // Danh mục quyền (nhãn tiếng Việt) — admin phạm vi cũng cần để đọc ma trận, chỉ SỬA mới là super admin.
