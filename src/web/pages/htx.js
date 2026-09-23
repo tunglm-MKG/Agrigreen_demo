@@ -230,9 +230,14 @@ registerPage('htx-farmers', {
     const { id } = await htxSelector(actions, () => rerender(this, view, actions));
     if (!id) return view.replaceChildren(alert('Chưa có hợp tác xã nào.', 'warn'));
     let q = '';
+    let reveal = false;
     const body = el('div');
+    if (can('htx.write')) {
+      actions.append(el('button', { class: 'ghost small', onclick: (e) => { reveal = !reveal; e.currentTarget.replaceChildren(icon(reveal ? 'lock' : 'eye', 15), reveal ? 'Che số điện thoại' : 'Hiện số điện thoại'); draw(); } }, [icon('eye', 15), 'Hiện số điện thoại']));
+    }
     const draw = async () => {
-      const farmers = await guard(api(`/htx/farmers?htxId=${id}${q ? `&q=${encodeURIComponent(q)}` : ''}`));
+      // NĐ 13/2023: số điện thoại che mặc định; chỉ người có quyền ghi mở xem và mỗi lần mở đều được ghi nhật ký.
+      const farmers = await guard(api(`/htx/farmers?htxId=${id}${q ? `&q=${encodeURIComponent(q)}` : ''}${reveal ? '&reveal=1' : ''}`));
       body.replaceChildren(
         el('div', { class: 'grid cols-4' }, [
           kpi('Nông hộ', num(farmers.length), null, null, 'users'),
@@ -245,7 +250,7 @@ registerPage('htx-farmers', {
           { key: 'plot_count', label: 'Thửa', align: 'right' }, { key: 'area_ha', label: 'Diện tích', align: 'right', render: (r) => `${num(r.area_ha, 2)} ha` },
           { key: 'status', label: 'Trạng thái', render: (r) => badge(r.status === 'active' ? 'Đang hoạt động' : 'Ngừng', r.status === 'active' ? 'good' : 'neutral') },
           { key: 'act', label: '', render: (r) => (can('htx.write') ? el('button', { class: 'ghost small', onclick: () => editFarmer(r) }, [icon('edit', 14), 'Sửa']) : '—') },
-        ], farmers, { empty: 'Chưa có nông hộ nào.' })),
+        ], farmers, { empty: q ? 'Không tìm thấy nông hộ phù hợp với từ khoá.' : 'Chưa có nông hộ nào.' })),
       );
     };
     function editFarmer(f) {
@@ -320,14 +325,26 @@ registerPage('htx-plots', {
               const input = el('input', { type: 'file', accept: '.kml,.geojson,.json' });
               p.append(el('label', {}, ['Tệp KML / GeoJSON', input]), el('button', { class: 'small', style: 'margin-top:8px', onclick: async () => {
                 const file = input.files?.[0]; if (!file) return toast('Chọn tệp trước.', true);
-                const out = await guard(api('/htx/plots/import', { body: { htxId: id, content: await readFile(file), fileName: file.name } }));
-                toast(`Tạo ${out.created} thửa; ${out.errors.length} lỗi${out.errors.length ? `: ${out.errors[0].reason}` : ''}.`, out.errors.length > 0);
+                const content = await readFile(file);
+                let out = await guard(api('/htx/plots/import', { body: { htxId: id, content, fileName: file.name } }));
+                const pending = out.errors.filter((e) => e.needsConfirm);
+                if (pending.length && await confirmDialog(`${pending.length} thửa trong tệp chồng lấn với thửa đã có của HTX. Vẫn lưu các thửa này?`, { title: 'Cần xác nhận chồng lấn', okLabel: 'Vẫn lưu', extra: [el('ul', {}, pending.slice(0, 6).map((e) => el('li', { text: `${e.name ?? `Đối tượng ${e.index}`}: ${e.reason}` })))] })) {
+                  const again = await guard(api('/htx/plots/import', { body: { htxId: id, content, fileName: file.name, confirmOverlap: true } }));
+                  out = { ...again, created: out.created + again.created, errors: again.errors };
+                }
+                if (out.errors.length) modal('Đối tượng chưa nạp được', table([{ key: 'index', label: '#' }, { key: 'name', label: 'Tên', render: (r) => r.name ?? '—' }, { key: 'reason', label: 'Lý do' }], out.errors, { plain: true }));
+                toast(`Tạo ${out.created} thửa; ${out.errors.length} đối tượng bị từ chối.`, out.errors.length > 0);
                 if (out.created) await rerender(this, view, actions);
               } }, [icon('upload', 14), 'Nạp']));
             } },
             { id: 'text', label: 'Dán toạ độ', render: (p) => {
-              p.append(form([{ name: 'coordinates', label: 'Mỗi dòng "lat, lng" (≥ 4 dòng)', type: 'textarea', rows: 5, required: true, placeholder: '10.3812, 105.4421\n10.3815, 105.4432\n…' }, { name: 'name', label: 'Tên thửa' }],
-                async (v) => { const out = await api('/htx/plots/import', { body: { htxId: id, coordinates: v.coordinates, name: v.name || undefined } }); if (out.errors.length) throw new Error(out.errors[0].reason); toast('Đã tạo thửa từ toạ độ.'); await rerender(this, view, actions); }, { submitLabel: 'Tạo thửa' }));
+              p.append(form([{ name: 'coordinates', label: 'Mỗi dòng "lat, lng" (≥ 4 dòng, không thẳng hàng)', type: 'textarea', rows: 5, required: true, placeholder: '10.3812, 105.4421\n10.3815, 105.4432\n…' }, { name: 'name', label: 'Tên thửa' }],
+                async (v) => {
+                  const lines = v.coordinates.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+                  if (lines.length < 4) throw new Error(`Cần tối thiểu 4 điểm ranh giới, hiện có ${lines.length}.`);
+                  const out = await apiConfirm('/htx/plots/import', { body: { htxId: id, coordinates: v.coordinates, name: v.name || undefined } }, 'confirmOverlap');
+                  toast(`Đã tạo thửa ${out.plot?.code ?? ''} — ${out.plot?.areaLabel ?? ''}.`); await rerender(this, view, actions);
+                }, { submitLabel: 'Kiểm tra & tạo thửa' }));
             } },
           ])) : null,
           card('Danh sách thửa', table([

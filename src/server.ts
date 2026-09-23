@@ -15,7 +15,7 @@ import { syncSystemGroups } from './platform/auth/admin.ts';
 import { processOutbox, runAlertScan } from './platform/notify/service.ts';
 import { purgeExpired } from './platform/http/idempotency.ts';
 import { seedVarietiesIfEmpty } from './mdm/varieties.ts';
-import { seedHtxFieldDemoIfEmpty } from './seedDemoHtx.ts';
+import { seedHtxFieldDemoIfEmpty, ensureXaScopeAssignments } from './seedDemoHtx.ts';
 import { ensureSuperAdmin } from './platform/auth/users.ts';
 import { escalateOverdueTasks, scanWatchlists } from './agrigreen/khuyennong/ops.ts';
 import { runDueReportSchedules } from './agrigreen/htx/fieldOps.ts';
@@ -43,6 +43,7 @@ export async function start(port = Number(process.env.PORT ?? 4173)): Promise<vo
   seedVarietiesIfEmpty();
   // Nông hộ, thửa, mùa vụ, nhật ký mẫu cho App HTX khi CSDL chưa có (chỉ chạy một lần).
   seedHtxFieldDemoIfEmpty();
+  ensureXaScopeAssignments();
   const api = buildApi();
 
   // Tiến trình nền: quét cảnh báo mỗi 10 phút, gửi outbox mỗi 30 giây, dọn khoá

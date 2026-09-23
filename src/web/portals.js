@@ -174,6 +174,7 @@ export const PORTALS = [
       {
         group: 'Dữ liệu nền cơ giới hoá',
         items: [
+          { id: 'cgh-htx', label: 'Hồ sơ HTX', icon: 'building', permission: 'cgh.read' },
           { id: 'cgh-machines', label: 'Hồ sơ máy', icon: 'tractor', permission: 'cgh.read' },
           { id: 'cgh-owners', label: 'Chủ sở hữu máy', icon: 'users', permission: 'cgh.read' },
           { id: 'cgh-catalog', label: 'Danh mục & ngưỡng', icon: 'settings', permission: 'cgh.read' },
@@ -190,7 +191,7 @@ export const PORTALS = [
       {
         group: 'Nhật ký',
         items: [
-          { id: 'cgh-log', label: 'Nhật ký hoạt động', icon: 'history', permission: 'cgh.read' },
+          { id: 'cgh-log', label: 'Nhật ký hoạt động', icon: 'history', permission: 'cgh.write' },
         ],
       },
       ADMIN_GROUP,

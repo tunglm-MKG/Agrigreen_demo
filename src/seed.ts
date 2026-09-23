@@ -541,7 +541,9 @@ export function seedAll(): void {
   // ---------- Tài khoản mẫu ----------
   const firstHtxId = [...htxIds.values()][0];
   const provinceOf = (code: string) => provinceIds.get(code) ?? undefined;
-  const accounts: { username: string; fullName: string; roles: string[]; htxId?: string; provinceId?: string }[] = [
+  const orgNodeByCode = (code: string) => one<{ id: string }>('SELECT id FROM org_nodes WHERE code = ?', [code])?.id;
+  const firstHtxOfProvince = (code: string) => one<{ id: string }>('SELECT id FROM cooperatives WHERE province_id = ? ORDER BY code LIMIT 1', [provinceOf(code) ?? ''])?.id;
+  const accounts: { username: string; fullName: string; roles: string[]; htxId?: string; provinceId?: string; orgNodeId?: string }[] = [
     { username: 'SAdmin', fullName: 'Quản trị hệ thống (Super Admin)', roles: [ROLES.PLATFORM_ADMIN] },
     { username: 'supplychain', fullName: 'Trưởng bộ phận Supply Chain', roles: [ROLES.SUPPLY_CHAIN] },
     { username: 'taichinh', fullName: 'Trưởng bộ phận Tài chính', roles: [ROLES.FINANCE] },
@@ -551,8 +553,9 @@ export function seedAll(): void {
     { username: 'hientruong', fullName: 'Điều hành hiện trường', roles: [ROLES.FIELD_MANAGER] },
     { username: 'doitruong', fullName: 'Đội trưởng Đội 1 — Long Xuyên', roles: [ROLES.FIELD_CREW] },
     { username: 'canbo_tw', fullName: 'Cán bộ Khuyến nông Trung ương', roles: [ROLES.KN_TRUNG_UONG] },
-    { username: 'canbo_xa', fullName: 'Cán bộ Khuyến nông xã Vĩnh Bình (An Giang)', roles: [ROLES.KN_XA], provinceId: provinceOf('AG') },
-    { username: 'canbo_xa_dt', fullName: 'Cán bộ Khuyến nông xã Tân Hồng (Đồng Tháp)', roles: [ROLES.KN_XA], provinceId: provinceOf('DT') },
+    // Cán bộ xã gắn đầu mối Tổ KNCĐ và HTX phụ trách để phạm vi dữ liệu là xã, không phải tỉnh (UAT DEF-KN-02).
+    { username: 'canbo_xa', fullName: 'Cán bộ Khuyến nông xã Vĩnh Bình (An Giang)', roles: [ROLES.KN_XA], provinceId: provinceOf('AG'), orgNodeId: orgNodeByCode('TKNCD-AG'), htxId: firstHtxId },
+    { username: 'canbo_xa_dt', fullName: 'Cán bộ Khuyến nông xã Tân Hồng (Đồng Tháp)', roles: [ROLES.KN_XA], provinceId: provinceOf('DT'), orgNodeId: orgNodeByCode('TKNCD-DT'), htxId: firstHtxOfProvince('DT') },
     { username: 'htx01', fullName: 'Ban quản lý HTX Vĩnh Bình', roles: [ROLES.HTX_MANAGER], htxId: firstHtxId, provinceId: provinceOf('AG') },
     { username: 'nongdan', fullName: 'Nông dân Nguyễn Văn A', roles: [ROLES.FARMER], htxId: firstHtxId, provinceId: provinceOf('AG') },
     // Admin theo phạm vi (SA-08..12): KN tỉnh An Giang tự quản cán bộ tỉnh mình; ERP có admin toàn hệ thống.

@@ -321,11 +321,36 @@ export function form(fields, onSubmit, options = {}) {
     return field(f.label, input(f.name, { ...attrs, type: f.type ?? 'text' }));
   });
 
+  // UAT DEF-CGH-07: tắt tooltip tiếng Anh của trình duyệt; báo lỗi bắt buộc bằng dòng đỏ tiếng Việt dưới ô.
+  const showFieldError = (control, message) => {
+    control.classList.add('field-error');
+    const hint = el('p', { class: 'field-hint', text: message });
+    control.closest('label')?.append(hint);
+    control.addEventListener('input', () => { control.classList.remove('field-error'); hint.remove(); }, { once: true });
+  };
+  const validate = (formNode) => {
+    formNode.querySelectorAll('.field-hint').forEach((h) => h.remove());
+    let firstBad = null;
+    for (const control of formNode.querySelectorAll('[required]')) {
+      const empty = control.type === 'checkbox' ? !control.checked : !String(control.value ?? '').trim();
+      if (empty) { showFieldError(control, control.tagName === 'SELECT' ? 'Vui lòng chọn một giá trị' : 'Trường này là bắt buộc'); firstBad ??= control; continue; }
+      if (control.type === 'number' && control.value !== '') {
+        const v = Number(control.value);
+        if (control.min !== '' && v < Number(control.min)) { showFieldError(control, `Giá trị tối thiểu là ${control.min}`); firstBad ??= control; }
+        else if (control.max !== '' && v > Number(control.max)) { showFieldError(control, `Giá trị tối đa là ${control.max}`); firstBad ??= control; }
+      }
+      if (control.type === 'email' && control.value && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(control.value)) { showFieldError(control, 'Địa chỉ email không hợp lệ'); firstBad ??= control; }
+    }
+    if (firstBad) firstBad.focus();
+    return !firstBad;
+  };
   const formEl = el('form', {
     class: `row${options.stacked ? ' stack' : ''}`,
+    novalidate: true,
     onsubmit: async (event) => {
       event.preventDefault();
       errorBox.hidden = true;
+      if (!validate(event.target)) { errorBox.textContent = 'Vui lòng điền đủ các trường bắt buộc.'; errorBox.hidden = false; return; }
       const data = new FormData(event.target);
       const values = {};
       for (const f of fields) {

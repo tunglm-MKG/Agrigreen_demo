@@ -60,6 +60,14 @@ function hydrate(row: UserRow): User {
   };
 }
 
+/** UAT DEF-CGH-03: email là định danh nhận mật khẩu tạm — không được trùng giữa hai tài khoản. */
+export function assertEmailAvailable(email: string | null | undefined, exceptUserId?: string): void {
+  const value = String(email ?? '').trim().toLowerCase();
+  if (!value) return;
+  const clash = one<{ id: string }>('SELECT id FROM users WHERE LOWER(email) = ? AND id <> ?', [value, exceptUserId ?? '']);
+  if (clash) throw new Error('Email này đã được sử dụng');
+}
+
 export interface CreateUserInput {
   username: string;
   fullName: string;
@@ -81,6 +89,7 @@ export interface CreateUserInput {
 export function createUser(input: CreateUserInput, actor = {}, options: { enforcePolicy?: boolean } = {}): { user: User; temporaryPassword: string } {
   const existing = one('SELECT id FROM users WHERE username = ?', [input.username]);
   if (existing) throw new Error(`Tên đăng nhập "${input.username}" đã tồn tại`);
+  assertEmailAvailable(input.email);
   if (input.password && options.enforcePolicy !== false) assertStrongPassword(input.password);
 
   const id = uuid();
@@ -170,6 +179,9 @@ const SESSION_HOURS = 12;
 export const LOCKOUT_ATTEMPTS = 5;
 export const LOCKOUT_MINUTES = 15;
 
+/** Một thông điệp duy nhất cho trạng thái khoá tạm (UAT DEF-CGH-09). */
+const lockoutMessage = (minutes: number) => `Tài khoản bị khoá tạm thời do đăng nhập sai quá ${LOCKOUT_ATTEMPTS} lần. Vui lòng thử lại sau ${minutes} phút hoặc liên hệ quản trị viên.`;
+
 export class LoginError extends Error {
   code: 'locked' | 'temporarily_locked' | 'invalid';
   constructor(message: string, code: 'locked' | 'temporarily_locked' | 'invalid') {
@@ -193,21 +205,20 @@ export function login(identifier: string, password: string): { token: string; us
   const now = nowIso();
   if (row.locked_until && row.locked_until > now) {
     const minutes = Math.max(1, Math.ceil((new Date(row.locked_until).getTime() - Date.now()) / 60_000));
-    throw new LoginError(`Tài khoản bị khoá tạm thời do đăng nhập sai nhiều lần. Vui lòng thử lại sau ${minutes} phút.`, 'temporarily_locked');
+    throw new LoginError(lockoutMessage(minutes), 'temporarily_locked');
   }
   if (hashPassword(password, row.password_salt) !== row.password_hash) {
     // Cửa sổ 15 phút: đã hết khoá tạm thì đếm lại từ đầu.
     const attempts = (row.locked_until && row.locked_until <= now ? 0 : (row.failed_attempts ?? 0)) + 1;
     const values: Record<string, unknown> = { failed_attempts: attempts, updated_at: now };
-    if (attempts >= LOCKOUT_ATTEMPTS) {
+    // "Sai QUÁ 5 lần" (UAT DEF-CGH-09): 5 lần sai chỉ báo sai, lần thứ 6 mới khoá.
+    if (attempts > LOCKOUT_ATTEMPTS) {
       values.locked_until = new Date(Date.now() + LOCKOUT_MINUTES * 60_000).toISOString();
       values.failed_attempts = 0;
       logEvent({ module: 'admin', entityType: 'users', entityId: row.id, action: 'update', note: 'temporary_lockout', source: 'system' });
     }
     update('users', row.id, values);
-    if (attempts >= LOCKOUT_ATTEMPTS) {
-      throw new LoginError(`Tài khoản bị khoá tạm thời ${LOCKOUT_MINUTES} phút do đăng nhập sai ${LOCKOUT_ATTEMPTS} lần.`, 'temporarily_locked');
-    }
+    if (attempts > LOCKOUT_ATTEMPTS) throw new LoginError(lockoutMessage(LOCKOUT_MINUTES), 'temporarily_locked');
     return null;
   }
 

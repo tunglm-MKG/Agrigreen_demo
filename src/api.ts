@@ -493,7 +493,7 @@ export function buildApi(): Router {
 
   // ===================== App Khuyến nông =====================
   api.get('/kn/org-tree', () => kn.orgTree(), P.KN_READ);
-  api.post('/kn/org-nodes', (ctx) => kn.createOrgNode(body(ctx) as never, ctx.actor), P.KN_WRITE);
+  api.post('/kn/org-nodes', (ctx) => kn.createOrgNode(body(ctx) as never, ctx.actor), P.KN_PUBLISH);
   api.get('/kn/articles', (ctx) =>
     kn.listArticles({
       kind: ctx.query.get('kind') ?? undefined,
@@ -513,12 +513,15 @@ export function buildApi(): Router {
   api.get('/kn/directory', (ctx) => kn.directory(ctx.query.get('orgNodeId') ?? undefined), P.KN_READ);
   api.post('/kn/directory', (ctx) => kn.upsertOfficer(body(ctx) as never, ctx.actor), P.KN_WRITE);
   api.get('/kn/prices', (ctx) => kn.priceBoard(ctx.query.get('commodity') ?? undefined), P.KN_READ);
+  // UAT DEF-KN-03: giá thị trường là Master Data (FN-17 BR-01) — chỉ cấp có quyền công bố (Admin/TTKN) mới ghi được,
+  // cán bộ xã (khuyennong.write) chỉ đọc. Cùng nguyên tắc cho cây tổ chức và mở khoá đào tạo.
   api.post('/kn/prices', (ctx) => {
     kn.upsertMarketPrice(body(ctx) as never, ctx.actor);
     return { ok: true };
-  }, P.KN_WRITE);
+  }, P.KN_PUBLISH);
+  api.delete('/kn/prices/:id', (ctx) => { kn.deleteMarketPrice(ctx.params.id, ctx.actor); return { ok: true }; }, P.KN_PUBLISH);
   api.get('/kn/courses', () => kn.listCourses(), P.KN_READ);
-  api.post('/kn/courses', (ctx) => kn.createCourse(body(ctx) as never, ctx.actor), P.KN_WRITE);
+  api.post('/kn/courses', (ctx) => kn.createCourse(body(ctx) as never, ctx.actor), P.KN_PUBLISH);
   api.post('/kn/courses/:id/enrol', (ctx) => kn.enrol(ctx.params.id, body(ctx) as never), P.KN_WRITE);
   api.get('/kn/network-map', () => kn.networkMap(), P.KN_READ);
   api.get('/kn/dashboard', () => kn.dashboard(), P.KN_READ);

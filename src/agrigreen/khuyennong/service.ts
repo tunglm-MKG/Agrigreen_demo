@@ -285,6 +285,14 @@ export function upsertMarketPrice(
 }
 
 /** Bảng giá kèm biến động so với lần công bố trước. */
+/** Xoá một bản ghi giá (dọn dữ liệu nhập sai) — chỉ cấp công bố; có nhật ký. */
+export function deleteMarketPrice(id: string, actor: AuditActor = {}): void {
+  const before = one<Record<string, unknown>>('SELECT * FROM market_prices WHERE id = ?', [id]);
+  if (!before) throw new Error('Không tìm thấy bản ghi giá.');
+  run('DELETE FROM market_prices WHERE id = ?', [id]);
+  logEvent({ module: 'khuyennong', entityType: 'market_prices', entityId: id, action: 'delete', before }, actor);
+}
+
 export function priceBoard(commodity?: string): Record<string, unknown>[] {
   const rows = all<{ commodity: string; unit: string; price: number; price_date: string; region: string | null; source: string }>(
     `SELECT * FROM market_prices ${commodity ? 'WHERE commodity = ?' : ''} ORDER BY commodity, region, price_date DESC`,

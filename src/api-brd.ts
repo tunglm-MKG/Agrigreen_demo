@@ -7,6 +7,7 @@
  */
 import { HttpError, Router, badRequest, forbidden, notFound, unauthorized, type Context } from './platform/http/router.ts';
 import { PERMISSIONS as P, can as roleCan } from './platform/auth/rbac.ts';
+import { logEvent } from './platform/audit/audit.ts';
 import * as users from './platform/auth/users.ts';
 import * as reporting from './erp/reporting/service.ts';
 import * as mdm from './mdm/service.ts';
@@ -58,6 +59,26 @@ function scopedHtxId(ctx: Context, requested?: string | null): string {
   return requested;
 }
 
+/**
+ * Dữ liệu cá nhân (NĐ 13/2023/NĐ-CP, UAT DEF-CGH-08): số điện thoại nông hộ / chủ máy được che mặc định
+ * (09xx•••456). Người có quyền ghi của phân hệ mới xem đầy đủ bằng `?reveal=1`, và mỗi lần xem đều vào nhật ký.
+ */
+export function maskPhone(phone: unknown): string | null {
+  if (!phone) return null;
+  const digits = String(phone).replace(/\s+/g, '');
+  if (digits.length < 7) return '•••';
+  return `${digits.slice(0, 4)}${'•'.repeat(Math.max(2, digits.length - 7))}${digits.slice(-3)}`;
+}
+function maskPhones<T extends Record<string, unknown>>(ctx: Context, rows: T[], revealPermission: string, entityType: string): (T & { phone_masked?: boolean })[] {
+  const wantsReveal = ctx.query.get('reveal') === '1';
+  const allowed = Boolean(ctx.user && roleCan(ctx.user.roles, revealPermission));
+  if (wantsReveal && allowed) {
+    logEvent({ module: 'admin', entityType: 'pii_access', entityId: entityType, action: 'update', after: { rows: rows.length, path: ctx.req.url }, source: 'api' }, ctx.actor);
+    return rows;
+  }
+  return rows.map((row) => ('phone' in row ? { ...row, phone: maskPhone(row.phone), phone_masked: true } : row));
+}
+
 export function registerBrdRoutes(api: Router): void {
   // ===================== Danh mục giống lúa (HTX US-CAT-01/02) =====================
   api.get('/mdm/rice-varieties', (ctx) => varieties.listVarieties(ctx.query.get('all') === '1'), P.MDM_READ);
@@ -86,7 +107,7 @@ export function registerBrdRoutes(api: Router): void {
   api.get('/mdm/cooperatives/inactive', () => lifecycle.listDeleted().filter((d) => d.table === 'cooperatives'), P.MDM_READ);
 
   // ===================== Nông hộ trong HTX (HTX US-HH-01/02/03) =====================
-  api.get('/htx/farmers', (ctx) => lifecycle.farmersWithPlots(scopedHtxId(ctx, ctx.query.get('htxId')), ctx.query.get('q') ?? undefined), P.HTX_READ);
+  api.get('/htx/farmers', (ctx) => maskPhones(ctx, lifecycle.farmersWithPlots(scopedHtxId(ctx, ctx.query.get('htxId')), ctx.query.get('q') ?? undefined), P.HTX_WRITE, 'farmers'), P.HTX_READ);
   api.post('/htx/farmers', (ctx) => {
     const htxId = scopedHtxId(ctx, body(ctx).htxId);
     const phone = String(body(ctx).phone ?? '').replace(/\s+/g, '');
@@ -103,11 +124,15 @@ export function registerBrdRoutes(api: Router): void {
   api.post('/htx/plots/overlap-check', (ctx) => ({ overlaps: lifecycle.findOverlaps(body(ctx).boundary ?? [], body(ctx).excludePlotId) }), P.HTX_READ);
   api.post('/htx/plots/import', (ctx) => {
     const htxId = scopedHtxId(ctx, body(ctx).htxId);
-    const parsed = body(ctx).coordinates
-      ? { format: 'manual', features: [{ kind: 'polygon', name: body(ctx).name ?? null, properties: {}, points: parseCoordinateLines(String(body(ctx).coordinates)) }], skipped: [] }
-      : parseSpatialFile(String(body(ctx).content ?? ''), String(body(ctx).fileName ?? ''));
-    const outcome = lifecycle.importFeatures('plot', parsed.features as never, { htxId, source: 'import' }, ctx.actor);
-    return { ...outcome, format: parsed.format, skipped: parsed.skipped };
+    const confirmOverlap = Boolean(body(ctx).confirmOverlap);
+    if (body(ctx).coordinates) {
+      // Dán toạ độ = vẽ một thửa: cùng luật ≥ 4 điểm, chồng lấn cùng HTX → 409 cần xác nhận, khác HTX → chặn (UAT DEF-HTX-01/02).
+      const created = confirmable(() => lifecycle.createPlotChecked({ name: body(ctx).name ?? undefined, htxId, boundary: parseCoordinateLines(String(body(ctx).coordinates)), source: 'toa_do', confirmOverlap }, ctx.actor));
+      return { created: 1, updated: 0, errors: [], ids: [created.id], plot: created, format: 'manual', skipped: [] };
+    }
+    const parsed = parseSpatialFile(String(body(ctx).content ?? ''), String(body(ctx).fileName ?? ''));
+    const outcome = lifecycle.importFeatures('plot', parsed.features as never, { htxId, source: 'import', confirmOverlap }, ctx.actor);
+    return { ...outcome, format: parsed.format, skipped: parsed.skipped, needsConfirm: outcome.errors.some((e) => e.needsConfirm) };
   }, P.HTX_WRITE);
   // Cán bộ khuyến nông vẽ thửa cho HTX bất kỳ trong địa bàn (KN US-PLOT-01) — quyền mdm.write.
   api.post('/mdm/plots/checked', (ctx) => confirmable(() => lifecycle.createPlotChecked(body(ctx) as never, ctx.actor)), P.MDM_WRITE);
@@ -212,6 +237,7 @@ export function registerBrdRoutes(api: Router): void {
   api.get('/cgh/thresholds', () => ({ versions: cghOps.listThresholdVersions(), current: cgh.coverageThresholds(), bands: cgh.coverageBands() }), P.CGH_READ);
   api.post('/cgh/thresholds', (ctx) => cghOps.addThresholdVersion(body(ctx) as never, ctx.actor), P.CGH_WRITE);
   api.get('/cgh/machine-types/all', () => cghOps.listMachineTypesAll(), P.CGH_READ);
+  api.put('/cgh/machine-types/:id', (ctx) => cghOps.updateMachineType(ctx.params.id, body(ctx) as never, ctx.actor), P.CGH_WRITE);
   api.post('/cgh/machine-types/:id/active', (ctx) => cghOps.setMachineTypeActive(ctx.params.id, Boolean(body(ctx).active), ctx.actor), P.CGH_WRITE);
   api.delete('/cgh/machine-types/:id', (ctx) => { cghOps.deleteMachineType(ctx.params.id, ctx.actor); return { ok: true }; }, P.CGH_WRITE);
   api.get('/cgh/norms/all', () => cghOps.allNorms(), P.CGH_READ);
@@ -219,7 +245,7 @@ export function registerBrdRoutes(api: Router): void {
   api.get('/cgh/history', (ctx) => cghOps.configHistory(ctx.query.get('entityType') ?? 'machine_types', ctx.query.get('entityId') ?? undefined), P.CGH_READ);
 
   api.get('/cgh/owner-types', () => cgh.OWNER_TYPES, P.CGH_READ);
-  api.get('/cgh/owners', (ctx) => cghOps.listOwners({ htxId: ctx.query.get('htxId') ?? undefined, includeInactive: ctx.query.get('all') === '1' }), P.CGH_READ);
+  api.get('/cgh/owners', (ctx) => maskPhones(ctx, cghOps.listOwners({ htxId: ctx.query.get('htxId') ?? undefined, includeInactive: ctx.query.get('all') === '1' }), P.CGH_WRITE, 'machine_owners'), P.CGH_READ);
   api.post('/cgh/owners/:id/deactivate', (ctx) => confirmable(() => cghOps.deactivateOwner(ctx.params.id, Boolean(body(ctx).confirm), ctx.actor)), P.CGH_WRITE);
   api.post('/cgh/owners/:id/reactivate', (ctx) => { cghOps.reactivateOwner(ctx.params.id, ctx.actor); return { ok: true }; }, P.CGH_WRITE);
 

@@ -50,9 +50,33 @@ export function addThresholdVersion(input: CoverageThresholds, actor: AuditActor
 
 export function listMachineTypesAll(): Record<string, unknown>[] {
   return all(`SELECT mt.*, (SELECT COUNT(*) FROM machines m WHERE m.machine_type_id = mt.id) AS machine_count,
-                     (SELECT COUNT(*) FROM productivity_norms n WHERE n.machine_type_id = mt.id AND n.active = 1) AS norm_count
+                     (SELECT COUNT(*) FROM productivity_norms n WHERE n.machine_type_id = mt.id AND n.active = 1) AS norm_count,
+                     (SELECT n.ha_per_machine_season FROM productivity_norms n WHERE n.machine_type_id = mt.id AND n.active = 1
+                        AND n.effective_from <= date('now') AND (n.effective_to IS NULL OR n.effective_to >= date('now'))
+                        ORDER BY n.effective_from DESC LIMIT 1) AS norm_ha
               FROM machine_types mt ORDER BY mt.active DESC, mt.stage, mt.name`);
 }
+
+/** US-CFG-01 AC-2 (UAT DEF-CGH-05): sửa tên / khâu / mã chủng loại; mã không trùng; ghi nhật ký trước–sau. */
+export function updateMachineType(id: string, patch: { name?: string; stage?: string; code?: string }, actor: AuditActor = {}): Record<string, unknown> {
+  const before = one<Record<string, unknown>>('SELECT * FROM machine_types WHERE id = ?', [id]);
+  if (!before) throw new Error('Không tìm thấy chủng loại máy.');
+  const values: Record<string, unknown> = {};
+  if (patch.name !== undefined) { if (!patch.name.trim()) throw new Error('Tên chủng loại không được để trống.'); values.name = patch.name.trim(); }
+  if (patch.stage !== undefined) { if (!STAGE_CODES.includes(patch.stage)) throw new Error('Khâu canh tác không hợp lệ.'); values.stage = patch.stage; }
+  if (patch.code !== undefined) {
+    const code = patch.code.trim().toUpperCase();
+    if (!code) throw new Error('Mã chủng loại không được để trống.');
+    if (one('SELECT id FROM machine_types WHERE code = ? AND id <> ?', [code, id])) throw new Error(`Mã chủng loại "${code}" đã tồn tại.`);
+    values.code = code;
+  }
+  if (!Object.keys(values).length) return before;
+  update('machine_types', id, values);
+  const after = one<Record<string, unknown>>('SELECT * FROM machine_types WHERE id = ?', [id])!;
+  logEvent({ module: 'cgh', entityType: 'machine_types', entityId: id, action: 'update', before, after }, actor);
+  return after;
+}
+const STAGE_CODES = ['lam_dat', 'gieo_sa', 'cham_soc', 'thu_hoach', 'sau_thu_hoach'];
 
 export function setMachineTypeActive(id: string, active: boolean, actor: AuditActor = {}): { affectedMachines: number } {
   const before = one<Record<string, unknown>>('SELECT * FROM machine_types WHERE id = ?', [id]);
@@ -391,10 +415,28 @@ export function dashboardV2(seasonId: string | undefined, isAdmin: boolean): Rec
   const htxList = [...perHtx.values()];
   const totalMachines = one<{ n: number }>("SELECT COUNT(*) AS n FROM machines WHERE COALESCE(status,'active') = 'active'")?.n ?? 0;
   const totalHtx = one<{ n: number }>("SELECT COUNT(*) AS n FROM cooperatives WHERE status = 'active'")?.n ?? 0;
-  const byStage = all(`SELECT mt.stage, COUNT(*) AS total, SUM(CASE WHEN m.condition = 'hoat_dong' THEN 1 ELSE 0 END) AS operational
+  // UAT DEF-CGH-01: mọi khối đều đổi theo bộ lọc vụ — nhu cầu (Cần) và số máy hoạt động phục vụ vụ lấy từ cân đối của vụ.
+  const machinesByStage = all<{ stage: string; total: number; operational: number }>(`SELECT mt.stage, COUNT(*) AS total, SUM(CASE WHEN m.condition = 'hoat_dong' THEN 1 ELSE 0 END) AS operational
                        FROM machines m JOIN machine_types mt ON mt.id = m.machine_type_id WHERE COALESCE(m.status,'active') = 'active' GROUP BY mt.stage`);
-  const byProvince = all(`SELECT a.name AS province, COUNT(m.id) AS machines FROM machines m JOIN cooperatives c ON c.id = m.htx_id LEFT JOIN admin_units a ON a.id = c.province_id
+  const stageAgg = new Map<string, { stage: string; required: number; operational: number; areaHa: number; htx: Set<string> }>();
+  const provAgg = new Map<string, { province: string; required: number; operational: number; htx: Set<string> }>();
+  for (const r of balance.rows) {
+    const st = stageAgg.get(r.stage) ?? { stage: r.stage, required: 0, operational: 0, areaHa: 0, htx: new Set<string>() };
+    st.required += r.requiredMachines ?? 0; st.operational += r.operationalMachines; st.areaHa += r.areaHa; st.htx.add(r.htxId); stageAgg.set(r.stage, st);
+    const pv = provAgg.get(r.provinceName ?? '—') ?? { province: r.provinceName ?? 'Chưa gán tỉnh', required: 0, operational: 0, htx: new Set<string>() };
+    pv.required += r.requiredMachines ?? 0; pv.operational += r.operationalMachines; pv.htx.add(r.htxId); provAgg.set(r.provinceName ?? '—', pv);
+  }
+  const pctOf = (op: number, req: number) => (req > 0 ? Math.round((op / req) * 1000) / 10 : null);
+  const byStage = ['lam_dat', 'gieo_sa', 'cham_soc', 'thu_hoach', 'sau_thu_hoach'].map((stage) => {
+    const m = machinesByStage.find((x) => x.stage === stage); const st = stageAgg.get(stage);
+    return { stage, total: m?.total ?? 0, operational: m?.operational ?? 0, required: st?.required ?? 0, operationalForSeason: st?.operational ?? 0, areaHa: Math.round((st?.areaHa ?? 0) * 10) / 10, htxCount: st?.htx.size ?? 0, coveragePct: pctOf(st?.operational ?? 0, st?.required ?? 0) };
+  });
+  const machinesByProvince = all<{ province: string | null; machines: number }>(`SELECT a.name AS province, COUNT(m.id) AS machines FROM machines m JOIN cooperatives c ON c.id = m.htx_id LEFT JOIN admin_units a ON a.id = c.province_id
                           WHERE COALESCE(m.status,'active') = 'active' GROUP BY a.id ORDER BY machines DESC`);
+  const byProvince = machinesByProvince.map((p) => { const agg = provAgg.get(p.province ?? '—'); return { province: p.province ?? 'Chưa gán tỉnh', machines: p.machines, required: agg?.required ?? 0, operational: agg?.operational ?? 0, htxCount: agg?.htx.size ?? 0, coveragePct: pctOf(agg?.operational ?? 0, agg?.required ?? 0) }; });
+  const seasonName = seasonId ? one<{ name: string }>('SELECT name FROM seasons WHERE id = ?', [seasonId])?.name ?? null : null;
+  const requiredTotal = balance.rows.reduce((a, r) => a + (r.requiredMachines ?? 0), 0);
+  const operationalForSeason = balance.rows.reduce((a, r) => a + r.operationalMachines, 0);
   const trend = listBalanceSnapshots().slice(0, 12).reverse().map((s) => ({ season: s.season_name, computedAt: s.computed_at, ...(s.summary as Record<string, unknown>) }));
   const ops = isAdmin ? {
     accounts: one('SELECT COUNT(*) AS total, SUM(CASE WHEN status = \'active\' THEN 1 ELSE 0 END) AS active, SUM(CASE WHEN status = \'locked\' THEN 1 ELSE 0 END) AS locked FROM users'),
@@ -407,8 +449,10 @@ export function dashboardV2(seasonId: string | undefined, isAdmin: boolean): Rec
     })(),
   } : null;
   return {
+    season: seasonName,
     kpis: {
-      totalMachines, totalHtx,
+      totalMachines, totalHtx, requiredMachines: requiredTotal, operationalMachines: operationalForSeason, coveragePct: pctOf(operationalForSeason, requiredTotal),
+      balanceRows: balance.rows.length,
       htxSufficient: htxList.filter((h) => h.worst.level === 'du' || h.worst.level === 'thua').length,
       htxShort: htxList.filter((h) => h.worst.level === 'thieu' || h.worst.level === 'can_chu_y').length,
       htxNoData: htxList.filter((h) => h.worst.level === 'chua_co_du_lieu').length,

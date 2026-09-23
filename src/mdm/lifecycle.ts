@@ -252,12 +252,12 @@ export function importFarmers(htxId: string, rows: Record<string, unknown>[], ac
 
 export type ImportTarget = 'htx' | 'hub' | 'plot';
 
-export interface FeatureImportOutcome { created: number; updated: number; errors: { index: number; name: string | null; reason: string }[]; ids: string[] }
+export interface FeatureImportOutcome { created: number; updated: number; errors: { index: number; name: string | null; reason: string; needsConfirm?: boolean }[]; ids: string[] }
 
 export function importFeatures(
   target: ImportTarget,
   features: ImportedFeature[],
-  options: { htxId?: string; provinceId?: string; kind?: 'hub' | 'warehouse' | 'yard' | 'plant'; source?: string } = {},
+  options: { htxId?: string; provinceId?: string; kind?: 'hub' | 'warehouse' | 'yard' | 'plant'; source?: string; confirmOverlap?: boolean } = {},
   actor: AuditActor = {},
 ): FeatureImportOutcome {
   const outcome: FeatureImportOutcome = { created: 0, updated: 0, errors: [], ids: [] };
@@ -319,11 +319,12 @@ export function importFeatures(
         if (feature.kind !== 'polygon') throw new Error('Thửa ruộng phải là Polygon');
         const htxId = options.htxId ?? text(['htx_id']) ?? one<{ id: string }>('SELECT id FROM cooperatives WHERE code = ? OR name = ?', [text(['htx_code']) ?? '', text(['htx', 'ten_htx']) ?? ''])?.id;
         if (!htxId) throw new Error('Không xác định được HTX của thửa (thiếu htx_code / chọn HTX trước khi nạp)');
-        const created = createPlotChecked({ name: feature.name ?? undefined, htxId, boundary: feature.points, source: options.source ?? 'import', minPoints: 3, confirmOverlap: true }, actor);
+        // UAT DEF-HTX-01/02: thửa nạp từ tệp/toạ độ chịu cùng luật với thửa vẽ tay — ≥ 4 điểm và kiểm chồng lấn.
+        const created = createPlotChecked({ name: feature.name ?? undefined, htxId, boundary: feature.points, source: options.source ?? 'import', confirmOverlap: options.confirmOverlap === true }, actor);
         outcome.created += 1; outcome.ids.push(created.id);
       }
     } catch (error) {
-      outcome.errors.push({ index: index + 1, name: feature.name, reason: (error as Error).message });
+      outcome.errors.push({ index: index + 1, name: feature.name, reason: (error as Error).message, needsConfirm: (error as Error & { needsConfirm?: boolean }).needsConfirm || undefined });
     }
   });
   logEvent({ module: 'gis', entityType: target === 'htx' ? 'cooperatives' : target === 'hub' ? 'facilities' : 'plots', action: 'create', after: { import: target, ...outcome, ids: undefined }, note: 'bulk_geo_import' }, actor);

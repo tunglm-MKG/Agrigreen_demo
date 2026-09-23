@@ -33,10 +33,24 @@ export function scopeOf(user: User | null): KnScope {
     const name = user.provinceId ? one<{ name: string }>('SELECT name FROM admin_units WHERE id = ?', [user.provinceId])?.name : null;
     return { level: 'tinh', label: name ? `Tỉnh ${name}` : 'Cấp tỉnh', provinceIds, htxIds: null, orgNodeIds };
   }
-  // Cán bộ xã / Tổ KNCĐ: HTX trong tỉnh (chưa có gán xã chi tiết → tỉnh là phạm vi hẹp nhất có dữ liệu).
+  // Cán bộ xã / Tổ KNCĐ (UAT DEF-KN-02): phạm vi là xã được gán — HTX cùng xã với đầu mối tổ chức hoặc
+  // HTX gắn trực tiếp trên tài khoản. Chỉ khi không gán gì mới rơi về tỉnh và nhãn nói rõ "chưa gán xã".
+  const node = user.orgNodeId ? one<{ admin_unit_id: string | null; name: string }>('SELECT admin_unit_id, name FROM org_nodes WHERE id = ?', [user.orgNodeId]) : null;
+  const unit = node?.admin_unit_id ? one<{ id: string; level: string; name: string }>('SELECT id, level, name FROM admin_units WHERE id = ?', [node.admin_unit_id]) : null;
+  const provinceName = user.provinceId ? one<{ name: string }>('SELECT name FROM admin_units WHERE id = ?', [user.provinceId])?.name : null;
+  if (unit && unit.level === 'commune') {
+    const htxIds = all<{ id: string }>('SELECT id FROM cooperatives WHERE commune_id = ?', [unit.id]).map((r) => r.id);
+    if (user.htxId && !htxIds.includes(user.htxId)) htxIds.push(user.htxId);
+    return { level: 'xa', label: `Xã ${unit.name}`, provinceIds, htxIds, orgNodeIds };
+  }
+  if (user.htxId) {
+    const own = one<{ id: string; name: string; commune_id: string | null }>('SELECT id, name, commune_id FROM cooperatives WHERE id = ?', [user.htxId]);
+    const sameCommune = own?.commune_id ? all<{ id: string }>('SELECT id FROM cooperatives WHERE commune_id = ?', [own.commune_id]).map((r) => r.id) : [];
+    const htxIds = [...new Set([user.htxId, ...sameCommune])];
+    return { level: 'xa', label: `Địa bàn ${own?.name ?? 'HTX phụ trách'}`, provinceIds, htxIds, orgNodeIds };
+  }
   const htxIds = provinceIds ? all<{ id: string }>('SELECT id FROM cooperatives WHERE province_id = ?', [provinceIds[0]]).map((r) => r.id) : null;
-  const name = user.provinceId ? one<{ name: string }>('SELECT name FROM admin_units WHERE id = ?', [user.provinceId])?.name : null;
-  return { level: 'xa', label: name ? `Địa bàn ${name}` : 'Địa bàn phụ trách', provinceIds, htxIds, orgNodeIds };
+  return { level: 'xa', label: provinceName ? `Địa bàn ${provinceName} (chưa gán xã)` : 'Địa bàn phụ trách (chưa gán xã)', provinceIds, htxIds, orgNodeIds };
 }
 
 function htxFilter(scope: KnScope, column = 'c.id'): { clause: string; params: unknown[] } {

@@ -7,7 +7,7 @@
  * `plots` còn rỗng và dùng đúng các dịch vụ nghiệp vụ (không chèn thẳng SQL)
  * để dữ liệu mẫu đi qua cùng luật kiểm tra như dữ liệu thật.
  */
-import { all, one, insert } from './platform/db/db.ts';
+import { all, one, insert, update } from './platform/db/db.ts';
 import { nowIso, uuid } from './platform/util/ids.ts';
 import * as mdm from './mdm/service.ts';
 import * as lifecycle from './mdm/lifecycle.ts';
@@ -49,6 +49,32 @@ function square(lat: number, lng: number, dx: number, dy: number): { lat: number
     { lat: cy - size, lng: cx - size }, { lat: cy - size, lng: cx + size },
     { lat: cy + size, lng: cx + size }, { lat: cy + size, lng: cx - size },
   ];
+}
+
+/**
+ * UAT DEF-KN-02: cán bộ xã trong CSDL cũ chưa gắn đầu mối cấp xã / HTX phụ trách nên phạm vi rơi về tỉnh.
+ * Gắn Tổ KNCĐ của tỉnh và HTX có tên xuất hiện trong họ tên cán bộ (vd. "xã Vĩnh Bình" → HTX ... Vĩnh Bình).
+ */
+export function ensureXaScopeAssignments(): number {
+  const rows = all<{ id: string; full_name: string; province_id: string | null; org_node_id: string | null; htx_id: string | null }>(
+    "SELECT u.id, u.full_name, u.province_id, u.org_node_id, u.htx_id FROM users u JOIN user_roles r ON r.user_id = u.id WHERE r.role = 'kn_xa' AND (u.org_node_id IS NULL OR u.htx_id IS NULL)");
+  let fixed = 0;
+  for (const u of rows) {
+    const values: Record<string, unknown> = {};
+    if (!u.org_node_id && u.province_id) {
+      const code = one<{ code: string }>('SELECT code FROM admin_units WHERE id = ?', [u.province_id])?.code;
+      const node = code ? one<{ id: string }>('SELECT id FROM org_nodes WHERE code = ?', [`TKNCD-${code}`]) : null;
+      if (node) values.org_node_id = node.id;
+    }
+    if (!u.htx_id) {
+      const match = /xã\s+([^()]+?)\s*(\(|$)/i.exec(u.full_name);
+      const commune = match?.[1]?.trim();
+      const htx = commune ? one<{ id: string }>('SELECT id FROM cooperatives WHERE name LIKE ? ORDER BY code LIMIT 1', [`%${commune}%`]) : null;
+      if (htx) values.htx_id = htx.id;
+    }
+    if (Object.keys(values).length) { update('users', u.id, { ...values, updated_at: nowIso() }); fixed += 1; }
+  }
+  return fixed;
 }
 
 export function seedHtxFieldDemoIfEmpty(): boolean {

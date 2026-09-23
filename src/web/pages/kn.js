@@ -59,7 +59,15 @@ registerPage('kn-dashboard', {
 
     actions.append(el('span', { class: 'pill' }, [el('span', { class: 'dot' }), `Phạm vi: ${dash.scope?.label ?? ''}`]));
     if (can('khuyennong.publish')) {
-      actions.append(el('button', { class: 'ghost small', onclick: async () => { const r = await guard(api('/kn/push-to-app-htx', { body: {} })); toast(`Đã đồng bộ ${r.recordCount} bản ghi sang Cổng HTX.`); } }, [icon('upload', 15), 'Đẩy sang Cổng HTX']));
+      const pushBtn = el('button', { class: 'ghost small', onclick: async () => {
+        pushBtn.disabled = true;
+        try {
+          const r = await guard(api('/kn/push-to-app-htx', { body: {} }));
+          toast(`Đã đẩy ${r.recordCount} bản ghi sang Cổng HTX lúc ${new Date().toLocaleTimeString('vi-VN')} (${r.status}).`);
+          pushBtn.replaceChildren(icon('check', 15), `Đã đẩy ${r.recordCount} bản ghi · ${new Date().toLocaleTimeString('vi-VN')}`);
+        } finally { pushBtn.disabled = false; }
+      } }, [icon('upload', 15), 'Đẩy sang Cổng HTX']);
+      actions.append(pushBtn);
     }
 
     view.replaceChildren(
@@ -414,7 +422,8 @@ registerPage('kn-prices', {
           { key: 'price', label: 'Giá', align: 'right', render: (r) => `${num(r.price)} ${r.unit}` },
           { key: 'change', label: 'Biến động', align: 'right', render: (r) => (r.changePct == null ? '—' : badge(`${r.change > 0 ? '▲' : r.change < 0 ? '▼' : '■'} ${pct(Math.abs(r.changePct))}`, r.trend === 'tang' ? 'good' : r.trend === 'giam' ? 'bad' : 'neutral')) },
           { key: 'price_date', label: 'Ngày' }, { key: 'source', label: 'Nguồn' },
-        ], prices, { empty: 'Chưa có dữ liệu giá.' })),
+          can('khuyennong.publish') ? { key: 'x', label: '', render: (r) => (r.id ? el('button', { class: 'ghost small danger', title: 'Xoá bản ghi giá nhập sai', onclick: async () => { if (!(await confirmDialog(`Xoá bản ghi giá ${r.commodity} · ${r.region ?? ''} · ${r.price_date}?`, { danger: true, okLabel: 'Xoá' }))) return; await guard(api(`/kn/prices/${r.id}`, { method: 'DELETE' })); toast('Đã xoá bản ghi giá.'); await this.render(view, (actions.replaceChildren(), actions)); } }, [icon('trash', 14)]) : '') } : null,
+        ].filter(Boolean), prices, { empty: 'Chưa có dữ liệu giá.' })),
         el('div', { class: 'stack' }, [
           card('Theo dõi biến động (US-PRICE-03)', [
             watchBox,
@@ -423,7 +432,7 @@ registerPage('kn-prices', {
               { name: 'thresholdPct', label: 'Ngưỡng (%)', type: 'number', step: '0.5', min: '0.5', value: 5, required: true },
             ], async (v) => { const list = await api('/kn/prices/watchlist', { method: 'PUT', body: v }); drawWatch(list); toast('Đã cập nhật theo dõi.'); }, { submitLabel: 'Theo dõi' }),
           ]),
-          can('khuyennong.write') ? card('Công bố giá mới', form([
+          can('khuyennong.publish') ? card('Công bố giá mới (Master Data — chỉ cấp công bố)', form([
             { name: 'commodity', label: 'Mặt hàng', required: true, placeholder: 'VD: Lúa OM5451' }, { name: 'region', label: 'Vùng', required: true, placeholder: 'VD: An Giang' },
             { name: 'price', label: 'Giá', type: 'number', required: true, step: '1' }, { name: 'unit', label: 'Đơn vị', required: true, value: 'đ/kg' },
             { name: 'priceDate', label: 'Ngày áp dụng', type: 'date', required: true, value: new Date().toISOString().slice(0, 10) }, { name: 'source', label: 'Nguồn', placeholder: 'VD: Sở NN&MT' },

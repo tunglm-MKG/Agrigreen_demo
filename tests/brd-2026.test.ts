@@ -47,11 +47,11 @@ const square = (lat: number, lng: number, size = 0.002) => [
 // Đăng nhập — KN US-AUTH: khoá sau 5 lần sai, thông điệp rõ, số điện thoại
 // ===========================================================================
 
-test('Sai mật khẩu 5 lần liên tiếp → khoá tạm 15 phút với thông điệp riêng, đúng mật khẩu cũng không vào', () => {
+test('Sai mật khẩu quá 5 lần liên tiếp → khoá tạm 15 phút với một thông điệp thống nhất, đúng mật khẩu cũng không vào', () => {
   const created = users.createUser({ username: 'khoa5lan', fullName: 'Kiểm thử khoá', roles: ['farmer'], password: 'MatKhau123', phone: '0911222333' }, { id: admin.id, name: admin.fullName }) as { user: { id: string } };
-  for (let i = 0; i < 4; i += 1) assert.equal(users.login('khoa5lan', 'sai-mat-khau'), null, 'bốn lần đầu chỉ báo sai');
-  // Lần sai thứ 5 kích hoạt khoá ngay và nói rõ lý do.
-  assert.throws(() => users.login('khoa5lan', 'sai-mat-khau'), (e: Error & { code?: string }) => e.code === 'temporarily_locked');
+  for (let i = 0; i < 5; i += 1) assert.equal(users.login('khoa5lan', 'sai-mat-khau'), null, 'năm lần sai đầu chỉ báo sai (spec: khoá khi sai QUÁ 5 lần — UAT DEF-CGH-09)');
+  // Lần sai thứ 6 kích hoạt khoá ngay và nói rõ lý do.
+  assert.throws(() => users.login('khoa5lan', 'sai-mat-khau'), (e: Error & { code?: string }) => e.code === 'temporarily_locked' && /quá 5 lần/.test(e.message));
   assert.throws(() => users.login('khoa5lan', 'MatKhau123'), (e: Error & { code?: string }) => e.code === 'temporarily_locked' && /15 phút|khoá/.test(e.message));
   const row = one<{ failed_attempts: number; locked_until: string | null }>('SELECT failed_attempts, locked_until FROM users WHERE id = ?', [created.user.id]);
   assert.ok(row && row.locked_until, 'phải ghi thời điểm hết khoá');
@@ -385,4 +385,79 @@ test('Hướng dẫn địa phương phải gắn quy trình gốc và nhãn t�
   const feed = htxOps.newsFeed();
   assert.equal(feed[0].urgent, 1, 'tin khẩn xếp đầu');
   assert.ok(feed.some((n) => n.id === local.id && n.region_label === 'Cà Mau'));
+});
+
+
+// ===========================================================================
+// Sửa lỗi theo báo cáo UAT 22/09/2026
+// ===========================================================================
+
+test('UAT DEF-CGH-03: email trùng bị chặn khi tạo tài khoản và khi sửa hồ sơ', async () => {
+    const sysadmin = await import('../src/platform/auth/admin.ts');
+    users.createUser({ username: 'uat_mail_1', fullName: 'UAT 1', roles: ['farmer'], email: 'uat.test01@example.com' }, { id: admin.id, name: admin.fullName });
+    assert.throws(() => users.createUser({ username: 'uat_mail_2', fullName: 'UAT 2', roles: ['farmer'], email: 'UAT.TEST01@example.com' }, { id: admin.id, name: admin.fullName }), /Email này đã được sử dụng/);
+    const other = users.createUser({ username: 'uat_mail_3', fullName: 'UAT 3', roles: ['farmer'], email: 'uat.test03@example.com' }, { id: admin.id, name: admin.fullName });
+    assert.throws(() => sysadmin.updateProfile(other.user.id, { email: 'uat.test01@example.com' }, actor), /Email này đã được sử dụng/);
+    assert.doesNotThrow(() => sysadmin.updateProfile(other.user.id, { email: 'uat.test03@example.com' }, actor), 'giữ email của chính mình không bị coi là trùng');
+});
+
+test('UAT DEF-HTX-01/02: nạp thửa từ tệp cũng phải ≥ 4 điểm và bị chặn/cần xác nhận khi chồng lấn', () => {
+    const tri = [{ lat: htxA.lat + 0.03, lng: htxA.lng + 0.03 }, { lat: htxA.lat + 0.031, lng: htxA.lng + 0.032 }, { lat: htxA.lat + 0.033, lng: htxA.lng + 0.03 }];
+    const three = lifecycle.importFeatures('plot', [{ kind: 'polygon', name: 'Tam giác', properties: {}, points: tri }], { htxId: htxA.id }, actor);
+    assert.equal(three.created, 0);
+    assert.match(three.errors[0].reason, /4 điểm/);
+    const sq = square(htxA.lat + 0.05, htxA.lng + 0.05);
+    assert.equal(lifecycle.importFeatures('plot', [{ kind: 'polygon', name: 'Vuông 1', properties: {}, points: sq }], { htxId: htxA.id }, actor).created, 1);
+    const dup = lifecycle.importFeatures('plot', [{ kind: 'polygon', name: 'Vuông trùng', properties: {}, points: square(htxA.lat + 0.0505, htxA.lng + 0.0505) }], { htxId: htxA.id }, actor);
+    assert.equal(dup.created, 0, 'chồng lấn cùng HTX chưa xác nhận thì không lưu');
+    assert.equal(dup.errors[0].needsConfirm, true);
+    const confirmed = lifecycle.importFeatures('plot', [{ kind: 'polygon', name: 'Vuông trùng', properties: {}, points: square(htxA.lat + 0.0505, htxA.lng + 0.0505) }], { htxId: htxA.id, confirmOverlap: true }, actor);
+    assert.equal(confirmed.created, 1);
+    const foreign = lifecycle.importFeatures('plot', [{ kind: 'polygon', name: 'Của HTX khác', properties: {}, points: sq }], { htxId: htxB.id, confirmOverlap: true }, actor);
+    assert.equal(foreign.created, 0, 'chồng lấn HTX khác luôn bị chặn');
+});
+
+test('UAT DEF-CGH-05/06/10: sửa được chủng loại máy, mã không trùng, danh mục trả định mức hiện hành', () => {
+    const list = cghOps.listMachineTypesAll() as { id: string; code: string; norm_ha: number | null; machine_count: number }[];
+    const t = list[0];
+    const other = list[1];
+    assert.throws(() => cghOps.updateMachineType(t.id, { code: other.code }, actor), /đã tồn tại/);
+    const after = cghOps.updateMachineType(t.id, { name: 'Tên mới UAT' }, actor);
+    assert.equal(after.name, 'Tên mới UAT');
+    assert.ok(list.some((x) => typeof x.norm_ha === 'number' && x.norm_ha > 1), 'cột định mức phải là ha/máy/vụ, không phải số dòng');
+});
+
+test('UAT DEF-CGH-01: bảng điều hành CGH tính lại nhu cầu, cần–có theo khâu và theo tỉnh theo vụ được lọc', () => {
+    const all_ = cghOps.dashboardV2(undefined, false) as { kpis: { requiredMachines: number }; byStage: { required: number; total: number }[]; byProvince: { required: number }[]; season: string | null };
+    const one_ = cghOps.dashboardV2(seasons[0].id, false) as typeof all_;
+    assert.equal(one_.season, seasons[0].name);
+    assert.ok(all_.kpis.requiredMachines > one_.kpis.requiredMachines, 'nhu cầu mọi vụ phải lớn hơn nhu cầu một vụ');
+    assert.ok(one_.byStage.some((s) => s.required > 0) && one_.byStage.every((s) => 'coveragePct' in s));
+    assert.ok(one_.byProvince.every((p) => 'required' in p && 'coveragePct' in p));
+});
+
+test('UAT DEF-KN-02: cán bộ xã có HTX/đầu mối phụ trách chỉ thấy địa bàn xã, không phải cả tỉnh', () => {
+    const xa = users.listUsers().find((u) => u.username === 'canbo_xa')!;
+    const scope = knOps.scopeOf(xa);
+    assert.equal(scope.level, 'xa');
+    assert.ok(scope.htxIds && scope.htxIds.length >= 1 && scope.htxIds.length < cooperatives.filter((c) => c.province_id === xa.provinceId).length, `phạm vi xã (${scope.htxIds?.length}) phải hẹp hơn tỉnh`);
+    assert.doesNotMatch(scope.label, /chưa gán xã/);
+    const dash = knOps.scopedDashboard(xa) as { kpis: { htx: number } };
+    assert.equal(dash.kpis.htx, scope.htxIds!.length);
+});
+
+test('UAT DEF-KN-03: xoá bản ghi giá có nhật ký; upsert giữ nguyên hành vi', async () => {
+    const kn = await import('../src/agrigreen/khuyennong/service.ts');
+    kn.upsertMarketPrice({ commodity: 'UAT Gia Test', price: 12345, priceDate: '2026-09-22', region: 'An Giang' }, actor);
+    const row = one<{ id: string }>("SELECT id FROM market_prices WHERE commodity = 'UAT Gia Test'")!;
+    kn.deleteMarketPrice(row.id, actor);
+    assert.equal(one("SELECT id FROM market_prices WHERE commodity = 'UAT Gia Test'"), null);
+    assert.throws(() => kn.deleteMarketPrice(row.id, actor), /Không tìm thấy/);
+});
+
+test('UAT DEF-CGH-08: số điện thoại được che theo mẫu 4 đầu · 3 cuối', async () => {
+    const { maskPhone } = await import('../src/api-brd.ts');
+    assert.equal(maskPhone('0912345678'), '0912•••678');
+    assert.equal(maskPhone(null), null);
+    assert.equal(maskPhone('123'), '•••');
 });

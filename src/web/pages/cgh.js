@@ -49,10 +49,10 @@ registerPage('cgh-dashboard', {
       body.replaceChildren(
         d.ops?.syncBanner ? alert(d.ops.syncBanner, 'bad') : null,
         el('div', { class: 'grid cols-4' }, [
-          kpi('Tổng số máy', num(k.totalMachines), `${num(k.totalHtx)} HTX đang hoạt động`, null, 'tractor'),
-          kpi('HTX đủ / thừa máy', num(k.htxSufficient), 'Theo khâu yếu nhất của HTX', null, 'check'),
-          kpi('HTX thiếu / cần chú ý', num(k.htxShort), 'Cần điều phối máy hoặc thuê', null, 'warning'),
-          kpi('HTX chưa có dữ liệu', num(k.htxNoData), 'Thiếu diện tích hoặc định mức — không suy đoán', null, 'info'),
+          kpi(`Nhu cầu máy${d.season ? ` · ${d.season}` : ' · mọi vụ'}`, num(k.requiredMachines), `${num(k.operationalMachines)} máy hoạt động phục vụ · đáp ứng ${k.coveragePct == null ? '—' : pct(k.coveragePct)}`, null, 'scale'),
+          kpi('Tổng máy trong hồ sơ', num(k.totalMachines), `${num(k.totalHtx)} HTX đang hoạt động`, null, 'tractor'),
+          kpi('HTX đủ / thừa máy', num(k.htxSufficient), `Theo khâu yếu nhất${d.season ? ` trong ${d.season}` : ''}`, null, 'check'),
+          kpi('HTX thiếu / cần chú ý', num(k.htxShort), `${num(k.htxNoData)} HTX chưa có dữ liệu — không suy đoán`, null, 'warning'),
         ]),
         card('Ngưỡng cảnh báo đang áp dụng (QT-02)', [bandLegend(d.coverageBands), el('p', { class: 'muted', text: `Hiệu lực từ ${dateOnly(d.thresholds?.effectiveFrom)} · ${d.thresholds?.documentRef ?? ''}` })]),
         el('div', { class: 'split wide-left' }, [
@@ -64,9 +64,12 @@ registerPage('cgh-dashboard', {
             { key: 'act', label: '', render: (r) => el('button', { class: 'ghost small', onclick: () => navigate('cgh-map', { htxId: r.htxId }) }, [icon('map', 14)]) },
           ], d.priority ?? [], { empty: 'Không có HTX nào dưới ngưỡng.' })),
           el('div', { class: 'stack' }, [
-            card('Máy theo khâu', svgBarChart((d.byStage ?? []).map((s) => ({ label: STAGE[s.stage] ?? s.stage, value: s.total, value2: s.operational, color: 'var(--brand)', color2: 'var(--good)' })), { height: 190, format: (v) => num(v) })),
-            el('div', { class: 'legend-row' }, [el('span', {}, [el('i', { style: 'background:var(--brand)' }), 'Tổng máy']), el('span', {}, [el('i', { style: 'background:var(--good)' }), 'Đang hoạt động'])]),
-            card('Máy theo tỉnh', table([{ key: 'province', label: 'Tỉnh', render: (r) => r.province ?? 'Chưa gán' }, { key: 'machines', label: 'Máy', align: 'right' }], d.byProvince ?? [], { plain: true })),
+            card(`Cần – có theo khâu${d.season ? ` · ${d.season}` : ''}`, [
+              svgBarChart((d.byStage ?? []).map((s) => ({ label: STAGE[s.stage] ?? s.stage, value: s.required, value2: s.operationalForSeason, color: 'var(--accent)', color2: 'var(--good)' })), { height: 190, format: (v) => num(v) }),
+              el('div', { class: 'legend-row' }, [el('span', {}, [el('i', { style: 'background:var(--accent)' }), 'Cần (diện tích ÷ định mức)']), el('span', {}, [el('i', { style: 'background:var(--good)' }), 'Có (máy hoạt động)'])]),
+              table([{ key: 'stage', label: 'Khâu', render: (r) => STAGE[r.stage] ?? r.stage }, { key: 'total', label: 'Máy hồ sơ', align: 'right' }, { key: 'required', label: 'Cần', align: 'right' }, { key: 'operationalForSeason', label: 'Có', align: 'right' }, { key: 'coveragePct', label: 'Đáp ứng', align: 'right', render: (r) => (r.coveragePct == null ? '—' : pct(r.coveragePct)) }], d.byStage ?? [], { plain: true }),
+            ]),
+            card(`Theo tỉnh${d.season ? ` · ${d.season}` : ''}`, table([{ key: 'province', label: 'Tỉnh' }, { key: 'machines', label: 'Máy hồ sơ', align: 'right' }, { key: 'required', label: 'Cần', align: 'right' }, { key: 'operational', label: 'Có', align: 'right' }, { key: 'coveragePct', label: 'Đáp ứng', align: 'right', render: (r) => (r.coveragePct == null ? '—' : pct(r.coveragePct)) }], d.byProvince ?? [], { plain: true })),
           ]),
         ]),
         (d.trend ?? []).length ? card('Xu hướng theo vụ (từ kết quả cân đối đã lưu)', table([
@@ -348,6 +351,66 @@ registerPage('cgh-reports', {
 });
 
 // ===========================================================================
+// Hồ sơ HTX — nhìn từ Cơ giới hoá (UAT: module "Hồ sơ HTX" chưa có màn hình)
+// ===========================================================================
+
+registerPage('cgh-htx', {
+  title: 'Hồ sơ HTX',
+  subtitle: 'Hợp tác xã theo tỉnh với số máy, cân đối theo khâu và số máy tại một thời điểm (BR-09); mở hồ sơ máy của từng HTX',
+  async render(view) {
+    const [cooperatives, balance, provinces] = await Promise.all([guard(api('/mdm/cooperatives')), api('/cgh/balance').catch(() => ({ rows: [] })), api('/mdm/admin-units?level=province').catch(() => [])]);
+    const provName = new Map(provinces.map((p) => [p.id, p.name]));
+    const worst = new Map();
+    for (const r of balance.rows ?? []) { const cur = worst.get(r.htxId); if (!cur || (r.coveragePct ?? 999) < (cur.coveragePct ?? 999)) worst.set(r.htxId, r); }
+    let q = ''; let provinceId = '';
+    const body = el('div');
+    const draw = () => {
+      const rows = cooperatives.filter((c) => (!provinceId || c.province_id === provinceId) && (!q || `${c.code} ${c.name} ${c.tax_code ?? ''}`.toLowerCase().includes(q.toLowerCase())));
+      body.replaceChildren(table([
+        { key: 'code', label: 'Mã' }, { key: 'name', label: 'HTX' }, { key: 'province_id', label: 'Tỉnh', render: (r) => provName.get(r.province_id) ?? r.province_name ?? '—' },
+        { key: 'registered_area_ha', label: 'DT đăng ký', align: 'right', render: (r) => `${num(r.registered_area_ha)} ha` }, { key: 'member_count', label: 'Thành viên', align: 'right' },
+        { key: 'worst', label: 'Khâu yếu nhất', render: (r) => { const w = worst.get(r.id); return w ? el('span', { class: 'chip-row' }, [STAGE[w.stage] ?? w.stage, coverageBadge(w)]) : badge('Chưa có dữ liệu', 'neutral'); } },
+        { key: 'act', label: '', render: (r) => el('span', { class: 'chip-row' }, [
+          el('button', { class: 'ghost small', onclick: () => openDetail(r) }, [icon('eye', 14), 'Chi tiết']),
+          el('button', { class: 'ghost small', onclick: () => navigate('cgh-machines', { htxId: r.id }) }, [icon('tractor', 14), 'Máy']),
+          el('button', { class: 'ghost small', onclick: () => navigate('cgh-map', { htxId: r.id }) }, [icon('map', 14)]),
+        ]) },
+      ], rows, { empty: q || provinceId ? 'Không có HTX phù hợp bộ lọc.' : 'Chưa có HTX.' }));
+    };
+    async function openDetail(htx) {
+      const d = await guard(api(`/cgh/htx/${htx.id}/detail`));
+      const snap = el('div');
+      const snapTable = (s) => table([{ key: 'stage', label: 'Khâu', render: (r) => STAGE[r.stage] ?? r.stage }, { key: 'total', label: 'Máy', align: 'right' }, { key: 'operational', label: 'Hoạt động', align: 'right' }], s.byStage, { plain: true, empty: 'Không có máy tại thời điểm này.' });
+      snap.append(snapTable(d));
+      modal(`${htx.code} — ${htx.name}`, [
+        el('div', { class: 'grid cols-3' }, [kpi('Diện tích đăng ký', `${num(d.htx.registered_area_ha)} ha`), kpi('Thành viên', num(d.htx.member_count)), kpi('Máy hiện có', num(d.total))]),
+        el('div', { class: 'kv' }, [el('span', { class: 'k', text: 'Tỉnh' }), el('span', { class: 'v', text: d.htx.province_name ?? '—' })]),
+        el('div', { class: 'kv' }, [el('span', { class: 'k', text: 'Mã số thuế' }), el('span', { class: 'v', text: d.htx.tax_code ?? 'Chưa có' })]),
+        el('div', { class: 'kv' }, [el('span', { class: 'k', text: 'Liên hệ' }), el('span', { class: 'v', text: d.htx.contact_name ?? '—' })]),
+        el('h4', { text: 'Cân đối theo khâu (vụ hiện tại)' }),
+        table([{ key: 'stage', label: 'Khâu', render: (r) => STAGE[r.stage] ?? r.stage }, { key: 'areaHa', label: 'ha', align: 'right', render: (r) => num(r.areaHa) }, { key: 'requiredMachines', label: 'Cần', align: 'right' }, { key: 'operationalMachines', label: 'Có', align: 'right' }, { key: 'coveragePct', label: 'Đáp ứng', render: coverageBadge }], d.balance, { plain: true, empty: 'Chưa có kế hoạch canh tác.' }),
+        el('div', { class: 'row' }, [el('label', {}, ['Số máy tại ngày (BR-09)', el('input', { type: 'date', value: d.at, max: new Date().toISOString().slice(0, 10), style: 'width:150px', onchange: async (e) => { const s = await guard(api(`/cgh/htx/${htx.id}/machines-at?at=${e.target.value}`)); snap.replaceChildren(snapTable(s)); } })])]),
+        snap,
+      ], [], { wide: true });
+    }
+    view.replaceChildren(
+      el('div', { class: 'grid cols-4' }, [
+        kpi('HTX', num(cooperatives.length), null, null, 'building'),
+        kpi('Có dữ liệu cân đối', num(worst.size), null, null, 'scale'),
+        kpi('Thiếu / cần chú ý', num([...worst.values()].filter((w) => w.level === 'thieu' || w.level === 'can_chu_y').length), 'Theo khâu yếu nhất', null, 'warning'),
+        kpi('Tỉnh', num(new Set(cooperatives.map((c) => c.province_id)).size), null, null, 'map'),
+      ]),
+      el('div', { class: 'row' }, [
+        el('input', { placeholder: 'Tìm theo mã, tên, mã số thuế…', oninput: (e) => { q = e.target.value.trim(); draw(); } }),
+        el('label', {}, ['Tỉnh ', el('select', { onchange: (e) => { provinceId = e.target.value; draw(); } }, [el('option', { value: '' }, ['Tất cả']), ...provinces.filter((p) => p.level === 'province').map((p) => el('option', { value: p.id }, [p.name]))])]),
+      ]),
+      card('Danh sách HTX', body),
+    );
+    draw();
+  },
+});
+
+// ===========================================================================
 // Hồ sơ máy — US-MAC
 // ===========================================================================
 
@@ -449,9 +512,11 @@ registerPage('cgh-owners', {
   async render(view) {
     const [ownerTypes, cooperatives] = await Promise.all([api('/cgh/owner-types'), api('/mdm/cooperatives')]);
     let includeInactive = false;
+    let reveal = false;
     const body = el('div');
     async function draw() {
-      const owners = await guard(api(`/cgh/owners${includeInactive ? '?all=1' : ''}`));
+      // NĐ 13/2023 (UAT DEF-CGH-08): SĐT che mặc định; người có quyền ghi bấm "Hiện" mới thấy đủ và có nhật ký truy cập.
+      const owners = await guard(api(`/cgh/owners?${includeInactive ? 'all=1&' : ''}${reveal ? 'reveal=1' : ''}`));
       body.replaceChildren(
         el('div', { class: 'grid cols-4' }, [
           kpi('Chủ sở hữu', num(owners.filter((o) => o.status !== 'inactive').length), null, null, 'users'),
@@ -470,7 +535,10 @@ registerPage('cgh-owners', {
       );
     }
     view.replaceChildren(
-      el('div', { class: 'row' }, [el('label', { class: 'pick-item' }, [el('input', { type: 'checkbox', onchange: (e) => { includeInactive = e.target.checked; draw(); } }), 'Hiện đã vô hiệu hoá'])]),
+      el('div', { class: 'row' }, [
+        el('label', { class: 'pick-item' }, [el('input', { type: 'checkbox', onchange: (e) => { includeInactive = e.target.checked; draw(); } }), 'Hiện đã vô hiệu hoá']),
+        can('cgh.write') ? el('button', { class: 'ghost small', onclick: (e) => { reveal = !reveal; e.currentTarget.replaceChildren(icon(reveal ? 'lock' : 'eye', 14), reveal ? 'Che số điện thoại' : 'Hiện số điện thoại'); draw(); } }, [icon('eye', 14), 'Hiện số điện thoại']) : null,
+      ]),
       can('cgh.write') ? card('Thêm chủ sở hữu', form([
         { name: 'name', label: 'Tên chủ sở hữu', required: true },
         { name: 'ownerType', label: 'Loại', type: 'select', required: true, options: Object.entries(ownerTypes).map(([value, label]) => ({ value, label })) },
@@ -505,10 +573,21 @@ registerPage('cgh-catalog', {
         ], async (v) => { await api('/cgh/machine-types', { body: v }); toast('Đã thêm chủng loại.'); await renderTypes(panel); }, { submitLabel: 'Thêm' })) : null,
         table([
           { key: 'code', label: 'Mã' }, { key: 'name', label: 'Tên' }, { key: 'stage', label: 'Khâu', render: (r) => STAGE[r.stage] ?? r.stage },
-          { key: 'machine_count', label: 'Máy tham chiếu', align: 'right' }, { key: 'norm_count', label: 'Định mức', align: 'right' },
+          { key: 'machine_count', label: 'Máy tham chiếu', align: 'right' },
+          { key: 'norm_ha', label: 'Định mức hiện hành (ha/máy/vụ)', align: 'right', render: (r) => (r.norm_ha == null ? badge('Chưa có', 'warn') : num(r.norm_ha)) },
           { key: 'active', label: 'Trạng thái', render: (r) => badge(r.active ? 'Đang dùng' : 'Ngừng sử dụng', r.active ? 'good' : 'neutral') },
           { key: 'act', label: '', render: (r) => (can('cgh.write') ? el('span', { class: 'chip-row' }, [
-            el('button', { class: 'ghost small', onclick: async () => { const out = await guard(api(`/cgh/machine-types/${r.id}/active`, { body: { active: !r.active } })); toast(r.active ? `Đã ngừng sử dụng — ${out.affectedMachines} máy hiện có vẫn giữ nguyên.` : 'Đã kích hoạt lại.'); await renderTypes(panel); } }, [r.active ? 'Ngừng dùng' : 'Kích hoạt']),
+            el('button', { class: 'ghost small', title: 'Sửa', onclick: () => {
+              const dlg = modal(`Sửa chủng loại ${r.code}`, form([
+                { name: 'code', label: 'Mã', value: r.code, required: true }, { name: 'name', label: 'Tên', value: r.name, required: true },
+                { name: 'stage', label: 'Khâu', type: 'select', options: stageOptions().map((o) => ({ ...o, selected: o.value === r.stage })) },
+              ], async (v) => { await api(`/cgh/machine-types/${r.id}`, { method: 'PUT', body: v }); toast('Đã cập nhật chủng loại.'); dlg.close(); await renderTypes(panel); }, { submitLabel: 'Lưu', stacked: true, resetOnSuccess: false }));
+            } }, [icon('edit', 14)]),
+            el('button', { class: 'ghost small', onclick: async () => {
+              // UAT DEF-CGH-06: ngừng dùng chủng loại đang được tham chiếu phải hỏi trước và nêu số bản ghi ảnh hưởng.
+              if (r.active && !(await confirmDialog(`Ngừng sử dụng chủng loại "${r.name}"? Chủng loại sẽ không còn chọn được khi thêm máy mới.`, { title: 'Cần xác nhận', okLabel: 'Vẫn ngừng dùng', danger: Number(r.machine_count) > 0, extra: [alert(`${num(r.machine_count)} máy và ${num(r.norm_count)} định mức đang tham chiếu chủng loại này — chúng được giữ nguyên, không bị xoá.`, Number(r.machine_count) > 0 ? 'warn' : 'info')] }))) return;
+              const out = await guard(api(`/cgh/machine-types/${r.id}/active`, { body: { active: !r.active } })); toast(r.active ? `Đã ngừng sử dụng — ${out.affectedMachines} máy hiện có vẫn giữ nguyên.` : 'Đã kích hoạt lại.'); await renderTypes(panel);
+            } }, [r.active ? 'Ngừng dùng' : 'Kích hoạt']),
             !r.machine_count && !r.norm_count ? el('button', { class: 'ghost small danger', onclick: async () => { if (!(await confirmDialog(`Xoá chủng loại ${r.name}? Chỉ xoá được khi chưa có máy/định mức tham chiếu.`, { danger: true }))) return; await guard(api(`/cgh/machine-types/${r.id}`, { method: 'DELETE' })); toast('Đã xoá.'); await renderTypes(panel); } }, [icon('trash', 14)]) : null,
           ]) : '—') },
         ], types, { empty: 'Chưa có chủng loại.' }),
