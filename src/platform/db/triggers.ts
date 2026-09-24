@@ -2,7 +2,7 @@
  * Trigger cấp cơ sở dữ liệu — lưới an toàn nhật ký sự kiện.
  *
  * Mọi phân hệ đã gọi `logEvent()` từ tầng nghiệp vụ (~274 điểm gọi). Trigger ở đây
- * là LƯỚI AN TOÀN: nếu một đường mã nào quên gọi `logEvent()`, trigger vẫn ghi lại
+ * là LƯỚI AN TOÀN: nếu một đường mà nào quên gọi `logEvent()`, trigger vẫn ghi lại
  * thay đổi vào `event_log` với `source = 'system'` và `note = 'db_trigger'`.
  *
  * Nguyên tắc:
