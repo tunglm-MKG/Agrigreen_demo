@@ -14,6 +14,7 @@ import { basename } from 'node:path';
 import { all, db, MONEY_COLUMNS } from './db.ts';
 import { encryptPiiAtRest } from '../security/fieldCrypto.ts';
 import { qualifyStatement, splitStatements, schemaOf, domainOf } from './domains.ts';
+import { createAuditTriggers } from './triggers.ts';
 
 /**
  * Lược đồ hợp nhất được viết một lần; lúc chạy, từng câu CREATE được gắn tiền tố
@@ -40,6 +41,7 @@ export function migrate(): void {
   const encrypted = encryptPiiAtRest();
   if (encrypted) console.log(`[db] đã mã hoá ${encrypted} số CCCD còn lưu rõ.`);
   normalizeAttachmentPaths();
+  createAuditTriggers();
   recordSchemaVersion(rebuilt.length, skipped.length);
 }
 

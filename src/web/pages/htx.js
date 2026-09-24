@@ -235,15 +235,16 @@ registerPage('htx-farmers', {
     if (can('htx.write')) {
       actions.append(el('button', { class: 'ghost small', onclick: (e) => { reveal = !reveal; e.currentTarget.replaceChildren(icon(reveal ? 'lock' : 'eye', 15), reveal ? 'Che số điện thoại' : 'Hiện số điện thoại'); draw(); } }, [icon('eye', 15), 'Hiện số điện thoại']));
     }
+    const farmerStats = await api(`/mdm/farmers/summary?htxId=${id}`).catch(() => null);
     const draw = async () => {
       // NĐ 13/2023: số điện thoại che mặc định; chỉ người có quyền ghi mở xem và mỗi lần mở đều được ghi nhật ký.
       const farmers = await guard(api(`/htx/farmers?htxId=${id}${q ? `&q=${encodeURIComponent(q)}` : ''}${reveal ? '&reveal=1' : ''}`));
       body.replaceChildren(
         el('div', { class: 'grid cols-4' }, [
-          kpi('Nông hộ', num(farmers.length), null, null, 'users'),
-          kpi('Có thửa ruộng', num(farmers.filter((f) => f.plot_count > 0).length), null, null, 'plot'),
-          kpi('Tổng diện tích', `${num(farmers.reduce((a, f) => a + (f.area_ha ?? 0), 0), 1)} ha`, null, null, 'ruler'),
-          kpi('Có số điện thoại', num(farmers.filter((f) => f.phone).length), 'Nhận cảnh báo qua SMS/Zalo', null, 'phone'),
+          kpi('Nông hộ', num(farmerStats?.total ?? farmers.length), null, null, 'users'),
+          kpi('Có thửa ruộng', num(farmerStats?.with_plots ?? farmers.filter((f) => f.plot_count > 0).length), null, null, 'plot'),
+          kpi('Tổng diện tích', `${num(farmerStats?.total_area_ha ?? farmers.reduce((a, f) => a + (f.area_ha ?? 0), 0), 1)} ha`, null, null, 'ruler'),
+          kpi('Có số điện thoại', num(farmerStats?.with_phone ?? farmers.filter((f) => f.phone).length), 'Nhận cảnh báo qua SMS/Zalo', null, 'phone'),
         ]),
         card('Danh sách nông hộ', table([
           { key: 'code', label: 'Mã' }, { key: 'full_name', label: 'Họ tên' }, { key: 'phone', label: 'SĐT', render: (r) => r.phone ?? '—' },
@@ -289,7 +290,7 @@ registerPage('htx-plots', {
   async render(view, actions) {
     const { id, list } = await htxSelector(actions, () => rerender(this, view, actions));
     if (!id) return view.replaceChildren(alert('Chưa có hợp tác xã nào.', 'warn'));
-    const [plots, farmers] = await Promise.all([guard(api(`/mdm/plots?htxId=${id}`)), api(`/htx/farmers?htxId=${id}`).catch(() => [])]);
+    const [plots, farmers, plotStats] = await Promise.all([guard(api(`/mdm/plots?htxId=${id}`)), api(`/htx/farmers?htxId=${id}`).catch(() => []), api(`/mdm/plots/summary?htxId=${id}`).catch(() => null)]);
     const mapNode = mapContainer('htx-plot-map', 'tall');
     const drawing = [];
     let map = null; let shapes = [];
@@ -301,10 +302,10 @@ registerPage('htx-plots', {
 
     view.replaceChildren(
       el('div', { class: 'grid cols-4' }, [
-        kpi('Thửa ruộng', num(plots.length), null, null, 'plot'),
-        kpi('Tổng diện tích', `${num(plots.reduce((a, p) => a + p.area_ha, 0), 2)} ha`, 'Tính từ polygon — không nhập tay', null, 'ruler'),
-        kpi('Chưa mở vụ', num(plots.filter((p) => p.status === 'chua_mo_vu').length), 'Sẵn sàng mở vụ mới', null, 'seed'),
-        kpi('Đã gán nông hộ', num(plots.filter((p) => p.farmer_id).length), null, null, 'users'),
+        kpi('Thửa ruộng', num(plotStats?.total ?? plots.length), null, null, 'plot'),
+        kpi('Tổng diện tích', `${num(plotStats?.total_area_ha ?? plots.reduce((a, p) => a + p.area_ha, 0), 2)} ha`, 'Tính từ polygon — không nhập tay', null, 'ruler'),
+        kpi('Chưa mở vụ', num(plotStats?.not_planted ?? plots.filter((p) => p.status === 'chua_mo_vu').length), 'Sẵn sàng mở vụ mới', null, 'seed'),
+        kpi('Đã gán nông hộ', num(plotStats?.assigned ?? plots.filter((p) => p.farmer_id).length), null, null, 'users'),
       ]),
       el('div', { class: 'split' }, [
         el('div', { class: 'stack' }, [
