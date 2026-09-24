@@ -403,6 +403,8 @@ export function setUserRoles(userId: string, roles: string[], actor: AuditActor 
     run('DELETE FROM user_roles WHERE user_id = ?', [userId]);
     for (const role of unique) insert('user_roles', { user_id: userId, role });
   });
+  // L-03: quyền đổi thì phiên cũ (mang bộ quyền cũ trong cache của client) phải đăng nhập lại.
+  run('DELETE FROM sessions WHERE user_id = ?', [userId]);
   logEvent({
     module: 'admin', entityType: 'user_roles', entityId: userId, action: 'update',
     before: { roles: user.roles }, after: { roles: unique },

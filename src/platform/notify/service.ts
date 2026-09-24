@@ -26,6 +26,8 @@
  * Web push chưa làm: cần VAPID + mã hoá RFC 8291; khi cần sẽ thêm adapter thứ ba.
  */
 import { all, insert, one, run, update } from '../db/db.ts';
+import { decryptField, encryptField, isCurrentKey } from '../security/fieldCrypto.ts';
+import { assertSafeWebhookUrl, safeFetchInit } from '../security/urlGuard.ts';
 import { nowIso, uuid } from '../util/ids.ts';
 import { logEvent, type AuditActor } from '../audit/audit.ts';
 
@@ -53,6 +55,9 @@ export interface NotifyInput {
 // Cấu hình kênh
 // ---------------------------------------------------------------------------
 
+const SECRET_KEYS = new Set(['notify.zalo_access_token', 'notify.sms_gateway_token', 'notify.email_webhook_token']);
+const URL_KEYS = new Set(['notify.sms_gateway_url', 'notify.email_webhook_url']);
+
 function configValue(key: string, envName: string): string | null {
   const env = process.env[envName];
   if (env) return env;
@@ -60,10 +65,34 @@ function configValue(key: string, envName: string): string | null {
     const row = one<{ value_json: string }>('SELECT value_json FROM system_config WHERE key = ?', [key]);
     if (!row) return null;
     const parsed = JSON.parse(row.value_json);
-    return typeof parsed === 'string' && parsed ? parsed : null;
+    if (typeof parsed !== 'string' || !parsed) return null;
+    // M-04: token lưu mã hoá (AES-256-GCM) — giải mã khi dùng; giá trị cũ dạng rõ vẫn đọc được.
+    return SECRET_KEYS.has(key) ? decryptField(parsed) : parsed;
   } catch {
     return null;
   }
+}
+
+/** Mã hoá nốt token còn lưu rõ (chạy khi khởi động) và mã hoá lại bằng khoá hiện hành (xoay khoá). */
+export function rotateChannelSecrets(): number {
+  let changed = 0;
+  for (const key of SECRET_KEYS) {
+    const row = one<{ value_json: string }>('SELECT value_json FROM system_config WHERE key = ?', [key]);
+    if (!row) continue;
+    let parsed: unknown;
+    try { parsed = JSON.parse(row.value_json); } catch { continue; }
+    if (typeof parsed !== 'string' || !parsed || isCurrentKey(parsed)) continue;
+    const plain = decryptField(parsed);
+    if (!plain || plain.startsWith('[không giải mã')) continue;
+    run('UPDATE system_config SET value_json = ?, updated_at = ? WHERE key = ?', [JSON.stringify(encryptField(plain)), nowIso(), key]);
+    changed += 1;
+  }
+  return changed;
+}
+
+/** URL webhook phải qua kiểm SSRF (M-03) — gọi từ route trước khi lưu. */
+export async function assertChannelValueSafe(key: string, value: string): Promise<void> {
+  if (URL_KEYS.has(key) && value) await assertSafeWebhookUrl(value, key === 'notify.sms_gateway_url' ? 'Cổng SMS' : 'Webhook email');
 }
 
 export function channelConfig() {
@@ -83,7 +112,7 @@ export function setChannelConfig(key: string, value: string, actor: AuditActor =
   run(
     `INSERT INTO system_config (key, value_json, updated_at, updated_by) VALUES (?, ?, ?, ?)
      ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at, updated_by = excluded.updated_by`,
-    [key, JSON.stringify(value), nowIso(), actor.name ?? null],
+    [key, JSON.stringify(SECRET_KEYS.has(key) && value ? encryptField(value) : value), nowIso(), actor.name ?? null],
   );
   // Không ghi giá trị token vào nhật ký — chỉ ghi rằng nó đã đổi.
   logEvent({ module: 'notify', entityType: 'system_config', entityId: key, action: 'update', after: { set: value.length > 0 } }, actor);
@@ -182,11 +211,11 @@ type Sender = (row: Record<string, any>, recipient: Recipient) => Promise<void>;
 async function sendZalo(row: Record<string, any>, recipient: Recipient): Promise<void> {
   const token = channelConfig().zaloToken;
   if (!token) throw new Error('Chưa cấu hình Zalo OA access token');
-  const response = await fetch('https://openapi.zalo.me/v3.0/oa/message/cs', {
+  const response = await fetch('https://openapi.zalo.me/v3.0/oa/message/cs', safeFetchInit({
     method: 'POST',
     headers: { 'Content-Type': 'application/json', access_token: token },
     body: JSON.stringify({ recipient: { user_id: recipient.zalo_user_id }, message: { text: `${row.title}\n${row.body}` } }),
-  });
+  }));
   const payload = await response.json().catch(() => ({})) as { error?: number; message?: string };
   if (!response.ok || (payload.error && payload.error !== 0)) {
     throw new Error(`Zalo trả lỗi ${payload.error ?? response.status}: ${payload.message ?? ''}`.trim());
@@ -196,11 +225,12 @@ async function sendZalo(row: Record<string, any>, recipient: Recipient): Promise
 async function sendSms(row: Record<string, any>, recipient: Recipient): Promise<void> {
   const { smsUrl, smsToken } = channelConfig();
   if (!smsUrl) throw new Error('Chưa cấu hình cổng SMS');
-  const response = await fetch(smsUrl, {
+  await assertSafeWebhookUrl(smsUrl, 'Cổng SMS');   // kiểm lại TRƯỚC MỖI lần gửi (DNS có thể đổi — M-03)
+  const response = await fetch(smsUrl, safeFetchInit({
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...(smsToken ? { Authorization: `Bearer ${smsToken}` } : {}) },
     body: JSON.stringify({ to: recipient.phone, text: `${row.title}: ${row.body}`.slice(0, 300) }),
-  });
+  }));
   if (!response.ok) throw new Error(`Cổng SMS trả ${response.status}`);
 }
 
@@ -208,11 +238,12 @@ async function sendEmail(row: Record<string, any>, recipient: Recipient): Promis
   const { emailUrl, emailToken, emailFrom } = channelConfig();
   if (!emailUrl) throw new Error('Chưa cấu hình webhook email');
   if (!recipient.email) throw new Error('Người nhận không có địa chỉ email');
-  const response = await fetch(emailUrl, {
+  await assertSafeWebhookUrl(emailUrl, 'Webhook email');
+  const response = await fetch(emailUrl, safeFetchInit({
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...(emailToken ? { Authorization: `Bearer ${emailToken}` } : {}) },
     body: JSON.stringify({ to: recipient.email, subject: row.title, text: row.body, from: emailFrom ?? undefined }),
-  });
+  }));
   if (!response.ok) throw new Error(`Webhook email trả ${response.status}`);
 }
 

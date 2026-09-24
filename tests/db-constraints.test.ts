@@ -7,6 +7,9 @@
  *   - member_count giảm khi nông hộ ngừng,
  *   - bằng chứng công đoạn và ngưỡng CGH chuyển sang bảng chuẩn hoá (kèm di trú dữ liệu cũ).
  */
+process.env.SUPER_ADMIN_PASSWORD ??= 'KiemThu-SAdmin-2026';
+process.env.DEMO_ACCOUNT_PASSWORD ??= '123456';
+process.env.DATA_ENCRYPTION_KEY ??= '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync } from 'node:fs';
@@ -94,7 +97,7 @@ test('CCCD: mã hoá khi lưu, dịch vụ giải mã, che chỉ lộ 3 số cu�
   const created = mdm.createFarmer({ fullName: 'Nguyễn Văn Mã Hoá', htxId: htx.id, nationalId: '079123456789' });
   assert.equal(created.national_id, '079123456789', 'dịch vụ trả số rõ cho người vừa nhập');
   const raw = one<{ national_id: string }>('SELECT national_id FROM farmers WHERE id = ?', [created.id])!.national_id;
-  assert.match(raw, /^enc1:/, 'trong CSDL là bản mã');
+  assert.match(raw, /^enc2:k1:/, 'trong CSDL là bản mã có định danh khoá');
   assert.notEqual(raw, '079123456789');
   assert.equal(crypto.decryptField(raw), '079123456789');
   assert.equal(crypto.maskNationalId(raw), '•••••••••789');
@@ -105,7 +108,7 @@ test('CCCD: mã hoá khi lưu, dịch vụ giải mã, che chỉ lộ 3 số cu�
   // Bản ghi cũ dạng rõ được mã hoá khi khởi động.
   run("UPDATE farmers SET national_id = '001200300400' WHERE id = ?", [created.id]);
   assert.equal(crypto.encryptPiiAtRest(), 1);
-  assert.match(one<{ national_id: string }>('SELECT national_id FROM farmers WHERE id = ?', [created.id])!.national_id, /^enc1:/);
+  assert.match(one<{ national_id: string }>('SELECT national_id FROM farmers WHERE id = ?', [created.id])!.national_id, /^enc2:/);
   assert.equal(crypto.encryptPiiAtRest(), 0, 'idempotent');
 });
 

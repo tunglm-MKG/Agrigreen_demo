@@ -14,7 +14,9 @@ Cập nhật 24/09/2026 (sau rà soát 11 nguyên tắc). Áp dụng cho mọi m
 | `data/uploads/` | Ảnh bằng chứng (tham chiếu từ bảng `attachments`) | Sao lưu bằng công cụ tệp thông thường |
 | `archive/mekonggreen.legacy-single-file.db` | Bản một tệp trước khi tách miền (09/2026) | Chỉ để tra cứu; không được nạp |
 
-Biến môi trường: `BACKUP_DIR`, `BACKUP_KEEP` (mặc định 14), `BACKUP_INTERVAL_HOURS` (0 = tắt), `DATA_ENCRYPTION_KEY` (64 hex, thay cho tệp khoá), `UPLOAD_DIR` (thư mục ảnh; `attachments.storage_path` là khoá tương đối với thư mục này), `SQLITE_JOURNAL_MODE` (mặc định TRUNCATE), `SUPER_ADMIN_PASSWORD` (chỉ lần khởi động đầu), `SCRYPT_N`.
+Biến môi trường: `BACKUP_DIR`, `BACKUP_KEEP` (mặc định 14), `BACKUP_INTERVAL_HOURS` (0 = tắt), `DATA_ENCRYPTION_KEY` (64 hex, thay cho tệp khoá), `UPLOAD_DIR` (thư mục ảnh; `attachments.storage_path` là khoá tương đối với thư mục này), `SQLITE_JOURNAL_MODE` (mặc định TRUNCATE), `SUPER_ADMIN_PASSWORD` (mật khẩu SAdmin ban đầu; không đặt → sinh tạm, in log một lần, bắt đổi), `DEMO_ACCOUNT_PASSWORD` / `SEED_DEMO_DATA` (tài khoản trình diễn — không nạp ở production), `DATA_ENCRYPTION_KEY_ID` + `DATA_ENCRYPTION_KEYS_PREVIOUS` (xoay khoá: `npm run rotate-key`), `TRUSTED_PROXY_HOPS` (số lớp proxy để đọc IP từ X-Forwarded-For; Render/Fly = 1), `WEBHOOK_ALLOWED_HOSTS` (allowlist máy chủ webhook SMS/email), `LOGIN_MAX_PER_WINDOW` (mặc định 20/10 phút), `LEGACY_HASH_DEADLINE` (mặc định 2026-12-31), `SCRYPT_N`.
+
+**Production bắt buộc có `DATA_ENCRYPTION_KEY`** (khởi động từ chối nếu thiếu); khoá tệp `.keys/` chỉ dành cho máy phát triển.
 
 Nâng cấp từ bản một tệp (`data/mekonggreen.db`, trước 09/2026): chỉ cần đặt tệp cũ đúng chỗ và khởi động — `importLegacyDatabase()` sao lưu, nhập vào 7 tệp mới, đổi tên tệp cũ thành `.imported-*` và ghi `event_log`; nếu bộ tệp mới đã có dữ liệu thì KHÔNG nhập (cảnh báo trong log).
 

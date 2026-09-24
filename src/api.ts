@@ -5,13 +5,14 @@
  * tham số thứ 3 của mỗi route là quyền bắt buộc. Endpoint không khai báo quyền
  * là endpoint công khai (đăng nhập, health-check).
  */
-import { Router, HttpError, badRequest, notFound, unauthorized, forbidden, type Context } from './platform/http/router.ts';
+import { Router, HttpError, badRequest, notFound, unauthorized, forbidden, type Context, isSecureRequest, extractToken, UPLOAD_MAX_BODY_BYTES } from './platform/http/router.ts';
 import { can as roleCan } from './platform/auth/rbac.ts';
 import * as files from './platform/files/attachments.ts';
 import * as notifyService from './platform/notify/service.ts';
 import { PERMISSION_GROUPS, PERMISSIONS as P, ROLE_LABELS, ROLE_PERMISSIONS } from './platform/auth/rbac.ts';
 import * as users from './platform/auth/users.ts';
-import { enforceHtxScope, isHtxBound } from './platform/auth/htxScope.ts';
+import { enforceHtxScope, isHtxBound, assertEntityAccess } from './platform/auth/htxScope.ts';
+import { clientIp, hitRateLimit } from './platform/http/rateLimit.ts';
 import * as sysadmin from './platform/auth/admin.ts';
 import * as scopes from './platform/auth/scopes.ts';
 import * as sharedFlows from './platform/sync/sharedFlows.ts';
@@ -64,11 +65,20 @@ const num = (value: unknown, fallback?: number): number => {
   throw badRequest('Giá trị số không hợp lệ');
 };
 
+const LOGIN_MAX_PER_WINDOW = Number(process.env.LOGIN_MAX_PER_WINDOW ?? 20);
+const LOGIN_WINDOW_MS = 10 * 60_000;
+
 export function buildApi(): Router {
   const api = new Router();
 
   // ===================== Xác thực & phân quyền =====================
   api.post('/auth/login', (ctx) => {
+    // M-01: giới hạn theo IP song song với khoá theo tài khoản — chặn password spraying.
+    const limit = hitRateLimit(`login:${clientIp(ctx.req)}`, LOGIN_MAX_PER_WINDOW, LOGIN_WINDOW_MS);
+    if (!limit.allowed) {
+      ctx.res.setHeader('Retry-After', String(limit.retryAfterSec));
+      throw new HttpError(429, `Quá nhiều lần đăng nhập từ địa chỉ này. Thử lại sau ${Math.ceil(limit.retryAfterSec / 60)} phút.`);
+    }
     const { username, password } = body(ctx);
     let session: ReturnType<typeof users.login>;
     try {
@@ -80,9 +90,12 @@ export function buildApi(): Router {
     }
     // Thông báo trung tính, không nêu sai trường nào (CGH US-ADM-01 AC-3).
     if (!session) throw badRequest('Tên đăng nhập / số điện thoại hoặc mật khẩu không đúng');
-    ctx.res.setHeader('Set-Cookie', `mg_session=${session.token}; Path=/; HttpOnly; SameSite=Lax`);
+    const flags = [`mg_session=${session.token}`, 'Path=/', 'HttpOnly', 'SameSite=Lax'];
+    if (isSecureRequest(ctx.req)) flags.push('Secure');   // H-03: cookie phiên không đi qua HTTP
+    ctx.res.setHeader('Set-Cookie', flags.join('; '));
     return { token: session.token, user: users.describeUser(session.user) };
-  });
+    // unitOfWork: false — số lần sai và bộ đếm IP phải được LƯU kể cả khi handler ném lỗi.
+  }, undefined, { unitOfWork: false, sensitive: true });
 
   api.post('/auth/logout', (ctx) => {
     const token = ctx.body?.token ?? null;
@@ -95,9 +108,10 @@ export function buildApi(): Router {
 
   api.post('/auth/password', (ctx) => {
     if (!ctx.user) throw badRequest('Chưa đăng nhập');
-    users.changePassword(ctx.user.id, String(body(ctx).password ?? ''), { enforcePolicy: true });
+    // L-03: đổi mật khẩu → huỷ mọi phiên khác, giữ phiên đang thao tác.
+    users.changePassword(ctx.user.id, String(body(ctx).password ?? ''), { enforcePolicy: true, keepToken: extractToken(ctx.req) });
     return { ok: true };
-  });
+  }, undefined, { sensitive: true });
 
   api.get('/rbac/matrix', () => ({
     roles: Object.entries(ROLE_PERMISSIONS).map(([role, permissions]) => ({
@@ -113,33 +127,46 @@ export function buildApi(): Router {
   // Ai đã đăng nhập cũng gửi và xem được; quyền với ĐỐI TƯỢNG được kiểm ở màn hình
   // gọi tới. Tệp không có quyền riêng vì nó luôn đi kèm một đối tượng nghiệp vụ.
   const requireUser = (ctx: Context) => { if (!ctx.user) throw unauthorized(); };
+  // Đánh giá bảo mật 24/09/2026 (H-01): quyền với tệp = quyền với ĐỐI TƯỢNG chủ quản, kiểm ở máy chủ cho cả 4 route.
   api.post('/files', (ctx) => {
     requireUser(ctx);
     const b = body(ctx);
+    assertEntityAccess(ctx, String(b.entityType ?? ''), String(b.entityId ?? ''), 'write');
     return files.saveAttachment({
       entityType: String(b.entityType ?? ''), entityId: String(b.entityId ?? ''),
       fileName: String(b.fileName ?? ''), mime: String(b.mime ?? ''), data: files.decodeUpload(String(b.data ?? '')),
       note: b.note, deviceLat: b.deviceLat === undefined || b.deviceLat === null ? undefined : num(b.deviceLat),
       deviceLng: b.deviceLng === undefined || b.deviceLng === null ? undefined : num(b.deviceLng),
     }, ctx.actor);
-  });
+  }, undefined, { maxBodyBytes: UPLOAD_MAX_BODY_BYTES });
   api.get('/files', (ctx) => {
     requireUser(ctx);
-    return files.listAttachments(ctx.query.get('entityType') ?? '', ctx.query.get('entityId') ?? '');
+    const entityType = ctx.query.get('entityType') ?? '';
+    const entityId = ctx.query.get('entityId') ?? '';
+    assertEntityAccess(ctx, entityType, entityId, 'read');
+    return files.listAttachments(entityType, entityId);
   });
   api.get('/files/:id/content', (ctx) => {
     requireUser(ctx);
+    const meta = files.attachmentMeta(ctx.params.id);
+    if (!meta || meta.deleted_at) throw notFound('Không tìm thấy tệp');
+    assertEntityAccess(ctx, meta.entity_type, meta.entity_id, 'read');
     const file = files.readAttachment(ctx.params.id);
     if (!file) throw notFound('Không tìm thấy tệp');
+    // H-03: trả về dạng tải xuống, không nội suy loại (nosniff) — nội dung đã được đối chiếu magic bytes lúc tải lên.
     ctx.res.writeHead(200, {
       'Content-Type': file.mime, 'Content-Length': file.data.length, 'Cache-Control': 'private, max-age=86400',
-      'Content-Disposition': `inline; filename*=UTF-8''${encodeURIComponent(file.fileName)}`,
+      'X-Content-Type-Options': 'nosniff',
+      'Content-Disposition': `attachment; filename*=UTF-8''${encodeURIComponent(file.fileName)}`,
     });
     ctx.res.end(file.data);
     return undefined;
   });
   api.delete('/files/:id', (ctx) => {
     requireUser(ctx);
+    const meta = files.attachmentMeta(ctx.params.id);
+    if (!meta) throw notFound('Không tìm thấy tệp');
+    assertEntityAccess(ctx, meta.entity_type, meta.entity_id, 'write');
     files.removeAttachment(ctx.params.id, String(body(ctx).reason ?? ''), ctx.actor);
     return { ok: true };
   });
@@ -158,10 +185,13 @@ export function buildApi(): Router {
     return { marked: notifyService.markRead(ctx.user!.id, ids === 'all' ? 'all' : (Array.isArray(ids) ? ids.map(String) : [])) };
   });
   api.get('/notifications/channels', () => notifyService.channelStatus(), P.ADMIN_CONFIG);
-  api.put('/notifications/channels', (ctx) => {
-    notifyService.setChannelConfig(String(body(ctx).key ?? ''), String(body(ctx).value ?? ''), ctx.actor);
+  api.put('/notifications/channels', async (ctx) => {
+    const key = String(body(ctx).key ?? '');
+    const value = String(body(ctx).value ?? '');
+    await notifyService.assertChannelValueSafe(key, value);   // M-03: chặn SSRF trước khi lưu URL webhook
+    notifyService.setChannelConfig(key, value, ctx.actor);
     return notifyService.channelStatus();
-  }, P.ADMIN_CONFIG);
+  }, P.ADMIN_CONFIG, { sensitive: true });
   api.get('/notifications/problems', () => notifyService.outboxProblems(), P.ADMIN_CONFIG);
   api.post('/notifications/scan', async () => ({ scan: notifyService.runAlertScan(), outbox: await notifyService.processOutbox() }), P.ADMIN_CONFIG);
 
@@ -286,7 +316,7 @@ export function buildApi(): Router {
     const created = users.createUser(input as never, ctx.actor);
     const email = body(ctx).sendEmail ? notifyService.sendCredentialEmail(created.user.id, { username: created.user.username, temporaryPassword: created.temporaryPassword, kind: 'created' }, ctx.actor) : null;
     return { ...created, email };
-  });
+  }, undefined, { sensitive: true });   // M-02: phản hồi chứa mật khẩu tạm — không lưu vào bảng chống trùng
   const resetWithEmail = (ctx: Context) => {
     scopes.assertCanManage(adminCtx(ctx), ctx.params.id);
     const result = sysadmin.resetUserPassword(ctx.params.id, ctx.actor);
@@ -295,7 +325,7 @@ export function buildApi(): Router {
     return { ...result, email };
   };
   api.post('/admin/users/:id/status', (ctx) => { scopes.assertCanManage(adminCtx(ctx), ctx.params.id); return sysadmin.setStatus(ctx.params.id, body(ctx).status, ctx.actor); });
-  api.post('/admin/users/:id/reset-password', (ctx) => resetWithEmail(ctx));
+  api.post('/admin/users/:id/reset-password', (ctx) => resetWithEmail(ctx), undefined, { sensitive: true });
 
   // Ma trận nhóm–quyền: toàn hệ thống → chỉ super admin (SA-10).
   // Danh mục quyền (nhãn tiếng Việt) — admin phạm vi cũng cần để đọc ma trận, chỉ SỬA mới là super admin.

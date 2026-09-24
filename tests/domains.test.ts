@@ -5,6 +5,9 @@
  * ngoài miền; FK xuyên miền được gỡ đúng chỗ mà FK cùng miền vẫn được cưỡng chế;
  * bảng dùng chung nào cũng có luồng (chủ + người nhận); feed và con trỏ hoạt động.
  */
+process.env.SUPER_ADMIN_PASSWORD ??= 'KiemThu-SAdmin-2026';
+process.env.DEMO_ACCOUNT_PASSWORD ??= '123456';
+process.env.DATA_ENCRYPTION_KEY ??= '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync, mkdtempSync } from 'node:fs';

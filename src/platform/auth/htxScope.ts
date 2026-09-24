@@ -16,8 +16,9 @@
  * phạm vi của họ do scopes.ts / knOps.scopeOf quyết định.
  */
 import { one } from '../db/db.ts';
-import { forbidden, type Context } from '../http/router.ts';
+import { badRequest, forbidden, unauthorized, type Context } from '../http/router.ts';
 import { can } from './rbac.ts';
+import { HTX_ROUTE_ALLOWLIST } from './htxRoutes.ts';
 
 const HTX_BOUND_ROLES = new Set(['htx_manager', 'farmer']);
 const HTX_PATH_PREFIXES = ['/htx/', '/inputs/', '/assign', '/mdm/plots', '/mdm/farmers', '/production/plans', '/reports/schedules'];
@@ -71,6 +72,59 @@ export function ownerHtxOf(kind: EntityKind, id: string): string | null {
   }
 }
 
+/**
+ * H-01: tệp đính kèm không có quyền riêng — quyền đi theo ĐỐI TƯỢNG CHỦ QUẢN. Bảng ánh xạ loại đối tượng → HTX sở hữu;
+ * loại chưa khai báo bị từ chối với MỌI người (fail-closed), kể cả quản trị, để buộc khai báo khi thêm loại mới.
+ */
+const ATTACHMENT_OWNER_SQL: Record<string, string> = {
+  plot: OWNER_SQL.plots,
+  farmer: OWNER_SQL.farmers,
+  crop_cycle: OWNER_SQL.crop_cycles,
+  farm_log: OWNER_SQL.farm_logs,
+  plan_step: OWNER_SQL.production_plan_steps,
+  production_plan: OWNER_SQL.production_plans,
+  work_assignment: OWNER_SQL.work_assignments,
+  input_purchase: OWNER_SQL.input_purchases,
+  cooperative: OWNER_SQL.cooperatives,
+  field_job: 'SELECT htx_id AS htx FROM field_jobs WHERE id = ?',
+  field_job_stage: 'SELECT j.htx_id AS htx FROM field_job_stages s JOIN field_jobs j ON j.id = s.job_id WHERE s.id = ?',
+  field_loading: 'SELECT j.htx_id AS htx FROM field_loadings l JOIN field_jobs j ON j.id = l.job_id WHERE l.id = ?',
+  rental_order: 'SELECT renter_htx_id AS htx FROM rental_orders WHERE id = ?',
+  rental_dispute: 'SELECT o.renter_htx_id AS htx FROM rental_disputes d JOIN rental_orders o ON o.id = d.order_id WHERE d.id = ?',
+  support_task: 'SELECT htx_id AS htx FROM support_tasks WHERE id = ?',
+  survey_response: 'SELECT htx_id AS htx FROM survey_responses WHERE id = ?',
+  machine: 'SELECT htx_id AS htx FROM machines WHERE id = ?',
+  facility: 'SELECT NULL AS htx FROM facilities WHERE id = ?',
+};
+/** Người không gắn HTX (cán bộ, kho, quản trị) muốn TẢI LÊN / GỠ tệp phải có quyền ghi tương ứng với loại đối tượng. */
+const ATTACHMENT_WRITE_PERMISSIONS: Record<string, string[]> = {
+  plot: ['htx.write', 'khuyennong.write', 'mdm.write', 'gis.write'], farmer: ['htx.write', 'khuyennong.write', 'mdm.write'],
+  crop_cycle: ['htx.write', 'khuyennong.write'], farm_log: ['htx.write', 'khuyennong.write'], plan_step: ['htx.write', 'khuyennong.write'],
+  production_plan: ['htx.write', 'khuyennong.write'], work_assignment: ['htx.write'], input_purchase: ['htx.write'],
+  cooperative: ['mdm.write', 'khuyennong.write'], field_job: ['field.write', 'field.manage'], field_job_stage: ['field.write', 'field.manage'],
+  field_loading: ['field.write', 'field.manage'], rental_order: ['rental.write'], rental_dispute: ['rental.write', 'rental.resolve'],
+  support_task: ['htx.write', 'khuyennong.write'], survey_response: ['khuyennong.write'], machine: ['cgh.write', 'mdm.write'],
+  facility: ['mdm.write', 'gis.write', 'warehouse.write'],
+};
+
+export function assertEntityAccess(ctx: Context, entityType: string, entityId: string, mode: 'read' | 'write'): void {
+  const user = ctx.user;
+  if (!user) throw unauthorized();
+  const sql = ATTACHMENT_OWNER_SQL[entityType];
+  if (!sql) throw forbidden(`Loại đối tượng "${entityType || '(trống)'}" chưa được khai báo phạm vi tệp đính kèm.`);
+  if (!entityId) throw badRequest('Thiếu mã đối tượng gắn tệp.');
+  if (isHtxBound(user)) {
+    let owner: string | null = null;
+    try { owner = one<{ htx: string | null }>(sql, [entityId])?.htx ?? null; } catch { owner = null; }
+    if (!owner || owner !== user.htxId) throw forbidden('Bạn không có quyền với đối tượng gắn tệp này.');
+    return;
+  }
+  if (mode === 'write') {
+    const needed = ATTACHMENT_WRITE_PERMISSIONS[entityType] ?? [];
+    if (!needed.some((p) => can(user.roles, p))) throw forbidden('Vai trò hiện tại không có quyền ghi trên đối tượng gắn tệp này.');
+  }
+}
+
 export function isHtxBound(user: Context['user']): user is NonNullable<Context['user']> & { htxId: string } {
   if (!user?.htxId) return false;
   if (!user.roles.some((role) => HTX_BOUND_ROLES.has(role))) return false;
@@ -83,6 +137,11 @@ export function enforceHtxScope(ctx: Context, pathname: string): void {
   if (!isHtxBound(user)) return;
   const mine = user.htxId;
   const deny = () => forbidden('Bạn không có quyền truy cập dữ liệu của hợp tác xã khác.');
+
+  // Đánh giá bảo mật 24/09/2026 (M-06): FAIL-CLOSED — tài khoản HTX chỉ gọi được route đã được rà soát phạm vi và
+  // khai báo trong HTX_ROUTE_ALLOWLIST; route mới chưa khai báo bị từ chối (và test duyệt route sẽ báo đỏ).
+  const routeKey = `${ctx.req.method} ${ctx.routePath}`;
+  if (!HTX_ROUTE_ALLOWLIST.has(routeKey)) throw forbidden(`Route ${routeKey} chưa được khai báo phạm vi cho tài khoản hợp tác xã.`);
   const body = ctx.body && typeof ctx.body === 'object' && !Array.isArray(ctx.body) ? (ctx.body as Record<string, unknown>) : null;
 
   // 1. htxId tường minh phải là HTX của mình.

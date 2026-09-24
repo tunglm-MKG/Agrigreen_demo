@@ -8,6 +8,9 @@
  * mức không chồng hiệu lực, số máy tính theo ngày sở hữu, mã tự sinh theo tỉnh,
  * cấu hình GIS hợp lệ, xoá mềm khôi phục được, nhập máy hàng loạt hai chế độ.
  */
+process.env.SUPER_ADMIN_PASSWORD ??= 'KiemThu-SAdmin-2026';
+process.env.DEMO_ACCOUNT_PASSWORD ??= '123456';
+process.env.DATA_ENCRYPTION_KEY ??= '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync } from 'node:fs';
@@ -96,12 +99,12 @@ test('Super Admin SAdmin: tài khoản admin cũ được đổi tên và đặt
   run("UPDATE users SET username = 'admin' WHERE username = 'SAdmin'");
   const renamed = users.ensureSuperAdmin();
   assert.equal(renamed.action, 'renamed');
-  assert.ok(users.login('SAdmin', 'TungLM18@')?.token, 'đăng nhập được bằng SAdmin / mật khẩu ban đầu');
-  assert.equal(users.login('admin', 'TungLM18@'), null, 'tên đăng nhập cũ không còn');
+  assert.ok(users.login('SAdmin', process.env.SUPER_ADMIN_PASSWORD!)?.token, 'đăng nhập được bằng SAdmin / mật khẩu ban đầu');
+  assert.equal(users.login('admin', process.env.SUPER_ADMIN_PASSWORD!), null, 'tên đăng nhập cũ không còn');
   users.changePassword(renamed.userId, 'MatKhauRieng9');
   assert.equal(users.ensureSuperAdmin().action, 'kept');
   assert.ok(users.login('SAdmin', 'MatKhauRieng9')?.token, 'mật khẩu quản trị viên đã đổi được giữ nguyên');
-  users.changePassword(renamed.userId, 'TungLM18@');
+  users.changePassword(renamed.userId, process.env.SUPER_ADMIN_PASSWORD!);
 });
 
 test('Email mật khẩu tạm: xếp hàng gửi khi có email, báo rõ khi thiếu email; nội dung bị xoá sau khi gửi', async () => {

@@ -201,6 +201,8 @@ export function saveAttachment(input: SaveInput, actor: AuditActor = {}): Record
   }
   const ext = ALLOWED_MIME[input.mime];
   if (!ext) throw new Error(`Không nhận loại tệp "${input.mime}". Nhận ảnh JPEG/PNG/WebP/HEIC hoặc PDF.`);
+  // Đánh giá bảo mật 24/09/2026 (L-01): loại tệp phải khớp NỘI DUNG (magic bytes), không tin lời khai của client.
+  if (!contentMatchesMime(input.data, input.mime)) throw new Error(`Nội dung tệp không phải ${input.mime} như khai báo — tệp bị từ chối.`);
 
   const sha256 = createHash('sha256').update(input.data).digest('hex');
   const path = join(uploadDir(), `${sha256}${ext}`);
@@ -257,6 +259,25 @@ function view(row: Record<string, unknown>): Record<string, unknown> {
     trusted: flags.length === 0,
     url: `/api/files/${row.id}/content`,
   };
+}
+
+/** 8–12 byte đầu của tệp phải khớp loại khai báo. */
+export function contentMatchesMime(data: Buffer, mime: string): boolean {
+  if (data.length < 12) return false;
+  const head = data.subarray(0, 12);
+  switch (mime) {
+    case 'image/jpeg': return head[0] === 0xff && head[1] === 0xd8 && head[2] === 0xff;
+    case 'image/png': return head.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
+    case 'image/webp': return head.subarray(0, 4).toString('ascii') === 'RIFF' && head.subarray(8, 12).toString('ascii') === 'WEBP';
+    case 'image/heic': { const brand = head.subarray(4, 12).toString('ascii'); return brand.startsWith('ftyp') && /heic|heix|hevc|mif1|msf1|heim|heis/.test(brand.slice(4)); }
+    case 'application/pdf': return head.subarray(0, 5).toString('ascii') === '%PDF-';
+    default: return false;
+  }
+}
+
+/** Đối tượng chủ quản của tệp — để API kiểm phạm vi trước khi đọc/xoá (H-01). */
+export function attachmentMeta(id: string): { entity_type: string; entity_id: string; deleted_at: string | null } | null {
+  return one<{ entity_type: string; entity_id: string; deleted_at: string | null }>('SELECT entity_type, entity_id, deleted_at FROM attachments WHERE id = ?', [id]);
 }
 
 export function listAttachments(entityType: string, entityId: string): Record<string, unknown>[] {

@@ -5,6 +5,9 @@
  * khoản quản trị cuối cùng là không còn ai vào sửa lại được. Phần lớn test ở đây
  * bảo vệ các chốt chặn, không phải các thao tác CRUD.
  */
+process.env.SUPER_ADMIN_PASSWORD ??= 'KiemThu-SAdmin-2026';
+process.env.DEMO_ACCOUNT_PASSWORD ??= '123456';
+process.env.DATA_ENCRYPTION_KEY ??= '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync } from 'node:fs';

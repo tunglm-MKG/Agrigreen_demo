@@ -80,32 +80,12 @@ Diễn tập phục hồi (nên làm mỗi quý): dừng máy chủ, đổi tên
 
 ### Tài khoản
 
-Trang đăng nhập **không** liệt kê tài khoản hay mật khẩu. Super Admin toàn hệ thống là `SAdmin` (mật khẩu ban đầu `TungLM18@`, đổi được bằng biến môi trường `SUPER_ADMIN_PASSWORD` khi khởi động lần đầu; tài khoản `admin` cũ được tự đổi tên thành `SAdmin`). Mọi mật khẩu đặt mới phải có tối thiểu 8 ký tự gồm chữ thường, chữ in hoa và chữ số; mật khẩu tạm do hệ thống sinh luôn đạt chuẩn và có thể gửi qua email (kênh cấu hình ở *Thông báo & kênh gửi*) hoặc copy trực tiếp từ hộp thoại.
+Trang đăng nhập **không** liệt kê tài khoản hay mật khẩu, và **mã nguồn không chứa bất kỳ mật khẩu nào** (đánh giá bảo mật 24/09/2026, C-01/C-02).
 
-Các tài khoản trình diễn dưới đây dùng mật khẩu `123456` để thử nhanh trên máy cá nhân — không mang lên môi trường công khai.
-
-| Tài khoản | Vai trò | Dùng để thử |
-| --- | --- | --- |
-| `SAdmin` | Super Admin toàn hệ thống | Toàn quyền (mật khẩu `TungLM18@`) |
-| `supplychain` | Supply Chain / Kế hoạch | Dựng & chạy kịch bản Hub, số hoá tuyến |
-| `taichinh` | Tài chính | Phê duyệt tham số giả định (FN-01 BR-02) |
-| `banlanhdao` | Ban lãnh đạo | Đánh dấu kịch bản "Chính thức", chốt ngưỡng ROI/Payback |
-| `khonhap` | Vận hành kho/bãi | Cân nhập/xuất, giám sát môi trường, kiểm kê |
-| `dieuphoi` | Điều phối vận tải | TMS, số hoá tuyến |
-| `hientruong` | Điều hành hiện trường | Kế hoạch thu gom, phân công đội, bảng điều hành Cổng Hiện trường, danh mục ghe |
-| `supplychain` | (thêm) | Hợp đồng thu mua rơm, xác nhận phiếu mua rơm |
-| `taichinh` | (thêm) | Thanh toán phiếu mua rơm — tất toán công nợ HTX |
-| `htx01` | (thêm) | Xem hợp đồng, phiếu mua rơm và tiền còn phải nhận của HTX mình |
-| `qtri_kn_ag` | Quản trị Khuyến nông **tỉnh An Giang** | Vào Cổng Khuyến nông → Tài khoản: chỉ thấy cán bộ An Giang, chỉ gán được nhóm Khuyến nông, tài khoản tạo ra bị gán cứng tỉnh |
-| `qtri_erp` | Quản trị **toàn hệ thống ERP** | Thấy mọi người ERP, gán được cả nhóm Tài chính, uỷ quyền tiếp phạm vi tỉnh / HTX trong ERP |
-| `canbo_xa_dt` | Cán bộ Khuyến nông xã (Đồng Tháp) | Để thấy admin An Giang **không** nhìn thấy người này |
-| `doitruong` | Đội trưởng thu gom rơm | Ghi nhận cuộn – gom – xuống ghe tại ruộng |
-| `canbo_tw` / `canbo_xa` | Khuyến nông TW / xã | Thư viện kỹ thuật, nhiệm vụ hỗ trợ |
-| `htx01` / `nongdan` | Ban quản lý HTX / Nông dân | Vẽ lô ruộng, mở vụ, nhật ký, khai báo sản lượng |
-| `cuc_ktht` | Cục KTHT & PTNT | Chỉ xem (theo ràng buộc "Cục chỉ Xem" của BRD CGH) |
-| `vvb` | Tổ chức kiểm định | Xem dữ liệu MRV |
-
----
+- **Super Admin** là `SAdmin`. Mật khẩu ban đầu lấy từ biến môi trường `SUPER_ADMIN_PASSWORD`; không đặt thì hệ thống sinh mật khẩu tạm ngẫu nhiên, in ra log máy chủ **một lần** và bắt đổi ở lần đăng nhập đầu. Bản cài từ trước 24/09/2026 sẽ bị buộc đổi mật khẩu SAdmin ở lần đăng nhập kế tiếp.
+- **Tài khoản trình diễn** (`supplychain`, `taichinh`, `banlanhdao`, `khonhap`, `dieuphoi`, `hientruong`, `htx01`, `nongdan`, `canbo_tw`, `canbo_xa`, `qtri_kn_ag`, `qtri_erp`, `cuc_ktht`, `vvb`…) chỉ được nạp khi **không** phải production (`NODE_ENV=production` tắt seed; bật lại tường minh bằng `SEED_DEMO_DATA=1`). Mật khẩu của chúng lấy từ `DEMO_ACCOUNT_PASSWORD` (dùng trên máy cá nhân/kiểm thử); không đặt thì mỗi tài khoản nhận mật khẩu tạm in trong log lần seed và phải đổi khi đăng nhập.
+- Mọi mật khẩu đặt mới phải có tối thiểu 8 ký tự gồm chữ thường, chữ in hoa và chữ số; mật khẩu tạm do hệ thống sinh luôn đạt chuẩn và có thể gửi qua email hoặc copy trực tiếp từ hộp thoại (chỉ hiện một lần, không lưu lại).
+- Đăng nhập bị giới hạn 20 lần / 10 phút theo địa chỉ IP, và khoá 15 phút theo tài khoản sau 5 lần sai.
 
 ## 1B. Sáu cổng (portal) riêng biệt
 
@@ -412,7 +392,7 @@ Mã nguồn: [`vessels.ts`](src/platform/geo/vessels.ts) ·
 
 ### Cổng mã truy cập
 
-Các tài khoản trình diễn dùng mật khẩu `123456` (Super Admin `SAdmin` dùng mật khẩu riêng) —
+Tài khoản trình diễn dùng mật khẩu đặt qua `DEMO_ACCOUNT_PASSWORD` (xem mục *Tài khoản*) —
 trên máy thì tiện, đưa lên Internet thì ai đoán được tên tài khoản demo cũng vào được. Vì vậy có một
 **cổng mã truy cập** đứng trước toàn bộ hệ thống:
 

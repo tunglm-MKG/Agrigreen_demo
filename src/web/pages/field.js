@@ -14,7 +14,7 @@
  */
 import {
   api, registerPage, el, card, kpi, table, badge, alert, num, dateTime,
-  toast, guard, can, form, state, createMap, mapContainer, LEAFLET_AVAILABLE,
+  toast, guard, can, form, state, createMap, mapContainer, LEAFLET_AVAILABLE, escapeHtml,
 } from '/app.js';
 
 const STATUS_TONE = { cho_phan_cong: 'warn', da_phan_cong: 'info', dang_thuc_hien: 'good', hoan_thanh: 'neutral', huy: 'bad' };
@@ -226,8 +226,9 @@ registerPage('field-dashboard', {
     for (const team of data.teams) {
       if (team.baseLat === null || team.baseLng === null) continue;
       window.L.marker([team.baseLat, team.baseLng], {
-        icon: window.L.divIcon({ className: 'field-team-pin', html: `<div class="field-team-pin-box ${team.state}">${team.code.replace('DOI-0000', 'Đ')}</div>`, iconSize: [30, 20] }),
-      }).bindPopup(`<strong>${team.name}</strong><br>${TEAM_STATE[team.state]?.[0] ?? team.state}<br>${team.loadTons}/${team.capacityTons} tấn hôm nay`).addTo(map);
+        // L-05: mọi chuỗi chèn vào innerHTML đều escape, kể cả giá trị hệ thống sinh.
+        icon: window.L.divIcon({ className: 'field-team-pin', html: `<div class="field-team-pin-box ${escapeHtml(team.state)}">${escapeHtml(team.code.replace('DOI-0000', 'Đ'))}</div>`, iconSize: [30, 20] }),
+      }).bindPopup(`<strong>${escapeHtml(team.name)}</strong><br>${escapeHtml(TEAM_STATE[team.state]?.[0] ?? team.state)}<br>${escapeHtml(team.loadTons)}/${escapeHtml(team.capacityTons)} tấn hôm nay`).addTo(map);
     }
   },
 });

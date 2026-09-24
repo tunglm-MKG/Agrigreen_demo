@@ -4,6 +4,9 @@
  * Bộ đọc EXIF tự viết nên phải được kiểm bằng ảnh JPEG dựng tay từng byte: nếu
  * đọc sai toạ độ hay giờ chụp thì cờ "đúng chỗ, đúng lúc" trở thành lời nói dối.
  */
+process.env.SUPER_ADMIN_PASSWORD ??= 'KiemThu-SAdmin-2026';
+process.env.DEMO_ACCOUNT_PASSWORD ??= '123456';
+process.env.DATA_ENCRYPTION_KEY ??= '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync } from 'node:fs';
@@ -136,7 +139,7 @@ test('Ảnh chụp 3 ngày trước → cờ anh_cu; ảnh không EXIF → cờ 
 
   const png = files.saveAttachment({
     entityType: 'field_job_stage', entityId: stage.id, fileName: 'anh.png', mime: 'image/png',
-    data: Buffer.from([0x89, 0x50, 0x4e, 0x47, 1, 2, 3, 4]), deviceLat: job.lat, deviceLng: job.lng,
+    data: Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.alloc(8, 1)]), deviceLat: job.lat, deviceLng: job.lng,   // L-01: chữ ký PNG đầy đủ
   }, actor) as { flags: string[]; locationSource: string; distanceM: number };
   assert.ok(png.flags.includes('khong_exif'));
   assert.equal(png.locationSource, 'thiet_bi');

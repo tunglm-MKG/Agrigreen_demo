@@ -12,6 +12,9 @@
  *   D03 P&L không cộng công nợ phải trả vào chi phí
  *   O03 tệp đính kèm lưu khoá tương đối, đọc lại được
  */
+process.env.SUPER_ADMIN_PASSWORD ??= 'KiemThu-SAdmin-2026';
+process.env.DEMO_ACCOUNT_PASSWORD ??= '123456';
+process.env.DATA_ENCRYPTION_KEY ??= '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
@@ -59,7 +62,7 @@ const call = (token: string | null, method: string, path: string, body?: unknown
 });
 const login = async (u: string, p: string) => ((await (await call(null, 'POST', '/auth/login', { username: u, password: p })).json()) as { token: string }).token;
 const htxToken = await login('htx01', '123456');
-const adminToken = await login('SAdmin', 'TungLM18@');
+const adminToken = await login('SAdmin', process.env.SUPER_ADMIN_PASSWORD!);
 const htxUser = users.listUsers().find((u) => u.username === 'htx01')!;
 const cooperatives = mdm.listCooperatives() as { id: string; name: string }[];
 const others = cooperatives.filter((c) => c.id !== htxUser.htxId);

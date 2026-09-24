@@ -30,3 +30,7 @@ data/.keys/
 # Tệp CSDL cũ trước khi tách miền.
 archive/
 data/backups-truoc-nang-cap/
+# Journal rollback của SQLite chứa trang dữ liệu trước khi ghi (L-02).
+data/*.db-journal
+# Ảnh bằng chứng người dùng tải lên — không đưa vào repo (L-02).
+data/uploads/

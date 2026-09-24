@@ -37,7 +37,7 @@ export const TABLE_DOMAIN: Record<string, Domain> = {
   // ---- dùng chung ----
   users: 'shared', user_roles: 'shared', user_groups: 'shared', group_permissions: 'shared', admin_scopes: 'shared',
   sessions: 'shared', event_log: 'shared', daily_snapshots: 'shared', retention_policy: 'shared', sync_log: 'shared',
-  shared_sync_cursor: 'shared', system_config: 'shared', schema_migrations: 'shared', request_log: 'shared', attachments: 'shared', notifications: 'shared',
+  shared_sync_cursor: 'shared', system_config: 'shared', schema_migrations: 'shared', rate_limits: 'shared', request_log: 'shared', attachments: 'shared', notifications: 'shared',
   admin_units: 'shared', cooperatives: 'shared', farmers: 'shared', plots: 'shared', seasons: 'shared',
   harvest_statistics: 'shared', crop_status: 'shared', commune_crop_seasons: 'shared', commune_harvest_progress: 'shared',
   weather_observations: 'shared', facilities: 'shared', partners: 'shared', items: 'shared',

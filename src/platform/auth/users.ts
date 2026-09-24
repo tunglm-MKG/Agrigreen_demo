@@ -6,7 +6,7 @@
  * Admin khởi tạo (App HTX BR-01).
  */
 import { randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
-import { all, insert, one, run, transaction, update } from '../db/db.ts';
+import { all, insert, one, run, transaction, update, upsert } from '../db/db.ts';
 import { hashPassword, nowIso, uuid } from '../util/ids.ts';
 import { logEvent } from '../audit/audit.ts';
 import { permissionsFor, ROLE_LABELS, ROLES } from './rbac.ts';
@@ -206,7 +206,7 @@ export function resetPassword(id: string, actor = {}): string {
 }
 
 /** Đổi mật khẩu. Mọi mật khẩu đặt mới phải đạt chính sách độ mạnh (≥ 8 ký tự, chữ thường, chữ hoa, chữ số). */
-export function changePassword(id: string, newPassword: string, options: { enforcePolicy?: boolean } = {}): void {
+export function changePassword(id: string, newPassword: string, options: { enforcePolicy?: boolean; keepToken?: string | null } = {}): void {
   if (options.enforcePolicy !== false) assertStrongPassword(newPassword);
   const salt = randomBytes(12).toString('hex');
   update('users', id, {
@@ -215,6 +215,15 @@ export function changePassword(id: string, newPassword: string, options: { enfor
     must_change_pw: 0,
     updated_at: nowIso(),
   });
+  // Đánh giá bảo mật 24/09/2026 (L-03): đổi mật khẩu vì nghi lộ phiên → mọi phiên KHÁC bị huỷ ngay.
+  if (options.keepToken) run('DELETE FROM sessions WHERE user_id = ? AND token <> ?', [id, options.keepToken]);
+  else run('DELETE FROM sessions WHERE user_id = ?', [id]);
+}
+
+/** L-08: sau hạn này, tài khoản còn hash SHA-256 cũ vẫn đăng nhập được nhưng bị buộc đặt mật khẩu mới ngay. */
+export const LEGACY_HASH_DEADLINE = process.env.LEGACY_HASH_DEADLINE ?? '2026-12-31';
+export function legacyHashCount(): number {
+  return one<{ n: number }>("SELECT COUNT(*) AS n FROM users WHERE password_hash NOT LIKE 'scrypt$%'")?.n ?? 0;
 }
 
 const SESSION_HOURS = 12;
@@ -273,6 +282,8 @@ export function login(identifier: string, password: string): { token: string; us
     const salt = randomBytes(12).toString('hex');
     upgrade.password_salt = salt;
     upgrade.password_hash = hashSecret(password, salt);
+    // Quá hạn di trú (L-08): hash yếu tồn tại vô thời hạn trong CSDL → buộc đặt mật khẩu mới ngay lần này.
+    if (now.slice(0, 10) > LEGACY_HASH_DEADLINE) upgrade.must_change_pw = 1;
   }
   update('users', row.id, { failed_attempts: 0, locked_until: null, last_login_at: now, updated_at: now, ...upgrade });
   const token = randomBytes(24).toString('hex');
@@ -326,7 +337,6 @@ export function generateTemporaryPassword(length = 10): string {
 // ---------------------------------------------------------------------------
 
 export const SUPER_ADMIN_USERNAME = 'SAdmin';
-const DEFAULT_SUPER_ADMIN_PASSWORD = 'TungLM18@';
 
 /**
  * Bảo đảm tài khoản Super Admin `SAdmin` tồn tại khi khởi động.
@@ -335,8 +345,24 @@ const DEFAULT_SUPER_ADMIN_PASSWORD = 'TungLM18@';
  *  - Chưa có gì: tạo mới với vai trò quản trị nền tảng.
  * Mật khẩu ban đầu lấy từ biến môi trường SUPER_ADMIN_PASSWORD nếu có.
  */
-export function ensureSuperAdmin(initialPassword = process.env.SUPER_ADMIN_PASSWORD ?? DEFAULT_SUPER_ADMIN_PASSWORD): { action: 'created' | 'renamed' | 'kept'; userId: string } {
+/**
+ * Đánh giá bảo mật 24/09/2026 (C-01): KHÔNG còn mật khẩu mặc định trong mã nguồn.
+ *  - Có SUPER_ADMIN_PASSWORD → dùng làm mật khẩu ban đầu (must_change_pw = 0, quản trị tự chịu trách nhiệm).
+ *  - Không có → sinh mật khẩu ngẫu nhiên, in ra log MỘT lần, bắt đổi ở lần đăng nhập đầu.
+ *  - CSDL có sẵn SAdmin từ bản cũ (mật khẩu từng nằm trong repo) và không đặt biến môi trường → buộc đổi
+ *    mật khẩu ở lần đăng nhập kế tiếp và huỷ phiên đang mở; đánh dấu trong system_config để chỉ làm một lần.
+ */
+const SADMIN_ROTATION_MARKER = 'security.sadmin_rotation_2026_09_24';
+export function ensureSuperAdmin(initialPassword = process.env.SUPER_ADMIN_PASSWORD): { action: 'created' | 'renamed' | 'kept' | 'rotation_required'; userId: string; temporaryPassword?: string } {
   const timestamp = nowIso();
+  const generated = !initialPassword;
+  const password = initialPassword || generateTemporaryPassword(16);
+  const mustChange = generated ? 1 : 0;
+  const announce = (id: string) => {
+    if (!generated) return;
+    console.warn(`\n  [auth] SAdmin được tạo với mật khẩu tạm: ${password}\n  [auth] Mật khẩu này chỉ hiện MỘT lần và phải đổi ở lần đăng nhập đầu. Đặt SUPER_ADMIN_PASSWORD để tự chọn.\n`);
+    logEvent({ module: 'admin', entityType: 'users', entityId: id, action: 'create', note: 'super_admin_temporary_password_issued', source: 'system' });
+  };
   const ensureRole = (userId: string) => {
     if (!one('SELECT 1 FROM user_roles WHERE user_id = ? AND role = ?', [userId, ROLES.PLATFORM_ADMIN])) insert('user_roles', { user_id: userId, role: ROLES.PLATFORM_ADMIN });
   };
@@ -344,33 +370,47 @@ export function ensureSuperAdmin(initialPassword = process.env.SUPER_ADMIN_PASSW
   if (existing) {
     ensureRole(existing.id);
     if (existing.status !== 'active') update('users', existing.id, { status: 'active', locked_until: null, failed_attempts: 0, updated_at: timestamp });
+    if (!one('SELECT 1 FROM system_config WHERE key = ?', [SADMIN_ROTATION_MARKER])) {
+      upsert('system_config', { key: SADMIN_ROTATION_MARKER, value_json: JSON.stringify({ at: timestamp, forced: generated }), updated_at: timestamp, updated_by: 'system' });
+      if (generated) {
+        // Mật khẩu hiện tại có thể là chuỗi từng công bố trong repo → buộc đổi, huỷ phiên đang mở.
+        update('users', existing.id, { must_change_pw: 1, updated_at: timestamp });
+        run('DELETE FROM sessions WHERE user_id = ?', [existing.id]);
+        logEvent({ module: 'admin', entityType: 'users', entityId: existing.id, action: 'update', note: 'super_admin_forced_rotation', source: 'system' });
+        console.warn('  [auth] SAdmin phải đổi mật khẩu ở lần đăng nhập kế tiếp (mật khẩu cũ từng nằm trong mã nguồn — C-01).');
+        return { action: 'rotation_required', userId: existing.id };
+      }
+    }
     return { action: 'kept', userId: existing.id };
   }
+  upsert('system_config', { key: SADMIN_ROTATION_MARKER, value_json: JSON.stringify({ at: timestamp, forced: false }), updated_at: timestamp, updated_by: 'system' });
   const salt = randomBytes(12).toString('hex');
   const legacy = one<UserRow>("SELECT * FROM users WHERE username = 'admin'");
   if (legacy) {
     transaction(() => {
       update('users', legacy.id, {
         username: SUPER_ADMIN_USERNAME, full_name: 'Quản trị hệ thống (Super Admin)', password_salt: salt,
-        password_hash: hashSecret(initialPassword, salt), must_change_pw: 0, status: 'active', failed_attempts: 0, locked_until: null, updated_at: timestamp,
+        password_hash: hashSecret(password, salt), must_change_pw: mustChange, status: 'active', failed_attempts: 0, locked_until: null, updated_at: timestamp,
       });
       ensureRole(legacy.id);
       run('DELETE FROM sessions WHERE user_id = ?', [legacy.id]);
     });
     logEvent({ module: 'admin', entityType: 'users', entityId: legacy.id, action: 'update', note: 'super_admin_renamed', source: 'system' });
-    return { action: 'renamed', userId: legacy.id };
+    announce(legacy.id);
+    return { action: 'renamed', userId: legacy.id, temporaryPassword: generated ? password : undefined };
   }
   const id = uuid();
   transaction(() => {
     insert('users', {
       id, username: SUPER_ADMIN_USERNAME, full_name: 'Quản trị hệ thống (Super Admin)', email: null, phone: null,
-      password_hash: hashSecret(initialPassword, salt), password_salt: salt, must_change_pw: 0, status: 'active',
+      password_hash: hashSecret(password, salt), password_salt: salt, must_change_pw: mustChange, status: 'active',
       org_node_id: null, htx_id: null, province_id: null, created_at: timestamp, updated_at: timestamp,
     });
     insert('user_roles', { user_id: id, role: ROLES.PLATFORM_ADMIN });
   });
   logEvent({ module: 'admin', entityType: 'users', entityId: id, action: 'create', note: 'super_admin_created', source: 'system' });
-  return { action: 'created', userId: id };
+  announce(id);
+  return { action: 'created', userId: id, temporaryPassword: generated ? password : undefined };
 }
 
 export function logout(token: string): void {

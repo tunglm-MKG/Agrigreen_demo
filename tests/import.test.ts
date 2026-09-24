@@ -2,6 +2,9 @@
  * Kiểm thử luồng nhập Excel: bộ đọc .xlsx, quy đổi địa giới hành chính
  * sau sáp nhập 2025, định vị tự động và nhận diện dữ liệu vụ mùa.
  */
+process.env.SUPER_ADMIN_PASSWORD ??= 'KiemThu-SAdmin-2026';
+process.env.DEMO_ACCOUNT_PASSWORD ??= '123456';
+process.env.DATA_ENCRYPTION_KEY ??= '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync } from 'node:fs';

@@ -4,6 +4,9 @@
  * Dựng máy chủ trên cổng ngẫu nhiên với chính router API của ứng dụng, đăng nhập
  * thật, rồi gửi cùng một yêu cầu hai lần: nghiệp vụ chỉ được chạy một lần.
  */
+process.env.SUPER_ADMIN_PASSWORD ??= 'KiemThu-SAdmin-2026';
+process.env.DEMO_ACCOUNT_PASSWORD ??= '123456';
+process.env.DATA_ENCRYPTION_KEY ??= '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
@@ -89,7 +92,7 @@ test('Cùng khoá nhưng đường dẫn khác → từ chối, vì đó là l�
 test('Khoá thuộc về người dùng: người khác dùng trùng khoá vẫn chạy bình thường', async () => {
   const key = 'test-key-0004-abcdef';
   await post('/field/teams', { name: 'Đội của hientruong' }, key);
-  const adminLogin = await fetch(`${base}/auth/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: 'SAdmin', password: 'TungLM18@' }) });
+  const adminLogin = await fetch(`${base}/auth/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: 'SAdmin', password: process.env.SUPER_ADMIN_PASSWORD! }) });
   const adminToken = ((await adminLogin.json()) as { token: string }).token;
   const before = all('SELECT id FROM field_teams').length;
   const res = await fetch(`${base}/field/teams`, {

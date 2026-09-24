@@ -564,10 +564,24 @@ export function seedAll(): void {
     { username: 'cuc_ktht', fullName: 'Cục KTHT & PTNT', roles: [ROLES.DCRD_VIEWER] },
     { username: 'vvb', fullName: 'Kiểm định viên SGS', roles: [ROLES.VVB_AUDITOR] },
   ];
-  // Tài khoản trình diễn dùng mật khẩu ngắn để thử nhanh (bỏ qua chính sách); Super Admin dùng mật khẩu chuẩn.
+  // Đánh giá bảo mật 24/09/2026 (C-01/C-02): KHÔNG còn mật khẩu cố định trong mã nguồn.
+  //  - SAdmin: SUPER_ADMIN_PASSWORD, không có thì ensureSuperAdmin() sinh mật khẩu tạm và in log một lần.
+  //  - Tài khoản trình diễn: DEMO_ACCOUNT_PASSWORD (chỉ dùng cho máy cá nhân/kiểm thử); không có thì mỗi tài khoản
+  //    nhận mật khẩu tạm ngẫu nhiên, in log MỘT lần và phải đổi ở lần đăng nhập đầu.
+  const demoPassword = process.env.DEMO_ACCOUNT_PASSWORD || null;
+  const issued: string[] = [];
   for (const account of accounts) {
-    const password = account.username === 'SAdmin' ? (process.env.SUPER_ADMIN_PASSWORD ?? 'TungLM18@') : '123456';
-    createUser({ ...account, password }, { name: 'seed' }, { enforcePolicy: false });
+    if (account.username === 'SAdmin') {
+      const superPassword = process.env.SUPER_ADMIN_PASSWORD || null;
+      if (superPassword) createUser({ ...account, password: superPassword }, { name: 'seed' }, { enforcePolicy: false });
+      else { const { temporaryPassword } = createUser({ ...account }, { name: 'seed' }); issued.push(`${account.username}: ${temporaryPassword}`); }
+      continue;
+    }
+    if (demoPassword) createUser({ ...account, password: demoPassword }, { name: 'seed' }, { enforcePolicy: false });
+    else { const { temporaryPassword } = createUser({ ...account }, { name: 'seed' }); issued.push(`${account.username}: ${temporaryPassword}`); }
+  }
+  if (issued.length) {
+    console.warn(`\n  [seed] Mật khẩu tạm của tài khoản trình diễn (chỉ hiện MỘT lần, phải đổi ở lần đăng nhập đầu):\n    ${issued.join('\n    ')}\n  [seed] Đặt DEMO_ACCOUNT_PASSWORD để dùng một mật khẩu chung khi thử trên máy cá nhân.\n`);
   }
   // Uỷ quyền phạm vi: super admin cấp cho hai admin mẫu.
   const superCtx = tryAdminContext(listUsers().find((u) => u.username === 'SAdmin')!)!;

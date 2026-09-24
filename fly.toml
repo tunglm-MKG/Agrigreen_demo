@@ -18,6 +18,11 @@ primary_region = "sin"
 
 [env]
   PORT = "8080"
+  # Đánh giá bảo mật 24/09/2026: không seed tài khoản demo ở production (C-02); tin một lớp proxy của Fly (H-04).
+  NODE_ENV = "production"
+  TRUSTED_PROXY_HOPS = "1"
+  # Bí mật đặt bằng: fly secrets set SUPER_ADMIN_PASSWORD=... DATA_ENCRYPTION_KEY=$(openssl rand -hex 32) DEMO_ACCESS_CODE=...
+  # Muốn có dữ liệu mẫu: fly secrets set SEED_DEMO_DATA=1 (tài khoản demo nhận mật khẩu tạm in trong log lần seed).
 
 [[mounts]]
   source = "agrigreen_data"

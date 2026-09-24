@@ -8,6 +8,9 @@
  *
  * Chạy qua HTTP thật để kiểm đúng lớp router/guard, không chỉ tầng service.
  */
+process.env.SUPER_ADMIN_PASSWORD ??= 'KiemThu-SAdmin-2026';
+process.env.DEMO_ACCOUNT_PASSWORD ??= '123456';
+process.env.DATA_ENCRYPTION_KEY ??= '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
@@ -163,7 +166,7 @@ test('P1#5 Đăng nhập sai mật khẩu với cùng Idempotency-Key của lầ
 // ===========================================================================
 
 test('UAT DEF-AUTH-01: tài khoản dùng mật khẩu tạm chỉ gọi được /auth/*, mọi API khác trả 403 must_change_password cho tới khi đổi', async () => {
-  const adminToken = await loginToken('SAdmin', 'TungLM18@');
+  const adminToken = await loginToken('SAdmin', process.env.SUPER_ADMIN_PASSWORD!);
   const created = await (await call(adminToken, 'POST', '/admin/users', { username: 'tam_thoi_01', fullName: 'Tạm thời', roles: ['htx_manager'], htxId: htxUser.htxId })).json() as { temporaryPassword: string };
   const temp = await loginToken('tam_thoi_01', created.temporaryPassword);
   assert.ok(temp, 'đăng nhập được bằng mật khẩu tạm');
@@ -181,7 +184,7 @@ test('UAT DEF-AUTH-01: tài khoản dùng mật khẩu tạm chỉ gọi đượ
 });
 
 test('UAT DEF-ADM-01: tạo tài khoản Nông dân / Quản lý HTX phải chọn HTX liên kết', async () => {
-  const adminToken = await loginToken('SAdmin', 'TungLM18@');
+  const adminToken = await loginToken('SAdmin', process.env.SUPER_ADMIN_PASSWORD!);
   const res = await call(adminToken, 'POST', '/admin/users', { username: 'nd_khong_htx', fullName: 'Nông dân', roles: ['farmer'] });
   assert.equal(res.status, 400);
   assert.match(((await res.json()) as { error: string }).error, /Hợp tác xã liên kết/);

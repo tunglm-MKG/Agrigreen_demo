@@ -31,8 +31,40 @@ export function normalizePath(pathname: string): string {
 export type Handler = (ctx: Context) => unknown | Promise<unknown>;
 
 export interface RouteOptions {
-  /** false → handler ghi chạy ngoài giao dịch (vẫn qua khoá ghi) — dùng cho VACUUM INTO, thao tác tệp dài. */
+  /** false → handler ghi chạy ngoài giao dịch (vẫn qua khoá ghi) — dùng cho VACUUM INTO, thao tác tệp dài, và các
+   *  handler mà trạng thái phải được LƯU cả khi ném lỗi (đếm lần đăng nhập sai). */
   unitOfWork?: boolean;
+  /** Giới hạn thân yêu cầu (byte); mặc định DEFAULT_MAX_BODY_BYTES. Route tải tệp đặt cao hơn (H-02). */
+  maxBodyBytes?: number;
+  /** true → phản hồi chứa bí mật (mật khẩu tạm): không lưu vào bảng chống trùng và không phát lại (M-02). */
+  sensitive?: boolean;
+}
+
+/** 1 MB cho JSON thường; tệp đính kèm 12 MB → base64 ≈ 16 MB + bao JSON. */
+export const DEFAULT_MAX_BODY_BYTES = 1 * 1024 * 1024;
+export const UPLOAD_MAX_BODY_BYTES = 17 * 1024 * 1024;
+
+/** Đằng sau Render/Fly luôn là HTTPS; cờ Secure của cookie lấy theo header proxy hoặc socket TLS. */
+export function isSecureRequest(req: IncomingMessage): boolean {
+  const proto = (req.headers['x-forwarded-proto'] as string | undefined)?.split(',')[0]?.trim();
+  return proto === 'https' || Boolean((req.socket as { encrypted?: boolean }).encrypted);
+}
+
+/**
+ * Chống CSRF lớp hai (L-04): yêu cầu ghi có header Origin thì Origin phải trùng host đang phục vụ;
+ * không có Origin nhưng trình duyệt báo Sec-Fetch-Site: cross-site cũng bị từ chối. Client API (không gửi
+ * Origin, không phải trình duyệt) không bị ảnh hưởng.
+ */
+export function assertSameOrigin(req: IncomingMessage): void {
+  const origin = req.headers.origin;
+  const host = req.headers.host;
+  if (typeof origin === 'string' && origin && origin !== 'null') {
+    let originHost: string | null = null;
+    try { originHost = new URL(origin).host; } catch { originHost = null; }
+    if (!host || originHost !== host) throw new HttpError(403, 'Yêu cầu ghi đến từ nguồn (Origin) khác — bị từ chối để chống CSRF.');
+    return;
+  }
+  if (req.headers['sec-fetch-site'] === 'cross-site') throw new HttpError(403, 'Yêu cầu ghi xuyên site bị từ chối để chống CSRF.');
 }
 
 interface Route {
@@ -86,7 +118,12 @@ export function friendlyError(error: unknown): { message: string; technical: str
   if (/no such column|ambiguous column|no such table|SQLITE_|syntax error|database is locked/.test(raw)) {
     return { message: 'Hệ thống gặp lỗi khi truy vấn dữ liệu. Vui lòng thử lại; nếu vẫn lỗi hãy báo quản trị viên (mã lỗi: DB).', technical: raw };
   }
-  return { message: raw, technical: null };
+  // Đánh giá bảo mật 24/09/2026 (M-07): chỉ lỗi NGHIỆP VỤ ném có chủ đích (Error thuần, không mã hệ thống, không
+  // dấu vết kỹ thuật) mới được trả nguyên văn; mọi thứ khác trả thông điệp chung và ghi log máy chủ.
+  const isPlainBusinessError = error instanceof Error && error.constructor === Error && !('code' in error) && !('errno' in error);
+  const looksTechnical = /[A-Za-z]:\\|\/app\/|\/src\/|\.ts:\d|\.js:\d|\bat \w+ \(|ENOENT|EACCES|EPERM|ECONN|ETIMEDOUT|ERR_[A-Z_]+|SQLITE|TypeError|ReferenceError|RangeError|undefined is not|null is not/.test(raw);
+  if (isPlainBusinessError && !looksTechnical) return { message: raw, technical: null };
+  return { message: 'Hệ thống gặp lỗi không mong đợi. Vui lòng thử lại; nếu vẫn lỗi hãy báo quản trị viên (mã lỗi: SYS).', technical: raw };
 }
 
 export const badRequest = (message: string, details?: unknown) => new HttpError(400, message, details);
@@ -106,6 +143,10 @@ export class Router {
     return this;
   }
 
+  listRoutes(): RouteInfo[] {
+    return this.routes.map((r) => ({ method: r.method, path: r.path, permission: r.permission, options: r.options }));
+  }
+
   add(method: string, path: string, handler: Handler, permission?: string, options: RouteOptions = {}): this {
     this.routes.push({
       method,
@@ -118,24 +159,24 @@ export class Router {
     return this;
   }
 
-  get(path: string, handler: Handler, permission?: string): this {
-    return this.add('GET', path, handler, permission);
+  get(path: string, handler: Handler, permission?: string, options?: RouteOptions): this {
+    return this.add('GET', path, handler, permission, options);
   }
 
   post(path: string, handler: Handler, permission?: string, options?: RouteOptions): this {
     return this.add('POST', path, handler, permission, options);
   }
 
-  put(path: string, handler: Handler, permission?: string): this {
-    return this.add('PUT', path, handler, permission);
+  put(path: string, handler: Handler, permission?: string, options?: RouteOptions): this {
+    return this.add('PUT', path, handler, permission, options);
   }
 
   patch(path: string, handler: Handler, permission?: string): this {
     return this.add('PATCH', path, handler, permission);
   }
 
-  delete(path: string, handler: Handler, permission?: string): this {
-    return this.add('DELETE', path, handler, permission);
+  delete(path: string, handler: Handler, permission?: string, options?: RouteOptions): this {
+    return this.add('DELETE', path, handler, permission, options);
   }
 
   /** Gộp các route của một router con vào router này, thêm tiền tố đường dẫn. */
@@ -196,10 +237,13 @@ export class Router {
     const idemKey = method !== 'GET' && method !== 'HEAD' && !isAuthRoute && typeof idemHeader === 'string' && idemHeader.length >= 8
       ? idemHeader.slice(0, 128)
       : null;
-    if (idemKey) {
+    // Yêu cầu ghi: chống CSRF theo Origin và giới hạn kích thước thân TRƯỚC khi đọc (L-04, H-02).
+    if (method !== 'GET' && method !== 'HEAD') assertSameOrigin(req);
+    const maxBody = found.route.options.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES;
+    if (idemKey && !found.route.options.sensitive) {
       const replay = findReplay(idemKey, user?.id ?? null, method, pathname);
       if (replay) {
-        await readBody(req); // tiêu thụ body để kết nối đóng sạch
+        await readBody(req, maxBody); // tiêu thụ body để kết nối đóng sạch
         res.setHeader('Idempotency-Replayed', 'true');
         sendJson(res, replay.status, replay.body);
         return true;
@@ -211,7 +255,7 @@ export class Router {
       res,
       params: found.params,
       query: url.searchParams,
-      body: await readBody(req),
+      body: await readBody(req, maxBody),
       user,
       actor: { id: user?.id ?? null, name: user?.fullName ?? 'anonymous' },
       path: pathname,
@@ -227,7 +271,7 @@ export class Router {
     const mutating = method !== 'GET' && method !== 'HEAD';
     const result = mutating ? (found.route.options.unitOfWork === false ? await withWriteLock(execute) : await unitOfWork(execute)) : await execute();
     if (result !== undefined && !res.writableEnded) {
-      if (idemKey) storeResponse(idemKey, user?.id ?? null, method, pathname, 200, result);
+      if (idemKey && !found.route.options.sensitive) storeResponse(idemKey, user?.id ?? null, method, pathname, 200, result);
       sendJson(res, 200, result);
     }
     return true;
@@ -242,10 +286,24 @@ export function extractToken(req: IncomingMessage): string | null {
   return match ? decodeURIComponent(match[1]) : null;
 }
 
-export async function readBody(req: IncomingMessage): Promise<any> {
+export async function readBody(req: IncomingMessage, maxBytes = DEFAULT_MAX_BODY_BYTES): Promise<any> {
   if (req.method === 'GET' || req.method === 'HEAD') return undefined;
+  // H-02: từ chối sớm theo Content-Length, và đếm byte khi đọc — vượt ngưỡng là huỷ kết nối, không gom hết vào RAM.
+  const declared = Number(req.headers['content-length'] ?? 0);
+  if (Number.isFinite(declared) && declared > maxBytes) {
+    // Trả 413 ngay (chưa đọc byte nào); Node đóng kết nối sau phản hồi vì thân chưa được tiêu thụ.
+    throw new HttpError(413, `Thân yêu cầu ${(declared / 1_048_576).toFixed(1)} MB vượt giới hạn ${(maxBytes / 1_048_576).toFixed(0)} MB.`);
+  }
   const chunks: Buffer[] = [];
-  for await (const chunk of req) chunks.push(chunk as Buffer);
+  let received = 0;
+  for await (const chunk of req) {
+    received += (chunk as Buffer).length;
+    if (received > maxBytes) {
+      req.destroy();
+      throw new HttpError(413, `Thân yêu cầu vượt giới hạn ${(maxBytes / 1_048_576).toFixed(0)} MB.`);
+    }
+    chunks.push(chunk as Buffer);
+  }
   if (!chunks.length) return undefined;
   const raw = Buffer.concat(chunks).toString('utf8');
   const type = req.headers['content-type'] ?? '';
@@ -256,11 +314,12 @@ export async function readBody(req: IncomingMessage): Promise<any> {
       throw badRequest('Body không phải JSON hợp lệ');
     }
   }
-  if (type.includes('application/x-www-form-urlencoded')) {
-    return Object.fromEntries(new URLSearchParams(raw));
-  }
+  // L-04: API chỉ nhận JSON — biểu mẫu x-www-form-urlencoded (thứ trình duyệt gửi được xuyên site) không được diễn giải.
   return raw;
 }
+
+/** Danh sách route đã đăng ký — cho test duyệt phạm vi (M-06) và tài liệu. */
+export interface RouteInfo { method: string; path: string; permission?: string; options: RouteOptions }
 
 export function sendJson(res: ServerResponse, status: number, payload: unknown): void {
   const body = JSON.stringify(payload, null, 2);

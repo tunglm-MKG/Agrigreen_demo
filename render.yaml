@@ -48,6 +48,20 @@ services:
       # đã có link.
       - key: DEMO_ACCESS_CODE
         sync: false
+      # Đánh giá bảo mật 24/09/2026: production không seed tài khoản demo (C-02), không tự sinh khoá cạnh dữ liệu (M-05),
+      # tin đúng một lớp proxy của Render khi đọc IP (H-04). Mật khẩu SAdmin và khoá mã hoá do Render sinh ngẫu nhiên;
+      # đọc SUPER_ADMIN_PASSWORD trong tab Environment để đăng nhập lần đầu.
+      - key: NODE_ENV
+        value: production
+      - key: TRUSTED_PROXY_HOPS
+        value: '1'
+      - key: SUPER_ADMIN_PASSWORD
+        generateValue: true
+      - key: DATA_ENCRYPTION_KEY
+        generateValue: true
+      # Chỉ bật khi thật sự cần bản demo có dữ liệu mẫu trên môi trường công khai (tài khoản demo nhận mật khẩu tạm in trong log).
+      # - key: SEED_DEMO_DATA
+      #   value: '1'
 
     # Bỏ chú thích để giữ dữ liệu qua các lần khởi động lại (cần gói trả phí).
     # disk:

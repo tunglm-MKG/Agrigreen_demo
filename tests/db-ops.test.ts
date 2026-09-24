@@ -5,6 +5,9 @@
  *   - băm mật khẩu scrypt với nâng cấp trong suốt từ hash SHA-256 cũ,
  *   - tham chiếu xuyên miền được chặn khi ghi và rà được bản ghi mồ côi.
  */
+process.env.SUPER_ADMIN_PASSWORD ??= 'KiemThu-SAdmin-2026';
+process.env.DEMO_ACCOUNT_PASSWORD ??= '123456';
+process.env.DATA_ENCRYPTION_KEY ??= '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, writeFileSync, existsSync } from 'node:fs';

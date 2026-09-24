@@ -2206,6 +2206,14 @@ CREATE TABLE IF NOT EXISTS system_config (
 
 -- Review kiến trúc 24/09/2026 (A07): mỗi phiên bản lược đồ đã áp lên tệp được ghi lại kèm băm nội dung,
 -- số bảng dựng lại/bỏ qua — đối chiếu được "cài mới" và "nâng cấp" có cùng lược đồ hay không.
+-- Đánh giá bảo mật 24/09/2026 (H-04, M-01): bộ đếm giới hạn tốc độ (cổng truy cập, đăng nhập theo IP) — bền qua
+-- khởi động lại và dùng chung giữa các tiến trình, thay cho Map trong RAM.
+CREATE TABLE IF NOT EXISTS rate_limits (
+  bucket       TEXT PRIMARY KEY,
+  count        INTEGER NOT NULL DEFAULT 0,
+  window_start TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS schema_migrations (
   id             INTEGER PRIMARY KEY AUTOINCREMENT,
   version        TEXT NOT NULL,

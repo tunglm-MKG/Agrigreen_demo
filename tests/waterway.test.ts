@@ -5,6 +5,9 @@
  *   2. Thông số rộng / sâu / tĩnh không cầu → suy ra tải trọng lưu thông
  *   3. Đường đi TỐI ƯU Hub → Nhà máy, có ràng buộc theo lớp phương tiện
  */
+process.env.SUPER_ADMIN_PASSWORD ??= 'KiemThu-SAdmin-2026';
+process.env.DEMO_ACCOUNT_PASSWORD ??= '123456';
+process.env.DATA_ENCRYPTION_KEY ??= '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync } from 'node:fs';

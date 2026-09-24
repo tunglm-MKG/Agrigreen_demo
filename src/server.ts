@@ -18,6 +18,11 @@ import { HttpError, sendJson, friendlyError } from './platform/http/router.ts';
 import { buildApi } from './api.ts';
 import { gateEnabled, handleGate } from './platform/http/accessGate.ts';
 import { seedIfEmpty } from './seed.ts';
+import { one as dbOne } from './platform/db/db.ts';
+import { assertEncryptionKeyConfigured } from './platform/security/fieldCrypto.ts';
+import { rotateChannelSecrets } from './platform/notify/service.ts';
+import { purgeRateLimits } from './platform/http/rateLimit.ts';
+import { isSecureRequest } from './platform/http/router.ts';
 import { syncSystemGroups } from './platform/auth/admin.ts';
 import { processOutbox, runAlertScan } from './platform/notify/service.ts';
 import { purgeExpired } from './platform/http/idempotency.ts';
@@ -43,17 +48,25 @@ const MIME: Record<string, string> = {
 };
 
 export async function start(port = Number(process.env.PORT ?? 4173)): Promise<void> {
+  // M-05: production phải có DATA_ENCRYPTION_KEY — dừng ngay thay vì tự sinh khoá cạnh dữ liệu.
+  assertEncryptionKeyConfigured();
   migrate();
   // Tệp hợp nhất cũ (trước 09/2026) → nhập vào bộ tệp mới TRƯỚC khi xét seed (A06).
   importLegacyDatabase();
-  seedIfEmpty();
+  // C-02: dữ liệu và tài khoản trình diễn KHÔNG bao giờ tự nạp ở production, trừ khi bật SEED_DEMO_DATA=1 tường minh.
+  const allowDemoSeed = process.env.NODE_ENV !== 'production' || process.env.SEED_DEMO_DATA === '1';
+  if (allowDemoSeed) seedIfEmpty();
+  else if (!dbOne('SELECT 1 FROM cooperatives LIMIT 1')) console.warn('[seed] CSDL trống nhưng NODE_ENV=production: KHÔNG nạp dữ liệu trình diễn (C-02). Tạo dữ liệu qua giao diện quản trị, hoặc đặt SEED_DEMO_DATA=1 nếu thật sự muốn bản demo.');
   syncSystemGroups();
   // Super Admin toàn hệ thống (SAdmin) — đổi tên tài khoản `admin` cũ nếu còn.
   ensureSuperAdmin();
   // Danh mục giống lúa mặc định cho CSDL đã có từ trước đợt cập nhật 09/2026.
   seedVarietiesIfEmpty();
-  // Nông hộ, thửa, mùa vụ, nhật ký mẫu cho App HTX khi CSDL chưa có (chỉ chạy một lần).
-  seedHtxFieldDemoIfEmpty();
+  // Nông hộ, thửa, mùa vụ, nhật ký mẫu cho App HTX khi CSDL chưa có (chỉ chạy một lần) — cũng theo cờ demo.
+  if (allowDemoSeed) seedHtxFieldDemoIfEmpty();
+  // M-04: token kênh gửi còn lưu rõ trong system_config → mã hoá.
+  const sealed = rotateChannelSecrets();
+  if (sealed) console.log(`[notify] đã mã hoá ${sealed} bí mật kênh gửi.`);
   ensureXaScopeAssignments();
   // Kho có tổng tồn nhưng chưa có lô (seed) → lô tồn đầu kỳ có nguồn gốc đánh dấu (A03/R3).
   const openingLots = ensureOpeningLots();
@@ -65,7 +78,7 @@ export async function start(port = Number(process.env.PORT ?? 4173)): Promise<vo
   // ngưỡng (US-PRICE-04), chạy lịch gửi báo cáo (US-DASH-03). unref() để chúng không giữ
   // tiến trình sống khi tắt máy chủ.
   const scan = () => {
-    try { runAlertScan(); purgeExpired(); } catch (error) { console.error('[notify] quét lỗi:', (error as Error).message); }
+    try { runAlertScan(); purgeExpired(); purgeRateLimits(); } catch (error) { console.error('[notify] quét lỗi:', (error as Error).message); }
     try { escalateOverdueTasks(); scanWatchlists(); runDueReportSchedules(); } catch (error) { console.error('[brd] quét lỗi:', (error as Error).message); }
     // Retry đồng bộ đến hạn và snapshot mỗi ngày một lần — trước đây chỉ chạy khi gọi API (O02/A05).
     try { const r = processRetries(); if (r.retried || r.deadLettered) console.log(`[sync] retry: ${r.retried} chạy lại, ${r.recovered} hồi phục, ${r.deadLettered} dead-letter`); } catch (error) { console.error('[sync] retry lỗi:', (error as Error).message); }
@@ -93,6 +106,7 @@ export async function start(port = Number(process.env.PORT ?? 4173)): Promise<vo
 
   const server = createServer(async (req, res) => {
     const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
+    applySecurityHeaders(req, res);
     try {
       // Cổng mã truy cập đứng TRƯỚC mọi thứ khác: chưa nhập đúng mã thì không
       // thấy giao diện lẫn API. Tắt hoàn toàn khi không đặt DEMO_ACCESS_CODE.
@@ -109,7 +123,7 @@ export async function start(port = Number(process.env.PORT ?? 4173)): Promise<vo
         if (!handled) sendJson(res, 404, { error: 'Endpoint không tồn tại', path: url.pathname });
         return;
       }
-      await serveStatic(url.pathname, res);
+      await serveStatic(req, url.pathname, res);
     } catch (error) {
       if (error instanceof HttpError) {
         sendJson(res, error.status, { error: error.message, details: error.details ?? null });
@@ -131,7 +145,36 @@ export async function start(port = Number(process.env.PORT ?? 4173)): Promise<vo
   console.log('  Đăng nhập bằng tài khoản Super Admin "SAdmin". Tài khoản trình diễn khác: xem README.md.\n');
 }
 
-async function serveStatic(pathname: string, res: import('node:http').ServerResponse): Promise<void> {
+/**
+ * Đánh giá bảo mật 24/09/2026 (H-03): HTTP security header cho MỌI phản hồi (tĩnh lẫn API).
+ * CSP: script chỉ từ chính máy chủ (Leaflet đã tự host), style cho phép inline vì giao diện đặt style động,
+ * ảnh cho phép các máy chủ bản đồ nền, font từ Google Fonts. HSTS chỉ khi đang phục vụ qua HTTPS.
+ */
+const CSP = [
+  "default-src 'self'",
+  "script-src 'self'",
+  "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+  "font-src 'self' data: https://fonts.gstatic.com",
+  "img-src 'self' data: blob: https://*.tile.openstreetmap.org https://*.basemaps.cartocdn.com https://*.tile.opentopomap.org https://server.arcgisonline.com",
+  "connect-src 'self'",
+  "worker-src 'self'",
+  "manifest-src 'self'",
+  "object-src 'none'",
+  "base-uri 'self'",
+  "form-action 'self'",
+  "frame-ancestors 'none'",
+].join('; ');
+function applySecurityHeaders(req: import('node:http').IncomingMessage, res: import('node:http').ServerResponse): void {
+  res.setHeader('Content-Security-Policy', CSP);
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('Referrer-Policy', 'same-origin');
+  res.setHeader('Permissions-Policy', 'geolocation=(self), camera=(self), microphone=(), payment=()');
+  res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
+  if (isSecureRequest(req)) res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+}
+
+async function serveStatic(req: import('node:http').IncomingMessage, pathname: string, res: import('node:http').ServerResponse): Promise<void> {
   const requested = pathname === '/' ? '/index.html' : pathname;
   // Chặn path traversal.
   const safe = normalize(requested).replace(/^(\.\.[/\\])+/, '');
@@ -148,7 +191,14 @@ async function serveStatic(pathname: string, res: import('node:http').ServerResp
     res.writeHead(200, { 'Content-Type': MIME[extname(filePath)] ?? 'application/octet-stream', 'Cache-Control': 'no-cache' });
     res.end(content);
   } catch {
-    // SPA fallback.
+    // SPA fallback CHỈ cho yêu cầu điều hướng của trình duyệt (Accept: text/html, không có phần mở rộng tệp);
+    // tài nguyên không tồn tại trả 404 thật để công cụ giám sát/quét không bị nhiễu (L-07).
+    const wantsHtml = String(req.headers.accept ?? '').includes('text/html');
+    const looksLikeFile = /\.[a-z0-9]{1,8}$/i.test(pathname);
+    if (!wantsHtml || looksLikeFile) {
+      sendJson(res, 404, { error: 'Không tìm thấy tài nguyên', path: pathname });
+      return;
+    }
     try {
       const html = await readFile(join(WEB_ROOT, 'index.html'));
       res.writeHead(200, { 'Content-Type': MIME['.html'], 'Cache-Control': 'no-cache' });

@@ -8,6 +8,9 @@
  * Cộng với hợp đồng adapter (A.1), bộ đọc GeoTIFF, bộ ghi PNG, bảng mặn nhập tay,
  * bộ đệm thời tiết (tiêu chí 8) và lô mẫu (F-06).
  */
+process.env.SUPER_ADMIN_PASSWORD ??= 'KiemThu-SAdmin-2026';
+process.env.DEMO_ACCOUNT_PASSWORD ??= '123456';
+process.env.DATA_ENCRYPTION_KEY ??= '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, readdirSync, readFileSync, statSync } from 'node:fs';

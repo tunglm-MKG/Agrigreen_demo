@@ -20,13 +20,13 @@
  */
 import { createHash, timingSafeEqual } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
+import { clientIp, hitRateLimit, isRateLimited } from './rateLimit.ts';
 
 const COOKIE_NAME = 'mg_access';
 /** Số lần nhập sai tối đa trong một cửa sổ thời gian, tính theo IP. */
 const MAX_ATTEMPTS = 8;
 const WINDOW_MS = 10 * 60 * 1000;
 
-const attempts = new Map<string, { count: number; resetAt: number }>();
 
 export function accessCode(): string | null {
   const code = process.env.DEMO_ACCESS_CODE?.trim();
@@ -69,26 +69,19 @@ export function hasAccess(req: IncomingMessage): boolean {
   return Boolean(cookie) && safeEqual(cookie, fingerprint(code));
 }
 
+// Đánh giá bảo mật 24/09/2026 (H-04): IP lấy qua clientIp() — chỉ tin X-Forwarded-For khi biết số lớp proxy
+// (TRUSTED_PROXY_HOPS), phần tử đầu do client tự đặt không còn dùng; bộ đếm nằm trong SQLite (bền qua restart,
+// dùng chung giữa các máy) thay cho Map trong RAM.
 function clientKey(req: IncomingMessage): string {
-  const forwarded = (req.headers['x-forwarded-for'] as string | undefined)?.split(',')[0]?.trim();
-  return forwarded || req.socket.remoteAddress || 'unknown';
+  return `gate:${clientIp(req)}`;
 }
 
 function throttled(key: string): boolean {
-  const now = Date.now();
-  const entry = attempts.get(key);
-  if (!entry || now > entry.resetAt) return false;
-  return entry.count >= MAX_ATTEMPTS;
+  try { return isRateLimited(key, MAX_ATTEMPTS, WINDOW_MS).limited; } catch { return false; }
 }
 
 function recordFailure(key: string): void {
-  const now = Date.now();
-  const entry = attempts.get(key);
-  if (!entry || now > entry.resetAt) {
-    attempts.set(key, { count: 1, resetAt: now + WINDOW_MS });
-    return;
-  }
-  entry.count += 1;
+  try { hitRateLimit(key, MAX_ATTEMPTS, WINDOW_MS); } catch { /* CSDL chưa sẵn sàng — không chặn trang */ }
 }
 
 /** Đằng sau Render/Fly luôn là HTTPS; cờ Secure lấy theo header proxy. */
