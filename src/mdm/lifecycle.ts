@@ -74,17 +74,41 @@ export function polygonSelfIntersects(ring: LatLng[]): boolean {
   }
   return false;
 }
-/** Hai đa giác chồng nhau: đỉnh bên này nằm trong bên kia, tâm nằm trong, hoặc có cạnh giao nhau. */
-export function polygonsOverlap(a: LatLng[], b: LatLng[]): { vertices: number; centroidInside: boolean; edgesCross: boolean } {
-  const vertices = a.filter((p) => pointInPolygon(p, b)).length + b.filter((p) => pointInPolygon(p, a)).length;
-  const centroidInside = pointInPolygon(centroid(a), b) || pointInPolygon(centroid(b), a);
+/** Hai đoạn CẮT NHAU THẬT SỰ (giao ở phần trong của cả hai) — chạm đầu mút hay nằm chồng trên nhau KHÔNG tính. */
+export function segmentsProperlyCross(a: LatLng, b: LatLng, c: LatLng, d: LatLng): boolean {
+  const o1 = orientation(a, b, c); const o2 = orientation(a, b, d); const o3 = orientation(c, d, a); const o4 = orientation(c, d, b);
+  return o1 !== 0 && o2 !== 0 && o3 !== 0 && o4 !== 0 && o1 !== o2 && o3 !== o4;
+}
+/** Điểm nằm TRÊN biên đa giác (trên một cạnh hoặc trùng đỉnh). */
+export function pointOnBoundary(p: LatLng, ring: LatLng[]): boolean {
+  for (let i = 0; i < ring.length; i += 1) {
+    const a = ring[i]; const b = ring[(i + 1) % ring.length];
+    if (orientation(a, b, p) === 0 && onSegment(a, b, p)) return true;
+  }
+  return false;
+}
+/** Điểm nằm HẲN BÊN TRONG (không tính biên). */
+export function pointStrictlyInside(p: LatLng, ring: LatLng[]): boolean {
+  return !pointOnBoundary(p, ring) && pointInPolygon(p, ring);
+}
+/**
+ * Hai đa giác CHỒNG LẤN (có phần diện tích chung): đỉnh bên này nằm hẳn trong bên kia, tâm nằm hẳn trong,
+ * hoặc có cạnh cắt nhau thật sự. Thửa LIỀN KỀ chung cạnh/chung đỉnh KHÔNG bị coi là chồng lấn
+ * (review 24/09/2026, R4) — địa chính cho phép hai thửa kề nhau.
+ */
+export function polygonsOverlap(a: LatLng[], b: LatLng[]): { vertices: number; centroidInside: boolean; edgesCross: boolean; touches: boolean } {
+  const vertices = a.filter((p) => pointStrictlyInside(p, b)).length + b.filter((p) => pointStrictlyInside(p, a)).length;
+  const centroidInside = pointStrictlyInside(centroid(a), b) || pointStrictlyInside(centroid(b), a);
   let edgesCross = false;
+  let touches = false;
   outer: for (let i = 0; i < a.length; i += 1) {
     for (let j = 0; j < b.length; j += 1) {
-      if (segmentsIntersect(a[i], a[(i + 1) % a.length], b[j], b[(j + 1) % b.length])) { edgesCross = true; break outer; }
+      const p = a[i]; const q = a[(i + 1) % a.length]; const r = b[j]; const s = b[(j + 1) % b.length];
+      if (segmentsProperlyCross(p, q, r, s)) { edgesCross = true; break outer; }
+      if (segmentsIntersect(p, q, r, s)) touches = true;
     }
   }
-  return { vertices, centroidInside, edgesCross };
+  return { vertices, centroidInside, edgesCross, touches };
 }
 
 /**

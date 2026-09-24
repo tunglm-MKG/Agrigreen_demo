@@ -14,6 +14,43 @@ import { nowIso, sequenceCode, uuid } from '../../platform/util/ids.ts';
 import { logEvent, type AuditActor } from '../../platform/audit/audit.ts';
 import { haversineKm } from '../../platform/geo/geo.ts';
 import { recordPlatformFee } from '../../erp/finance/service.ts';
+import { forbidden } from '../../platform/http/router.ts';
+
+/**
+ * Phạm vi của người gọi (review 24/09/2026, R2): tài khoản gắn HTX chỉ thấy/sửa lệnh thuê mà HTX mình
+ * là BÊN THUÊ hoặc BÊN CHO THUÊ (HTX sở hữu máy). `htxId = null` = không ràng buộc (quản trị, DCRD).
+ * Sàn cho thuê chéo HTX nên KHÔNG chặn theo "máy của HTX khác"; chặn theo vai trò trong giao dịch.
+ */
+export interface RentalScope { htxId: string | null }
+const OPEN_SCOPE: RentalScope = { htxId: null };
+
+interface OrderParties { renter_htx_id: string; owner_htx_id: string | null; status: string }
+function orderParties(orderId: string): OrderParties | null {
+  return one<OrderParties>(
+    `SELECT o.renter_htx_id, m.htx_id AS owner_htx_id, o.status
+     FROM rental_orders o JOIN rental_listings l ON l.id = o.listing_id JOIN machines m ON m.id = l.machine_id WHERE o.id = ?`,
+    [orderId],
+  );
+}
+function partyRole(parties: OrderParties, scope: RentalScope): 'renter' | 'owner' | 'both' | 'none' | 'open' {
+  if (!scope.htxId) return 'open';
+  const renter = parties.renter_htx_id === scope.htxId;
+  const owner = parties.owner_htx_id === scope.htxId;
+  return renter && owner ? 'both' : renter ? 'renter' : owner ? 'owner' : 'none';
+}
+/** Bên thuê chỉ được huỷ khi mới đặt lịch hoặc mở tranh chấp; bên cho thuê điều khiển tiến trình thực hiện. */
+const RENTER_TRANSITIONS: Record<string, OrderStatus[]> = { dat_lich: ['huy'], xac_nhan: ['tranh_chap'], thuc_hien: ['tranh_chap'] };
+const OWNER_TRANSITIONS: Record<string, OrderStatus[]> = { dat_lich: ['xac_nhan', 'huy'], xac_nhan: ['thuc_hien', 'huy', 'tranh_chap'], thuc_hien: ['hoan_thanh', 'tranh_chap'] };
+function assertMayAdvance(parties: OrderParties, next: OrderStatus, scope: RentalScope): void {
+  const role = partyRole(parties, scope);
+  if (role === 'open') return;
+  if (role === 'none') throw forbidden('Bạn không phải bên thuê hay bên cho thuê của lệnh này.');
+  const allowed = new Set<OrderStatus>([
+    ...(role === 'renter' || role === 'both' ? RENTER_TRANSITIONS[parties.status] ?? [] : []),
+    ...(role === 'owner' || role === 'both' ? OWNER_TRANSITIONS[parties.status] ?? [] : []),
+  ]);
+  if (!allowed.has(next)) throw forbidden(`Vai trò ${role === 'renter' ? 'bên thuê' : 'bên cho thuê'} không được chuyển lệnh từ "${parties.status}" sang "${next}".`);
+}
 
 export const ORDER_FLOW = ['dat_lich', 'xac_nhan', 'thuc_hien', 'hoan_thanh'] as const;
 export type OrderStatus = (typeof ORDER_FLOW)[number] | 'tranh_chap' | 'huy';
@@ -112,7 +149,9 @@ export function searchListings(query: {
 export function bookOrder(
   input: { listingId: string; renterHtxId: string; plotId?: string; areaHa: number; from: string; to: string },
   actor: AuditActor = {},
+  scope: RentalScope = OPEN_SCOPE,
 ): Record<string, unknown> {
+  if (scope.htxId && input.renterHtxId !== scope.htxId) throw forbidden('Chỉ đặt thuê được cho hợp tác xã của mình.');
   const listing = one<{ id: string; price_per_ha: number; price_per_day: number; status: string }>(
     'SELECT id, price_per_ha, price_per_day, status FROM rental_listings WHERE id = ?',
     [input.listingId],
@@ -169,12 +208,15 @@ export function advanceOrder(
   id: string,
   next: OrderStatus,
   actor: AuditActor = {},
+  scope: RentalScope = OPEN_SCOPE,
 ): Record<string, unknown> {
   const before = one<{ id: string; status: string; amount: number; platform_fee: number; renter_htx_id: string }>(
     'SELECT * FROM rental_orders WHERE id = ?',
     [id],
   );
   if (!before) throw new Error('Không tìm thấy lệnh thuê');
+  const parties = orderParties(id);
+  if (parties) assertMayAdvance(parties, next, scope);
   const allowed = ALLOWED_TRANSITIONS[before.status] ?? [];
   if (!allowed.includes(next)) {
     throw new Error(`Không thể chuyển trạng thái từ "${before.status}" sang "${next}".`);
@@ -205,9 +247,14 @@ export function advanceOrder(
   return after;
 }
 
-export function listOrders(filter: { htxId?: string; status?: string } = {}): Record<string, unknown>[] {
+export function listOrders(filter: { htxId?: string; status?: string } = {}, scope: RentalScope = OPEN_SCOPE): Record<string, unknown>[] {
   const clauses: string[] = [];
   const params: unknown[] = [];
+  if (scope.htxId) {
+    // Tài khoản HTX: chỉ lệnh mà mình là bên thuê hoặc bên cho thuê.
+    clauses.push('(o.renter_htx_id = ? OR m.htx_id = ?)');
+    params.push(scope.htxId, scope.htxId);
+  }
   if (filter.htxId) {
     clauses.push('o.renter_htx_id = ?');
     params.push(filter.htxId);
@@ -238,9 +285,12 @@ export function listOrders(filter: { htxId?: string; status?: string } = {}): Re
 export function openDispute(
   input: { orderId: string; reason: string; detail?: string },
   actor: AuditActor = {},
+  scope: RentalScope = OPEN_SCOPE,
 ): Record<string, unknown> {
   const order = one<{ id: string; status: string }>('SELECT id, status FROM rental_orders WHERE id = ?', [input.orderId]);
   if (!order) throw new Error('Không tìm thấy lệnh thuê');
+  const parties = orderParties(input.orderId);
+  if (parties && partyRole(parties, scope) === 'none') throw forbidden('Chỉ bên thuê hoặc bên cho thuê mới mở được khiếu nại cho lệnh này.');
   const record = {
     id: uuid(),
     order_id: input.orderId,
@@ -275,10 +325,17 @@ export function resolveDispute(
   return after;
 }
 
-export function listDisputes(status?: string): Record<string, unknown>[] {
-  return status
-    ? all('SELECT d.*, o.code AS order_code FROM rental_disputes d JOIN rental_orders o ON o.id = d.order_id WHERE d.status = ? ORDER BY d.created_at DESC', [status])
-    : all('SELECT d.*, o.code AS order_code FROM rental_disputes d JOIN rental_orders o ON o.id = d.order_id ORDER BY d.created_at DESC');
+export function listDisputes(status?: string, scope: RentalScope = OPEN_SCOPE): Record<string, unknown>[] {
+  const clauses: string[] = [];
+  const params: unknown[] = [];
+  if (status) { clauses.push('d.status = ?'); params.push(status); }
+  if (scope.htxId) { clauses.push('(o.renter_htx_id = ? OR m.htx_id = ?)'); params.push(scope.htxId, scope.htxId); }
+  return all(
+    `SELECT d.*, o.code AS order_code FROM rental_disputes d
+     JOIN rental_orders o ON o.id = d.order_id JOIN rental_listings l ON l.id = o.listing_id JOIN machines m ON m.id = l.machine_id
+     ${clauses.length ? `WHERE ${clauses.join(' AND ')}` : ''} ORDER BY d.created_at DESC`,
+    params,
+  );
 }
 
 export function marketplaceDashboard(): Record<string, unknown> {

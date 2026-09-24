@@ -10,7 +10,7 @@
 import { all, insert, one, run, update } from '../../platform/db/db.ts';
 import { nowIso, sequenceCode, uuid } from '../../platform/util/ids.ts';
 import { logEvent, type AuditActor } from '../../platform/audit/audit.ts';
-import { runSync } from '../../platform/sync/sync.ts';
+import { runSync, registerRetryHandler } from '../../platform/sync/sync.ts';
 
 // ---------------------------------------------------------------------------
 // FN-03 — Cây cấu trúc phân cấp dữ liệu tổ chức khuyến nông (3 cấp)
@@ -412,14 +412,17 @@ export function dashboard(): Record<string, unknown> {
 // FN-07 — Liên thông dữ liệu App HTX (2 chiều)
 // ---------------------------------------------------------------------------
 
-export function pushToAppHtx(actor: AuditActor = {}) {
-  return runSync({ system: 'app_htx', direction: 'outbound', dataset: 'khuyennong_content' }, () => {
-    const payload = {
-      articles: listArticles({ status: 'published' }),
-      directory: directory(),
-      prices: priceBoard(),
-    };
-    logEvent({ module: 'khuyennong', entityType: 'app_htx_push', action: 'sync', after: { articles: payload.articles.length } }, actor);
-    return { recordCount: payload.articles.length + payload.directory.length + payload.prices.length, result: payload };
-  });
+function appHtxContentPayload(actor: AuditActor = {}) {
+  const payload = {
+    articles: listArticles({ status: 'published' }),
+    directory: directory(),
+    prices: priceBoard(),
+  };
+  logEvent({ module: 'khuyennong', entityType: 'app_htx_push', action: 'sync', after: { articles: payload.articles.length } }, actor);
+  return { recordCount: payload.articles.length + payload.directory.length + payload.prices.length, result: payload };
 }
+export function pushToAppHtx(actor: AuditActor = {}) {
+  return runSync({ system: 'app_htx', direction: 'outbound', dataset: 'khuyennong_content' }, () => appHtxContentPayload(actor));
+}
+// Retry tự động (O02): chạy lại cùng dataset khi bản ghi thất bại đến hạn.
+registerRetryHandler('khuyennong_content', () => appHtxContentPayload({ name: 'retry' }));

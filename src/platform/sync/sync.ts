@@ -176,7 +176,13 @@ export function processRetries(): { retried: number; recovered: number; deadLett
   let deadLettered = 0;
   for (const row of dueRetries()) {
     const handler = retryHandlers.get(row.dataset);
-    if (!handler) continue;
+    if (!handler) {
+      // Review 24/09/2026 (O02): bỏ qua im lặng làm bản ghi "đến hạn" mãi mãi. Đưa vào dead-letter có lý do
+      // để màn Đồng bộ hiển thị và Admin xử lý tay (retryOne với handler = null).
+      update('sync_log', row.id, { status: 'dead_letter', finished_at: nowIso(), next_retry_at: null, error_message: `${row.error_message ?? ''} | Không có trình xử lý retry cho dataset "${row.dataset}"`.slice(0, 500) });
+      deadLettered += 1;
+      continue;
+    }
     retried += 1;
     const payloadRow = one<{ payload_json: string | null }>('SELECT payload_json FROM sync_log WHERE id = ?', [row.id]);
     const payload = payloadRow?.payload_json ? JSON.parse(payloadRow.payload_json) : undefined;

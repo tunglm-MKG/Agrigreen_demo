@@ -113,9 +113,13 @@ export function enforceHtxScope(ctx: Context, pathname: string): void {
     }
   }
 
-  // 4. Tham số đường dẫn.
-  for (const [pattern, kind] of PATH_ENTITY) {
-    const match = pattern.exec(pathname);
-    if (match) check(kind, decodeURIComponent(match[1]));
+  // 4. Tham số đường dẫn — kiểm trên ĐƯỜNG DẪN ĐÃ CHUẨN HOÁ và trên ROUTE ĐÃ KHỚP (mẫu + params đã parse),
+  //    nên `/inputs/purchases//ID` hay `/inputs/purchases/ID/` không lách được (review 24/09/2026, R1).
+  const canonical = ctx.routePath ? ctx.routePath.replace(/:(\w+)/g, (_, name: string) => encodeURIComponent(ctx.params[name] ?? '')) : null;
+  for (const candidate of new Set([pathname, canonical].filter((p): p is string => Boolean(p)))) {
+    for (const [pattern, kind] of PATH_ENTITY) {
+      const match = pattern.exec(candidate);
+      if (match) check(kind, decodeURIComponent(match[1]));
+    }
   }
 }

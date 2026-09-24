@@ -37,7 +37,7 @@ export const TABLE_DOMAIN: Record<string, Domain> = {
   // ---- dùng chung ----
   users: 'shared', user_roles: 'shared', user_groups: 'shared', group_permissions: 'shared', admin_scopes: 'shared',
   sessions: 'shared', event_log: 'shared', daily_snapshots: 'shared', retention_policy: 'shared', sync_log: 'shared',
-  shared_sync_cursor: 'shared', system_config: 'shared', request_log: 'shared', attachments: 'shared', notifications: 'shared',
+  shared_sync_cursor: 'shared', system_config: 'shared', schema_migrations: 'shared', request_log: 'shared', attachments: 'shared', notifications: 'shared',
   admin_units: 'shared', cooperatives: 'shared', farmers: 'shared', plots: 'shared', seasons: 'shared',
   harvest_statistics: 'shared', crop_status: 'shared', commune_crop_seasons: 'shared', commune_harvest_progress: 'shared',
   weather_observations: 'shared', facilities: 'shared', partners: 'shared', items: 'shared',
@@ -59,7 +59,7 @@ export const TABLE_DOMAIN: Record<string, Domain> = {
   // ---- ERP ----
   parameters: 'erp', parameter_sets: 'erp', candidate_hubs: 'erp', scenarios: 'erp', scenario_hubs: 'erp', simulation_results: 'erp',
   sensitivity_results: 'erp', hub_handovers: 'erp', purchase_orders: 'erp', sales_orders: 'erp', inbound_notices: 'erp', weighings: 'erp',
-  goods_receipts: 'erp', goods_issues: 'erp', stock_lots: 'erp', storage_zones: 'erp', env_readings: 'erp', env_thresholds: 'erp',
+  goods_receipts: 'erp', goods_issues: 'erp', stock_lots: 'erp', stock_movements: 'erp', issue_allocations: 'erp', storage_zones: 'erp', env_readings: 'erp', env_thresholds: 'erp',
   env_alerts: 'erp', stocktakes: 'erp', trips: 'erp', trip_documents: 'erp', ledger_entries: 'erp', revenue_rules: 'erp', mrv_records: 'erp',
   straw_contracts: 'erp', straw_purchase_tickets: 'erp', vessels: 'erp',
   // ---- hiện trường ----

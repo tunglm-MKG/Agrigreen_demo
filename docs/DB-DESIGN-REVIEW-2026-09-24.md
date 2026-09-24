@@ -16,7 +16,7 @@
 | 8 | Chỉ mục | **Yếu — cần xử lý** | 14 chỉ mục tường minh cho 105 bảng; 96 bảng không có chỉ mục nào ngoài khoá chính/UNIQUE. Cột lọc nhiều nhất trong mã (`htx_id` 39 truy vấn, `user_id`, `facility_id`, `plan_id`, `crop_cycle_id`, `recipient_user_id`) đều chưa có chỉ mục. |
 | 9 | Phân vùng schema | **Tốt** | 7 tệp theo hệ thống con (dùng chung 34 bảng, ERP 29, HTX 16, KN 14, CGH 7, Hiện trường 7, GIS 5); test bắt bảng mới chưa xếp miền; luồng dùng chung khai báo chủ sở hữu/người nhận. Đánh đổi là điểm 4 ở trên. |
 | 10 | Bảo mật | **Trung bình** | Xác thực, phân quyền, phạm vi HTX, nhật ký append-only, che số điện thoại đều có. **Mật khẩu băm SHA-256 + salt một vòng** (không phải KDF) — chống dò yếu; dữ liệu cá nhân (SĐT, CCCD, email) lưu rõ; chưa mã hoá tệp CSDL. |
-| 11 | Sao lưu & phục hồi | **Chưa có** | Không script sao lưu, không lịch, không kiểm tra khôi phục. Có WAL, chính sách lưu trữ nhật ký/snapshot và dọn `request_log`. Tệp `mekonggreen.legacy-single-file.db` 9,1 MB còn nằm trong `data/`. |
+| 11 | Sao lưu & phục hồi | **Chưa có** | Không script sao lưu, không lịch, không kiểm tra khôi phục. Có journal SQLite, chính sách lưu trữ nhật ký/snapshot và dọn `request_log`. Tệp `mekonggreen.legacy-single-file.db` 9,1 MB còn nằm trong `data/`. |
 
 Kết luận: nền tảng thiết kế hợp lý (khoá chính, chuẩn hoá, phân miền, truy vết). Ba việc phải làm trước khi dùng dữ liệu thật: **chỉ mục cho cột lọc**, **sao lưu có kiểm tra khôi phục**, và **bù toàn vẹn tham chiếu xuyên miền** (kèm nâng thuật toán băm mật khẩu).
 
@@ -78,7 +78,7 @@ Kết luận: nền tảng thiết kế hợp lý (khoá chính, chuẩn hoá, p
 ### 9. Phân vùng schema
 
 - Tách 7 tệp theo hệ thống con, ATTACH vào một kết nối, WAL từng tệp; `TABLE_DOMAIN` là nguồn sự thật và test bắt bảng chưa xếp miền; `SHARED_FLOWS` (26 luồng) ghi rõ chủ sở hữu, đồng tác giả và người nhận của từng bảng dùng chung.
-- Ưu điểm: sao lưu/khôi phục theo miền, dễ tách dịch vụ sau này, ranh giới dữ liệu rõ. Nhược điểm: mất khoá ngoại xuyên miền (mục 4) và giao dịch xuyên tệp phụ thuộc vào SQLite ATTACH (vẫn nguyên tử trong một kết nối, nhưng không còn nếu tách tiến trình).
+- Ưu điểm: sao lưu/khôi phục theo miền, dễ tách dịch vụ sau này, ranh giới dữ liệu rõ. Nhược điểm: mất khoá ngoại xuyên miền (mục 4) và giao dịch xuyên tệp phụ thuộc vào SQLite ATTACH. **Đính chính (review kiến trúc 24/09/2026, A01):** với WAL, SQLite KHÔNG bảo đảm COMMIT nguyên tử xuyên tệp khi máy chủ crash giữa chừng — một tệp có thể đã commit, tệp khác chưa. Từ bản này các tệp chạy `journal_mode = TRUNCATE` (super-journal) nên COMMIT xuyên tệp là nguyên tử cả khi crash; đổi lại mất lợi ích đồng thời của WAL, vốn không dùng đến vì ứng dụng chỉ có một kết nối đồng bộ. Số liệu ở bảng tóm tắt (3 CHECK, 14 chỉ mục) đếm trong văn bản lược đồ tại thời điểm rà soát; đo trên tệp thật của commit đó là 0 CHECK và 17 chỉ mục khai báo riêng.
 - Còn tệp `mekonggreen.legacy-single-file.db` (9,1 MB, 99 bảng) trong `data/` — bản cũ trước khi tách, nên chuyển vào thư mục sao lưu.
 
 ### 10. Bảo mật dữ liệu

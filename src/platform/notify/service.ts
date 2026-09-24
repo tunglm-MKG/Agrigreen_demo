@@ -251,7 +251,15 @@ export function overrideSender(channel: Channel, sender: Sender | null): void {
   else delete SENDERS[channel];
 }
 
-export async function processOutbox(limit = 50): Promise<{ sent: number; failed: number; skipped: number }> {
+let outboxBusy = false;
+const LEASE_MS = 5 * 60_000;
+export async function processOutbox(limit = 50): Promise<{ sent: number; failed: number; skipped: number; busy?: boolean }> {
+  // Review 24/09/2026 (O02): một lượt đang chạy (webhook chậm) thì lượt sau không được lấy trùng dòng.
+  if (outboxBusy) return { sent: 0, failed: 0, skipped: 0, busy: true };
+  outboxBusy = true;
+  try {
+  // Lease hết hạn (tiến trình trước dừng giữa chừng) → trả về hàng đợi.
+  run("UPDATE notifications SET status = 'cho_gui' WHERE status = 'dang_gui' AND (claimed_at IS NULL OR claimed_at < ?)", [new Date(Date.now() - LEASE_MS).toISOString()]);
   // Kênh vừa được cấu hình thì các dòng đang chờ cấu hình phải được gửi.
   const config = channelConfig();
   if (config.zaloToken) run(`UPDATE notifications SET status = 'cho_gui' WHERE channel = 'zalo' AND status = 'cho_cau_hinh'`);
@@ -263,12 +271,15 @@ export async function processOutbox(limit = 50): Promise<{ sent: number; failed:
      WHERE n.status = 'cho_gui' AND n.attempts < ? ORDER BY n.created_at LIMIT ?`,
     [MAX_ATTEMPTS, limit],
   );
+  // Claim: đánh dấu đang gửi TRƯỚC khi await, để lượt khác/tiến trình khác không lấy lại cùng dòng.
+  const claimedAt = nowIso();
+  for (const row of rows) run("UPDATE notifications SET status = 'dang_gui', claimed_at = ? WHERE id = ? AND status = 'cho_gui'", [claimedAt, row.id]);
   let sent = 0;
   let failed = 0;
   let skipped = 0;
   for (const row of rows) {
     const sender = SENDERS[row.channel];
-    if (!sender) { skipped += 1; continue; }
+    if (!sender) { skipped += 1; update('notifications', row.id, { status: 'cho_gui', claimed_at: null }); continue; }
     try {
       await sender(row, { id: row.recipient_user_id, phone: row.phone, zalo_user_id: row.zalo_user_id, email: row.email });
       const values: Record<string, unknown> = { status: 'da_gui', sent_at: nowIso(), attempts: row.attempts + 1, last_error: null };
@@ -286,6 +297,9 @@ export async function processOutbox(limit = 50): Promise<{ sent: number; failed:
     }
   }
   return { sent, failed, skipped };
+  } finally {
+    outboxBusy = false;
+  }
 }
 
 // ---------------------------------------------------------------------------

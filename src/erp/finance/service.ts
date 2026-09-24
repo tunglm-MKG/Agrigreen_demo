@@ -91,21 +91,23 @@ export function reconciliation(filter: { from?: string; to?: string; facilityId?
   const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
 
   const byAccount = all(`SELECT account, status, COUNT(*) AS n, COALESCE(SUM(amount),0) AS total FROM ledger_entries ${where} GROUP BY account, status`, params);
+  // Review 24/09/2026 (D03): cùng bộ lọc thời gian/kho cho MỌI bảng con, không chỉ byAccount.
+  const extra = clauses.length ? ` AND ${clauses.map((c) => `l.${c}`).join(' AND ')}` : '';
   const payablesByHtx = all(
     `SELECT c.code, c.name, COALESCE(SUM(l.amount),0) AS total
      FROM ledger_entries l JOIN cooperatives c ON c.id = l.htx_id
-     WHERE l.account = 'AP' AND l.status = 'ghi_so' GROUP BY c.id ORDER BY total DESC`,
+     WHERE l.account = 'AP' AND l.status = 'ghi_so'${extra} GROUP BY c.id ORDER BY total DESC`, params,
   );
   const receivablesByPartner = all(
     `SELECT p.code, p.name, COALESCE(SUM(l.amount),0) AS total
      FROM ledger_entries l JOIN partners p ON p.id = l.partner_id
-     WHERE l.account = 'AR' AND l.status = 'ghi_so' GROUP BY p.id ORDER BY total DESC`,
+     WHERE l.account = 'AR' AND l.status = 'ghi_so'${extra} GROUP BY p.id ORDER BY total DESC`, params,
   );
   const overdue = all(
-    "SELECT * FROM ledger_entries WHERE status = 'ghi_so' AND due_date IS NOT NULL AND due_date < ? ORDER BY due_date",
-    [nowIso().slice(0, 10)],
+    `SELECT l.* FROM ledger_entries l WHERE l.status = 'ghi_so' AND l.due_date IS NOT NULL AND l.due_date < ?${extra} ORDER BY l.due_date`,
+    [nowIso().slice(0, 10), ...params],
   );
-  return { byAccount, payablesByHtx, receivablesByPartner, overdue };
+  return { byAccount, payablesByHtx, receivablesByPartner, overdue, filter };
 }
 
 /** Báo cáo P&L đơn giản theo kỳ. */
@@ -116,7 +118,9 @@ export function profitAndLoss(from: string, to: string): Record<string, unknown>
   );
   const map = Object.fromEntries(rows.map((r) => [r.account, r.total]));
   const revenue = map.REVENUE ?? 0;
-  const expense = (map.EXPENSE ?? 0) + (map.AP ?? 0);
+  // Review 24/09/2026 (D03): AP là CÔNG NỢ phải trả (hàng nhập kho chưa bán), không phải chi phí của kỳ —
+  // trước đây cộng AP vào chi phí làm lợi nhuận giảm ngay khi nhập hàng.
+  const expense = map.EXPENSE ?? 0;
   return {
     period: { from, to },
     revenue,
@@ -125,6 +129,9 @@ export function profitAndLoss(from: string, to: string): Record<string, unknown>
     capex: map.CAPEX ?? 0,
     receivables: map.AR ?? 0,
     payables: map.AP ?? 0,
+    purchasesOnCredit: map.AP ?? 0,
+    basis: 'operational_estimate',
+    note: 'Báo cáo vận hành ước tính từ sổ nghiệp vụ một dòng (AP/AR/REVENUE/EXPENSE/CAPEX) — không phải sổ kế toán kép, chưa có giá vốn hàng bán, khoá kỳ hay bút toán đảo.',
   };
 }
 

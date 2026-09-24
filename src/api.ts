@@ -11,7 +11,7 @@ import * as files from './platform/files/attachments.ts';
 import * as notifyService from './platform/notify/service.ts';
 import { PERMISSION_GROUPS, PERMISSIONS as P, ROLE_LABELS, ROLE_PERMISSIONS } from './platform/auth/rbac.ts';
 import * as users from './platform/auth/users.ts';
-import { enforceHtxScope } from './platform/auth/htxScope.ts';
+import { enforceHtxScope, isHtxBound } from './platform/auth/htxScope.ts';
 import * as sysadmin from './platform/auth/admin.ts';
 import * as scopes from './platform/auth/scopes.ts';
 import * as sharedFlows from './platform/sync/sharedFlows.ts';
@@ -809,13 +809,15 @@ export function buildApi(): Router {
       to: ctx.query.get('to') ?? undefined,
     }), P.RENTAL_READ);
   api.post('/rental/listings', (ctx) => rental.createListing(body(ctx) as never, ctx.actor), P.RENTAL_WRITE);
+  // Sàn thuê máy: quyền theo CÁC BÊN trong giao dịch (bên thuê / HTX sở hữu máy), không theo htxId người gọi gửi lên (R2).
+  const rentalScope = (ctx: Context): rental.RentalScope => ({ htxId: isHtxBound(ctx.user) ? ctx.user.htxId : null });
   api.get('/rental/orders', (ctx) =>
-    rental.listOrders({ htxId: ctx.query.get('htxId') ?? undefined, status: ctx.query.get('status') ?? undefined }), P.RENTAL_READ);
-  api.post('/rental/orders', (ctx) => rental.bookOrder(body(ctx) as never, ctx.actor), P.RENTAL_WRITE);
-  api.post('/rental/orders/:id/advance', (ctx) => rental.advanceOrder(ctx.params.id, body(ctx).status, ctx.actor), P.RENTAL_WRITE);
-  api.post('/rental/disputes', (ctx) => rental.openDispute(body(ctx) as never, ctx.actor), P.RENTAL_WRITE);
+    rental.listOrders({ htxId: ctx.query.get('htxId') ?? undefined, status: ctx.query.get('status') ?? undefined }, rentalScope(ctx)), P.RENTAL_READ);
+  api.post('/rental/orders', (ctx) => rental.bookOrder(body(ctx) as never, ctx.actor, rentalScope(ctx)), P.RENTAL_WRITE);
+  api.post('/rental/orders/:id/advance', (ctx) => rental.advanceOrder(ctx.params.id, body(ctx).status, ctx.actor, rentalScope(ctx)), P.RENTAL_WRITE);
+  api.post('/rental/disputes', (ctx) => rental.openDispute(body(ctx) as never, ctx.actor, rentalScope(ctx)), P.RENTAL_WRITE);
   api.post('/rental/disputes/:id/resolve', (ctx) => rental.resolveDispute(ctx.params.id, body(ctx) as never, ctx.actor), P.RENTAL_RESOLVE);
-  api.get('/rental/disputes', (ctx) => rental.listDisputes(ctx.query.get('status') ?? undefined), P.RENTAL_READ);
+  api.get('/rental/disputes', (ctx) => rental.listDisputes(ctx.query.get('status') ?? undefined, rentalScope(ctx)), P.RENTAL_READ);
   api.get('/rental/dashboard', () => rental.marketplaceDashboard(), P.RENTAL_READ);
 
   // ===================== ERP — Tham số mô phỏng (FN-01) =====================

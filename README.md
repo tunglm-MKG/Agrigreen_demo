@@ -72,6 +72,8 @@ Khôi phục (dừng máy chủ trước; script từ chối bản sao lưu có 
 npm run restore -- data/backups/2026-09-24T02-00-00
 ```
 
+Các tệp SQLite chạy `journal_mode = TRUNCATE` để COMMIT xuyên 7 tệp nguyên tử cả khi mất điện (đặt `SQLITE_JOURNAL_MODE=WAL` nếu muốn đổi). Mọi yêu cầu ghi chạy trong một giao dịch duy nhất cùng nhật ký và outbox. Phản hồi review kiến trúc 24/09/2026 (từng phát hiện, trạng thái, quyết định kiến trúc còn lại): [docs/ARCH-REVIEW-2026-09-24-RESPONSE.md](docs/ARCH-REVIEW-2026-09-24-RESPONSE.md).
+
 Khoá mã hoá cột CCCD nằm ở `data/.keys/data-encryption.key` (hoặc biến `DATA_ENCRYPTION_KEY`) và **không nằm trong đợt sao lưu** — sao lưu riêng. Quy trình đầy đủ (tệp, khởi động và dựng lại bảng, sao lưu, khôi phục, toàn vẹn, dung lượng, bảo mật tệp): [docs/DB-OPERATIONS.md](docs/DB-OPERATIONS.md).
 
 Diễn tập phục hồi (nên làm mỗi quý): dừng máy chủ, đổi tên thư mục `data/` hiện tại thành `data.truoc-dien-tap/`, khôi phục đợt gần nhất vào `data/` bằng lệnh trên, khởi động lại và đăng nhập kiểm tra vài màn hình; xong thì đổi tên ngược lại. Muốn kiểm tra không đụng dữ liệu đang chạy thì dùng `--target data/dien-tap` rồi mở các tệp `.db` bằng công cụ SQLite bất kỳ. Màn **GIS → Quản trị → Tích hợp → Sức khoẻ cơ sở dữ liệu** cho phép sao lưu thủ công, xem 10 đợt gần nhất, kết quả `quick_check` từng tệp và bản ghi mồ côi xuyên miền.

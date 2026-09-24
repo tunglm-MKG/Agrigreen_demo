@@ -42,7 +42,10 @@ export function allowedPortals() {
 // thuộc danh sách cho phép được xếp vào hàng đợi (localStorage) và tự gửi lại
 // với ĐÚNG khoá đó khi có mạng — máy chủ nhận hai lần cùng khoá chỉ chạy một lần.
 // ---------------------------------------------------------------------------
-const QUEUE_KEY = 'mg_offline_queue';
+// Hàng đợi TÁCH THEO NGƯỜI DÙNG (review 24/09/2026, O01): đổi tài khoản trên cùng trình duyệt không được
+// gửi thao tác của người trước bằng phiên của người sau. Khoá cũ dùng chung được chuyển sang người đang đăng nhập một lần.
+const LEGACY_QUEUE_KEY = 'mg_offline_queue';
+const queueKey = () => `mg_offline_queue:${state.user?.id ?? 'anon'}`;
 const QUEUEABLE = [
   /^\/field\/jobs\/[^/]+\/stages\/[^/]+\/(start|complete)$/,
   /^\/field\/jobs\/[^/]+\/loadings$/,
@@ -59,8 +62,24 @@ export class QueuedOffline extends Error {
   }
 }
 
-function readQueue() { try { return JSON.parse(localStorage.getItem(QUEUE_KEY) ?? '[]'); } catch { return []; } }
-function writeQueue(items) { try { localStorage.setItem(QUEUE_KEY, JSON.stringify(items)); } catch { /* đầy bộ nhớ */ } renderOfflineBar(); }
+function readQueue() {
+  try {
+    const legacy = localStorage.getItem(LEGACY_QUEUE_KEY);
+    if (legacy && state.user?.id) {
+      const items = JSON.parse(legacy).map((it) => ({ ...it, userId: state.user.id, legacy: true }));
+      localStorage.setItem(queueKey(), JSON.stringify([...JSON.parse(localStorage.getItem(queueKey()) ?? '[]'), ...items]));
+      localStorage.removeItem(LEGACY_QUEUE_KEY);
+    }
+    return JSON.parse(localStorage.getItem(queueKey()) ?? '[]');
+  } catch { return []; }
+}
+/** Trả false khi không lưu được (bộ nhớ trình duyệt đầy/bị chặn) — người gọi phải báo lỗi thay vì báo "đã xếp hàng". */
+function writeQueue(items) {
+  let ok = true;
+  try { localStorage.setItem(queueKey(), JSON.stringify(items)); } catch { ok = false; }
+  renderOfflineBar();
+  return ok;
+}
 export function pendingQueue() { return readQueue().length; }
 
 /** Lỗi HTTP có mã trạng thái và chi tiết máy chủ trả về (vd. 409 cần xác nhận, 423 khoá tạm). */
@@ -85,8 +104,8 @@ export async function api(path, options = {}) {
   } catch (error) {
     if (key && !options.noQueue && QUEUEABLE.some((pattern) => pattern.test(path))) {
       const queue = readQueue();
-      queue.push({ key, path, method, body: options.body ?? null, at: new Date().toISOString() });
-      writeQueue(queue);
+      queue.push({ key, opId: key, userId: state.user?.id ?? null, path, method, body: options.body ?? null, at: new Date().toISOString() });
+      if (!writeQueue(queue)) throw new Error('Mất mạng và KHÔNG lưu được thao tác vào bộ nhớ trình duyệt (đầy hoặc bị chặn). Giữ màn hình này và thử lại khi có mạng.');
       throw new QueuedOffline(queue.length);
     }
     throw new Error('Không kết nối được máy chủ. Kiểm tra mạng rồi thử lại.');
@@ -1010,20 +1029,30 @@ export async function flushQueue() {
   if (!queue.length) return { sent: 0, dropped: 0 };
   let sent = 0;
   let dropped = 0;
+  const me = state.user?.id ?? null;
+  const kept = [];
   while (queue.length) {
     const item = queue[0];
+    // Thao tác của tài khoản khác trên cùng máy: KHÔNG gửi bằng phiên hiện tại — giữ lại cho đúng người.
+    if (item.userId && item.userId !== me) { kept.push(item); queue = queue.slice(1); continue; }
     try {
       await api(item.path, { method: item.method, body: item.body, idempotencyKey: item.key, noQueue: true });
       sent += 1;
     } catch (error) {
       if (/Không kết nối được/.test(error.message)) break; // vẫn mất mạng — giữ lại, thử sau
-      // Lỗi nghiệp vụ (400): gửi lại cũng không qua — bỏ khỏi hàng đợi và báo.
+      // Hết phiên / không đủ quyền / máy chủ lỗi: KHÔNG bỏ thao tác — giữ lại chờ đăng nhập lại hoặc máy chủ hồi phục.
+      if (error instanceof ApiError && (error.status === 401 || error.status === 403 || error.status >= 500)) {
+        toast(error.status >= 500 ? 'Máy chủ đang lỗi — thao tác chờ gửi được giữ lại.' : 'Phiên đã hết hoặc không đủ quyền — đăng nhập lại để gửi các thao tác chờ.', true);
+        break;
+      }
+      // Lỗi nghiệp vụ (400/409/422): gửi lại cũng không qua — bỏ khỏi hàng đợi và báo rõ.
       dropped += 1;
       toast(`Thao tác lúc ${item.at.slice(11, 16)} bị từ chối: ${error.message}`, true);
     }
     queue = queue.slice(1);
-    writeQueue(queue);
+    writeQueue([...kept, ...queue]);
   }
+  if (kept.length) writeQueue([...kept, ...queue]);
   if (sent) toast(`Đã gửi ${sent} thao tác chờ từ lúc mất mạng.`);
   return { sent, dropped };
 }

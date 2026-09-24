@@ -16,7 +16,10 @@ import {
   type DistanceResult,
   type TransportMode,
 } from '../../platform/geo/distance.ts';
-import { nowIso } from '../../platform/util/ids.ts';
+import { digest, nowIso } from '../../platform/util/ids.ts';
+
+/** Phiên bản thuật toán — đổi khi công thức chi phí/dòng chảy thay đổi để kết quả cũ không bị nhầm là tái lập được. */
+export const ENGINE_VERSION = '2026.09.24';
 import {
   buildHarvestCalendar,
   simulateFlow,
@@ -345,7 +348,16 @@ export function simulateScenario(scenarioId: string, options: SimulateOptions): 
     ...flow.notes,
   );
 
+  // Review 24/09/2026 (D04): cùng phiên bản tham số chưa đủ để tái lập — lưu kèm phiên bản thuật toán và
+  // băm của toàn bộ đầu vào sống (HTX, thống kê sản lượng, Hub ứng viên, nhà máy) tại thời điểm chạy.
+  const lineage = {
+    engineVersion: ENGINE_VERSION,
+    parameterSetVersion: params.version,
+    inputChecksum: digest({ cooperatives, stats, scenarioHubs, plant, params }),
+    inputCounts: { cooperatives: cooperatives.length, harvestStatistics: stats.length, hubs: scenarioHubs.length },
+  };
   return {
+    lineage,
     scenarioId: scenario.id,
     scenarioCode: scenario.code,
     scenarioName: scenario.name,

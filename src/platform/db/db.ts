@@ -66,7 +66,17 @@ export function db(): DatabaseSync {
       const file = domainFile(domain.code).split('\\').join('/').replace(/'/g, "''");
       instance.exec(`ATTACH DATABASE '${file}' AS ${domain.code}`);
     }
-    for (const domain of DOMAINS) instance.exec(`PRAGMA ${domain.code === 'shared' ? 'main' : domain.code}.journal_mode = WAL`);
+    // Review kiến trúc 24/09/2026 (A01): với nhiều tệp ATTACH, SQLite chỉ bảo đảm COMMIT nguyên tử
+    // XUYÊN TỆP khi máy chủ crash nếu KHÔNG dùng WAL (dùng super-journal). Ứng dụng là một tiến trình,
+    // một kết nối đồng bộ nên WAL không đem lại lợi ích đồng thời; chọn TRUNCATE + synchronous=FULL.
+    // Ghi đè bằng SQLITE_JOURNAL_MODE=WAL nếu chấp nhận đánh đổi để lấy tốc độ ghi.
+    const journalMode = /^(WAL|TRUNCATE|DELETE|PERSIST)$/i.test(process.env.SQLITE_JOURNAL_MODE ?? '') ? String(process.env.SQLITE_JOURNAL_MODE).toUpperCase() : 'TRUNCATE';
+    for (const domain of DOMAINS) {
+      const schema = domain.code === 'shared' ? 'main' : domain.code;
+      instance.exec(`PRAGMA ${schema}.journal_mode = ${journalMode}`);
+      instance.exec(`PRAGMA ${schema}.synchronous = FULL`);
+    }
+    instance.exec('PRAGMA busy_timeout = 5000');
     instance.exec('PRAGMA foreign_keys = ON');
   }
   return instance;
@@ -124,18 +134,63 @@ export function scalar<T = unknown>(sql: string, params: unknown[] = []): T | nu
   return keys.length ? (row[keys[0]] as T) : null;
 }
 
-/** Bọc một khối lệnh trong transaction; rollback nếu ném lỗi. */
+/**
+ * Bọc một khối lệnh trong transaction; rollback nếu ném lỗi. LỒNG ĐƯỢC: lớp ngoài cùng BEGIN/COMMIT,
+ * các lớp trong dùng SAVEPOINT — nên dịch vụ gọi transaction() bên trong một đơn vị công việc của
+ * yêu cầu HTTP (unitOfWork) vẫn chạy đúng và cùng commit với nhật ký/outbox (review 24/09/2026, A04).
+ */
+let depth = 0;
 export function transaction<T>(fn: () => T): T {
   const handle = db();
-  handle.exec('BEGIN');
+  const level = depth;
+  handle.exec(level === 0 ? 'BEGIN IMMEDIATE' : `SAVEPOINT sp_${level}`);
+  depth = level + 1;
   try {
     const result = fn();
-    handle.exec('COMMIT');
+    depth = level;
+    handle.exec(level === 0 ? 'COMMIT' : `RELEASE sp_${level}`);
     return result;
   } catch (error) {
-    handle.exec('ROLLBACK');
+    depth = level;
+    if (level === 0) handle.exec('ROLLBACK');
+    else { handle.exec(`ROLLBACK TO sp_${level}`); handle.exec(`RELEASE sp_${level}`); }
     throw error;
   }
+}
+export const inTransaction = (): boolean => depth > 0;
+
+/**
+ * Khoá ghi trong tiến trình: tuần tự hoá yêu cầu ghi và tác vụ nền. Một đơn vị công việc có
+ * `await` ở giữa (gửi webhook, đọc tệp) không bị yêu cầu khác chen vào cùng giao dịch SQLite.
+ */
+let writeChain: Promise<unknown> = Promise.resolve();
+export function withWriteLock<T>(fn: () => Promise<T> | T): Promise<T> {
+  const run = writeChain.then(() => fn(), () => fn());
+  writeChain = run.then(() => undefined, () => undefined);
+  return run;
+}
+
+/**
+ * Đơn vị công việc của MỘT yêu cầu ghi: BEGIN → guard + handler (có thể async) → COMMIT; lỗi → ROLLBACK.
+ * Dữ liệu nghiệp vụ, event_log, outbox thông báo và bản ghi idempotency cùng commit hoặc cùng huỷ.
+ */
+export async function unitOfWork<T>(fn: () => Promise<T> | T): Promise<T> {
+  return withWriteLock(async () => {
+    if (depth > 0) return fn();
+    const handle = db();
+    handle.exec('BEGIN IMMEDIATE');
+    depth = 1;
+    try {
+      const result = await fn();
+      depth = 0;
+      handle.exec('COMMIT');
+      return result;
+    } catch (error) {
+      depth = 0;
+      try { handle.exec('ROLLBACK'); } catch { /* giao dịch đã bị huỷ bởi lỗi trước đó */ }
+      throw error;
+    }
+  });
 }
 
 /**

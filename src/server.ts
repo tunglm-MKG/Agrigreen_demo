@@ -7,6 +7,13 @@ import { readFile, stat } from 'node:fs/promises';
 import { extname, join, normalize, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { migrate } from './platform/db/schema.ts';
+import { importLegacyDatabase } from './platform/db/legacy.ts';
+import { withWriteLock } from './platform/db/db.ts';
+import { processRetries } from './platform/sync/sync.ts';
+import { captureSnapshot } from './platform/audit/audit.ts';
+import { ensureOpeningLots } from './erp/warehouse/service.ts';
+import { one } from './platform/db/db.ts';
+import { today } from './platform/util/ids.ts';
 import { HttpError, sendJson, friendlyError } from './platform/http/router.ts';
 import { buildApi } from './api.ts';
 import { gateEnabled, handleGate } from './platform/http/accessGate.ts';
@@ -37,6 +44,8 @@ const MIME: Record<string, string> = {
 
 export async function start(port = Number(process.env.PORT ?? 4173)): Promise<void> {
   migrate();
+  // Tệp hợp nhất cũ (trước 09/2026) → nhập vào bộ tệp mới TRƯỚC khi xét seed (A06).
+  importLegacyDatabase();
   seedIfEmpty();
   syncSystemGroups();
   // Super Admin toàn hệ thống (SAdmin) — đổi tên tài khoản `admin` cũ nếu còn.
@@ -46,6 +55,9 @@ export async function start(port = Number(process.env.PORT ?? 4173)): Promise<vo
   // Nông hộ, thửa, mùa vụ, nhật ký mẫu cho App HTX khi CSDL chưa có (chỉ chạy một lần).
   seedHtxFieldDemoIfEmpty();
   ensureXaScopeAssignments();
+  // Kho có tổng tồn nhưng chưa có lô (seed) → lô tồn đầu kỳ có nguồn gốc đánh dấu (A03/R3).
+  const openingLots = ensureOpeningLots();
+  if (openingLots) console.log(`[warehouse] đã tạo ${openingLots} lô tồn đầu kỳ cho kho chưa có lô.`);
   const api = buildApi();
 
   // Tiến trình nền: quét cảnh báo mỗi 10 phút, gửi outbox mỗi 30 giây, dọn khoá
@@ -55,11 +67,15 @@ export async function start(port = Number(process.env.PORT ?? 4173)): Promise<vo
   const scan = () => {
     try { runAlertScan(); purgeExpired(); } catch (error) { console.error('[notify] quét lỗi:', (error as Error).message); }
     try { escalateOverdueTasks(); scanWatchlists(); runDueReportSchedules(); } catch (error) { console.error('[brd] quét lỗi:', (error as Error).message); }
+    // Retry đồng bộ đến hạn và snapshot mỗi ngày một lần — trước đây chỉ chạy khi gọi API (O02/A05).
+    try { const r = processRetries(); if (r.retried || r.deadLettered) console.log(`[sync] retry: ${r.retried} chạy lại, ${r.recovered} hồi phục, ${r.deadLettered} dead-letter`); } catch (error) { console.error('[sync] retry lỗi:', (error as Error).message); }
+    try { if (!one('SELECT 1 FROM daily_snapshots WHERE snapshot_date = ? LIMIT 1', [today()])) captureSnapshot(); } catch (error) { console.error('[audit] snapshot lỗi:', (error as Error).message); }
   };
-  scan();
-  setInterval(scan, 10 * 60_000).unref();
+  // Tác vụ nền đi qua khoá ghi để không chen vào giao dịch của một yêu cầu đang dở (A04).
+  void withWriteLock(scan);
+  setInterval(() => { void withWriteLock(scan); }, 10 * 60_000).unref();
   // Rà toàn vẹn CSDL mỗi ngày (bản ghi mồ côi xuyên miền, quick_check từng tệp) — nguyên tắc 4.
-  setInterval(() => { try { dailyIntegrityScan(); } catch (error) { console.error('[db] rà toàn vẹn lỗi:', (error as Error).message); } }, 60 * 60_000).unref();
+  setInterval(() => { void withWriteLock(() => { try { dailyIntegrityScan(); } catch (error) { console.error('[db] rà toàn vẹn lỗi:', (error as Error).message); } }); }, 60 * 60_000).unref();
   // Sao lưu tự động: BACKUP_INTERVAL_HOURS (mặc định 24, 0 = tắt), BACKUP_DIR, BACKUP_KEEP — nguyên tắc 11.
   const backupHours = Number(process.env.BACKUP_INTERVAL_HOURS ?? 24);
   if (backupHours > 0) {
@@ -69,10 +85,11 @@ export async function start(port = Number(process.env.PORT ?? 4173)): Promise<vo
         console.log(`[db] ${manifest.ok ? 'đã sao lưu' : 'SAO LƯU LỖI'} → ${dir} (${manifest.durationMs} ms${pruned.length ? `, xoá ${pruned.length} đợt cũ` : ''})`);
       } catch (error) { console.error('[db] sao lưu lỗi:', (error as Error).message); }
     };
-    setTimeout(runBackup, 5 * 60_000).unref();
-    setInterval(runBackup, backupHours * 3_600_000).unref();
+    // Trong khoá ghi: 7 lệnh VACUUM INTO chạy liền nhau trên cùng kết nối, không có giao dịch nào chen giữa → điểm sao lưu nhất quán xuyên tệp.
+    setTimeout(() => { void withWriteLock(runBackup); }, 5 * 60_000).unref();
+    setInterval(() => { void withWriteLock(runBackup); }, backupHours * 3_600_000).unref();
   }
-  setInterval(() => { processOutbox().catch((error) => console.error('[notify] outbox lỗi:', error.message)); }, 30_000).unref();
+  setInterval(() => { withWriteLock(() => processOutbox()).catch((error) => console.error('[notify] outbox lỗi:', error.message)); }, 30_000).unref();
 
   const server = createServer(async (req, res) => {
     const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);

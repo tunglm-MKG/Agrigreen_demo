@@ -13,7 +13,7 @@
 import { all, insert, one, run, update } from '../../platform/db/db.ts';
 import { nowIso, sequenceCode, uuid } from '../../platform/util/ids.ts';
 import { logEvent, type AuditActor } from '../../platform/audit/audit.ts';
-import { runSync } from '../../platform/sync/sync.ts';
+import { runSync, registerRetryHandler } from '../../platform/sync/sync.ts';
 
 // ---------------------------------------------------------------------------
 // QT-02 — Ngưỡng cảnh báo cung–cầu
@@ -518,6 +518,12 @@ export function dashboard(seasonId?: string): Record<string, unknown> {
 // ---------------------------------------------------------------------------
 // FN-07 — Tích hợp App HTX (đồng bộ tình trạng máy, diện tích, lịch mùa vụ)
 // ---------------------------------------------------------------------------
+
+// Retry tự động (O02): bản ghi cgh_operational thất bại đến hạn được chạy lại với đúng payload đã lưu.
+registerRetryHandler('cgh_operational', (payload) => {
+  const outcome = syncFromAppHtx((payload ?? {}) as Parameters<typeof syncFromAppHtx>[0], { name: 'retry' }) as { recordCount?: number };
+  return { recordCount: Number(outcome?.recordCount ?? 0) };
+});
 
 export function syncFromAppHtx(
   payload: {

@@ -523,6 +523,8 @@ registerPage('gis-admin', {
         el('div', { class: 'chip-row' }, [
           ...health.integrity.map((d) => badge(`${d.domain}: ${d.result === 'ok' ? 'toàn vẹn' : d.result}`, d.result === 'ok' ? 'good' : 'bad')),
           badge(`${health.indexes.reduce((a, d) => a + d.explicit, 0)} chỉ mục`, 'neutral'),
+          health.schema ? badge(`lược đồ ${health.schema.version}${health.schema.upToDate ? '' : ' — chưa áp, khởi động lại'}`, health.schema.upToDate ? 'good' : 'warn') : null,
+          health.stock ? badge(health.stock.length ? `${health.stock.length} kho lệch tổng tồn/lô` : 'tồn kho khớp lô', health.stock.length ? 'bad' : 'good') : null,
         ]),
         el('h4', { text: `Tham chiếu xuyên miền (${health.orphans.length} quan hệ không có khoá ngoại ở tầng SQLite — kiểm ở tầng ghi + rà hằng ngày)` }),
         health.orphans.some((o) => o.orphans > 0)

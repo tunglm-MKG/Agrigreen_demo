@@ -19,7 +19,7 @@
  */
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { extname, join } from 'node:path';
+import { extname, isAbsolute, join } from 'node:path';
 import { all, insert, one, update } from '../db/db.ts';
 import { nowIso, uuid } from '../util/ids.ts';
 import { logEvent, type AuditActor } from '../audit/audit.ts';
@@ -232,7 +232,7 @@ export function saveAttachment(input: SaveInput, actor: AuditActor = {}): Record
   const record = {
     id: uuid(), entity_type: input.entityType, entity_id: input.entityId,
     file_name: input.fileName || `anh${ext}`, mime: input.mime, size_bytes: input.data.length, sha256,
-    storage_path: path, taken_at: exif.takenAt, lat, lng,
+    storage_path: `${sha256}${ext}`, taken_at: exif.takenAt, lat, lng,   // khoá tương đối với UPLOAD_DIR — phục hồi sang máy khác vẫn đọc được (O03)
     location_source: exif.lat !== null ? 'exif' : (input.deviceLat !== undefined ? 'thiet_bi' : null),
     distance_m: distanceM, flags_json: JSON.stringify(flags), note: input.note ?? null,
     uploaded_by: actor.name ?? null, uploaded_at: nowIso(),
@@ -279,8 +279,16 @@ export function attachmentCounts(entityType: string, entityIds: string[]): Map<s
 export function readAttachment(id: string): { mime: string; fileName: string; data: Buffer } | null {
   const row = one<{ mime: string; file_name: string; storage_path: string }>(
     'SELECT mime, file_name, storage_path FROM attachments WHERE id = ? AND deleted_at IS NULL', [id]);
-  if (!row || !existsSync(row.storage_path)) return null;
-  return { mime: row.mime, fileName: row.file_name, data: readFileSync(row.storage_path) };
+  if (!row) return null;
+  const path = resolveStoragePath(row.storage_path);
+  if (!path) return null;
+  return { mime: row.mime, fileName: row.file_name, data: readFileSync(path) };
+}
+
+/** Khoá tương đối (mới) hoặc đường dẫn tuyệt đối (bản ghi cũ): thử theo UPLOAD_DIR trước, rồi đường dẫn gốc. */
+export function resolveStoragePath(stored: string): string | null {
+  const candidates = isAbsolute(stored) ? [join(uploadDir(), stored.split(/[\\/]/).pop() ?? ''), stored] : [join(uploadDir(), stored)];
+  return candidates.find((p) => existsSync(p)) ?? null;
 }
 
 /** Xoá mềm: bằng chứng đã nộp không biến mất khỏi lịch sử, chỉ ẩn khỏi hồ sơ. */

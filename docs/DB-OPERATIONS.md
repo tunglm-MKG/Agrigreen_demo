@@ -8,13 +8,15 @@ Cập nhật 24/09/2026 (sau rà soát 11 nguyên tắc). Áp dụng cho mọi m
 | --- | --- | --- |
 | `data/mekonggreen.shared.db` | Dữ liệu dùng chung: tài khoản, HTX, nông hộ, thửa, máy, đơn vị hành chính, nhật ký | Tệp `main` của kết nối |
 | `data/mekonggreen.{kn,htx,cgh,gis,erp,field}.db` | Sáu hệ thống con | ATTACH vào cùng kết nối khi khởi động |
-| `data/*.db-wal`, `*.db-shm` | Nhật ký WAL của SQLite | KHÔNG sao chép rời; sao lưu phải dùng `VACUUM INTO` hoặc script |
+| `data/*.db-journal` (hoặc `-wal/-shm` nếu đặt `SQLITE_JOURNAL_MODE=WAL`) | Nhật ký giao dịch SQLite | KHÔNG sao chép rời; sao lưu phải dùng `VACUUM INTO` hoặc script |
 | `data/backups/<thời điểm>/` | Đợt sao lưu: 7 tệp + `manifest.json` | Tự chạy 5 phút sau khởi động và mỗi 24 giờ |
 | `data/.keys/data-encryption.key` | Khoá AES-256 mã hoá cột CCCD | **Sao lưu riêng**, không nằm trong `data/backups/`; mất khoá là mất số CCCD |
 | `data/uploads/` | Ảnh bằng chứng (tham chiếu từ bảng `attachments`) | Sao lưu bằng công cụ tệp thông thường |
 | `archive/mekonggreen.legacy-single-file.db` | Bản một tệp trước khi tách miền (09/2026) | Chỉ để tra cứu; không được nạp |
 
-Biến môi trường: `BACKUP_DIR`, `BACKUP_KEEP` (mặc định 14), `BACKUP_INTERVAL_HOURS` (0 = tắt), `DATA_ENCRYPTION_KEY` (64 hex, thay cho tệp khoá), `SUPER_ADMIN_PASSWORD` (chỉ lần khởi động đầu), `SCRYPT_N`.
+Biến môi trường: `BACKUP_DIR`, `BACKUP_KEEP` (mặc định 14), `BACKUP_INTERVAL_HOURS` (0 = tắt), `DATA_ENCRYPTION_KEY` (64 hex, thay cho tệp khoá), `UPLOAD_DIR` (thư mục ảnh; `attachments.storage_path` là khoá tương đối với thư mục này), `SQLITE_JOURNAL_MODE` (mặc định TRUNCATE), `SUPER_ADMIN_PASSWORD` (chỉ lần khởi động đầu), `SCRYPT_N`.
+
+Nâng cấp từ bản một tệp (`data/mekonggreen.db`, trước 09/2026): chỉ cần đặt tệp cũ đúng chỗ và khởi động — `importLegacyDatabase()` sao lưu, nhập vào 7 tệp mới, đổi tên tệp cũ thành `.imported-*` và ghi `event_log`; nếu bộ tệp mới đã có dữ liệu thì KHÔNG nhập (cảnh báo trong log).
 
 ## 2. Khởi động: điều gì xảy ra với lược đồ
 
@@ -25,7 +27,8 @@ Biến môi trường: `BACKUP_DIR`, `BACKUP_KEEP` (mặc định 14), `BACKUP_I
 3. Di trú dữ liệu một lần: `evidence_json` → bảng `field_stage_evidence`; JSON ngưỡng CGH → bảng `cgh_coverage_thresholds`.
 4. **Dựng lại bảng** có định nghĩa khác lược đồ (`reconcileTables`): tạo bảng mới → chép cột chung → xoá bảng cũ → đổi tên (quy trình 12 bước của SQLite, tắt khoá ngoại trong lúc chạy). Nhờ vậy FOREIGN KEY, CHECK, NOT NULL, kiểu INTEGER mới áp được lên tệp cũ. Bảng nào dữ liệu cũ vi phạm ràng buộc mới sẽ bị **bỏ qua kèm cảnh báo** `[db] KHÔNG dựng lại được bảng …` — phải sửa dữ liệu rồi khởi động lại.
 5. Tạo lại chỉ mục (bị mất khi dựng lại) và 80 chỉ mục hiệu năng.
-6. Làm tròn cột tiền tệ về đồng; mã hoá số CCCD còn lưu rõ.
+6. Làm tròn cột tiền tệ về đồng; mã hoá số CCCD còn lưu rõ; chuyển `attachments.storage_path` tuyệt đối thành khoá tương đối; ghi phiên bản + băm lược đồ vào `schema_migrations`.
+7. Sau seed: kho có tổng tồn nhưng chưa có lô → tạo lô tồn đầu kỳ (`ton_dau_ky`) để tổng tồn luôn dựng lại được từ lô.
 
 Trước khi nâng phiên bản có thay đổi lược đồ: **sao lưu** (`npm run backup`), khởi động thử trên bản sao (`npm run restore -- <đợt> --target data/thu-nghiem`, rồi trỏ thư mục làm việc vào đó) và đọc log khởi động.
 
@@ -38,7 +41,7 @@ npm run backup -- --list
 npm run backup -- --verify data/backups/2026-09-24T02-00-00
 ```
 
-Mỗi đợt có `manifest.json`: băm SHA-256, `integrity_check`, số bảng của từng tệp. `--verify` đối chiếu lại băm và integrity; đợt hỏng bị từ chối khi khôi phục. Nên đồng bộ `data/backups/` và `data/.keys/` sang máy khác (rsync, đĩa mạng) — sao lưu cùng đĩa với máy chủ không chống được hỏng đĩa.
+Mỗi đợt có `manifest.json`: băm SHA-256, `integrity_check`, số bảng của từng tệp. Sao lưu do máy chủ chạy (lịch hoặc nút *Sao lưu ngay*) đi qua khoá ghi: 7 lệnh `VACUUM INTO` chạy liền nhau trên cùng kết nối, không giao dịch nào chen giữa → điểm sao lưu **nhất quán xuyên tệp**. `npm run backup` từ tiến trình khác chỉ nhất quán TỪNG tệp — dùng khi máy chủ đã dừng hoặc chấp nhận sai lệch nhỏ giữa các miền. `--verify` đối chiếu lại băm và integrity; đợt hỏng bị từ chối khi khôi phục. Nên đồng bộ `data/backups/` và `data/.keys/` sang máy khác (rsync, đĩa mạng) — sao lưu cùng đĩa với máy chủ không chống được hỏng đĩa.
 
 Trên giao diện: GIS → Quản trị → Tích hợp → *Sức khoẻ cơ sở dữ liệu* (Sao lưu ngay, 10 đợt gần nhất, `quick_check`, bản ghi mồ côi).
 
@@ -62,7 +65,7 @@ Diễn tập mỗi quý: khôi phục sang thư mục thử nghiệm, đăng nh�
 ## 6. Dung lượng và dọn dẹp
 
 - `retention_policy` dọn `event_log`/snapshot theo cấu hình ở GIS → Quản trị → Lưu trữ; `request_log` (chống ghi trùng) tự xoá sau 24 giờ.
-- WAL lớn bất thường (> vài chục MB) → `PRAGMA wal_checkpoint(TRUNCATE)` khi máy chủ nghỉ, hoặc khởi động lại.
+- Mặc định `journal_mode = TRUNCATE`, `synchronous = FULL`: COMMIT xuyên 7 tệp là nguyên tử cả khi mất điện (SQLite dùng super-journal; WAL không có bảo đảm này). Chỉ đặt `SQLITE_JOURNAL_MODE=WAL` khi chấp nhận rủi ro đó để lấy tốc độ ghi; khi ấy `-wal` lớn bất thường → `PRAGMA wal_checkpoint(TRUNCATE)` lúc máy chủ nghỉ.
 - `VACUUM` toàn tệp chỉ khi đã xoá lượng lớn dữ liệu; sao lưu định kỳ dùng `VACUUM INTO` nên bản sao luôn gọn.
 
 ## 7. Bảo mật tệp

@@ -11,7 +11,7 @@
 import { all, insert, one, run, transaction, update } from '../../platform/db/db.ts';
 import { digest, nowIso, sequenceCode, uuid } from '../../platform/util/ids.ts';
 import { logEvent, type AuditActor } from '../../platform/audit/audit.ts';
-import { runSync } from '../../platform/sync/sync.ts';
+import { runSync, registerRetryHandler } from '../../platform/sync/sync.ts';
 import { postEntry } from '../finance/service.ts';
 
 function nextCode(table: string, prefix: string, width = 6): string {
@@ -22,6 +22,84 @@ function nextCode(table: string, prefix: string, width = 6): string {
 // ---------------------------------------------------------------------------
 // FN-35 — Danh mục bãi/kho tập kết và khu vực lưu trữ
 // ---------------------------------------------------------------------------
+
+
+// ---------------------------------------------------------------------------
+// Review kiến trúc 24/09/2026 (A03, R3): LÔ là nguồn sự thật duy nhất của tồn kho.
+//  - mọi thay đổi remaining_tons ghi một dòng stock_movements (bất biến);
+//  - facilities.current_stock_tons là số chiếu, được dựng lại từ lô sau mỗi giao dịch;
+//  - xuất kho phải phân bổ ĐỦ lượng theo lô (issue_allocations), không có lô thì không có hàng;
+//  - kiểm kê điều chỉnh ở cấp lô: tăng → lô điều chỉnh có nguồn gốc; giảm → trừ lô theo thứ tự rủi ro;
+//  - kho seed có tổng tồn nhưng chưa có lô → một lần tạo LÔ TỒN ĐẦU KỲ đánh dấu rõ nguồn.
+// ---------------------------------------------------------------------------
+const round3 = (v: number): number => Math.round(v * 1000) / 1000;
+const strawItem = () => one<{ id: string }>("SELECT id FROM items WHERE category = 'straw' LIMIT 1");
+
+export function recordMovement(m: { facilityId: string; lotId: string; kind: 'nhap' | 'xuat' | 'dieu_chinh' | 'chuyen' | 'dao' | 'ton_dau_ky'; tons: number; refType?: string; refId?: string; note?: string; actor?: AuditActor }): void {
+  if (!Number.isFinite(m.tons) || Math.abs(m.tons) < 0.0005) return;
+  insert('stock_movements', {
+    id: uuid(), facility_id: m.facilityId, lot_id: m.lotId, kind: m.kind, quantity_tons: round3(m.tons),
+    ref_type: m.refType ?? null, ref_id: m.refId ?? null, note: m.note ?? null, occurred_at: nowIso(), recorded_by: m.actor?.name ?? null,
+  });
+}
+
+/** Tổng tồn cơ sở = Σ remaining_tons của lô còn tồn. Trả về giá trị mới. */
+export function syncFacilityStock(facilityId: string): number {
+  const total = round3(one<{ s: number }>("SELECT COALESCE(SUM(remaining_tons), 0) AS s FROM stock_lots WHERE facility_id = ? AND status = 'ton'", [facilityId])?.s ?? 0);
+  run('UPDATE facilities SET current_stock_tons = ?, updated_at = ? WHERE id = ?', [total, nowIso(), facilityId]);
+  return total;
+}
+
+/**
+ * Kho có tổng tồn > tổng lô mà CHƯA có vận động nào (dữ liệu seed/nhập tay trước khi có sổ) → tạo lô tồn đầu kỳ
+ * để hàng có nguồn gốc và xuất được. Chỉ chạy một lần cho mỗi kho; sau đó tổng tồn luôn bằng tổng lô.
+ */
+export function ensureOpeningLot(facilityId: string, actor: AuditActor = { name: 'system' }): Record<string, unknown> | null {
+  const facility = one<{ id: string; code: string; name: string; current_stock_tons: number }>('SELECT id, code, name, current_stock_tons FROM facilities WHERE id = ?', [facilityId]);
+  if (!facility) return null;
+  const hasMovements = one('SELECT 1 FROM stock_movements WHERE facility_id = ? LIMIT 1', [facilityId]);
+  if (hasMovements) return null;
+  const lotTons = one<{ s: number }>("SELECT COALESCE(SUM(remaining_tons), 0) AS s FROM stock_lots WHERE facility_id = ? AND status = 'ton'", [facilityId])?.s ?? 0;
+  const gap = round3((facility.current_stock_tons ?? 0) - lotTons);
+  if (gap <= 0.0005) return null;
+  const item = strawItem();
+  if (!item) return null;
+  const lot = {
+    id: uuid(), code: nextCode('stock_lots', 'LOT'), facility_id: facilityId, zone_id: null, grn_id: null, htx_id: null, plot_id: null,
+    item_id: item.id, quantity_tons: gap, remaining_tons: gap, received_at: nowIso(), moisture_pct: null, risk_score: 0, status: 'ton',
+  };
+  transaction(() => {
+    insert('stock_lots', lot);
+    recordMovement({ facilityId, lotId: lot.id, kind: 'ton_dau_ky', tons: gap, refType: 'opening', refId: facilityId, note: `Tồn đầu kỳ ${facility.code} — quy đổi tổng tồn không rõ lô thành lô có nguồn gốc đánh dấu`, actor });
+    syncFacilityStock(facilityId);
+  });
+  logEvent({ module: 'warehouse', entityType: 'stock_lots', entityId: lot.id, action: 'create', after: { ...lot, opening: true }, note: 'opening_lot' }, actor);
+  return lot;
+}
+
+/** Chạy khi khởi động: quy đổi tồn không rõ lô của MỌI kho thành lô đầu kỳ (idempotent). */
+export function ensureOpeningLots(): number {
+  let created = 0;
+  for (const f of all<{ id: string }>("SELECT id FROM facilities WHERE current_stock_tons > 0 AND kind IN ('hub', 'warehouse', 'yard', 'plant')")) if (ensureOpeningLot(f.id)) created += 1;
+  return created;
+}
+
+/** Đối soát tổng tồn cơ sở với tổng lô — dùng cho màn Sức khoẻ CSDL và test invariant. */
+export function stockConsistency(facilityId?: string): { facilityId: string; code: string; name: string; facilityTons: number; lotTons: number; diffTons: number }[] {
+  return all<{ facilityId: string; code: string; name: string; facilityTons: number; lotTons: number }>(
+    `SELECT f.id AS facilityId, f.code, f.name, f.current_stock_tons AS facilityTons,
+            COALESCE((SELECT SUM(sl.remaining_tons) FROM stock_lots sl WHERE sl.facility_id = f.id AND sl.status = 'ton'), 0) AS lotTons
+     FROM facilities f WHERE f.kind IN ('hub', 'warehouse', 'yard', 'plant') ${facilityId ? 'AND f.id = ?' : ''}`,
+    facilityId ? [facilityId] : [],
+  ).map((r) => ({ ...r, diffTons: round3(Number(r.facilityTons) - Number(r.lotTons)) }));
+}
+
+function assertZoneOfFacility(zoneId: string | null | undefined, facilityId: string): void {
+  if (!zoneId) return;
+  const zone = one<{ facility_id: string; name: string }>('SELECT facility_id, name FROM storage_zones WHERE id = ?', [zoneId]);
+  if (!zone) throw new Error('Khu vực kho không tồn tại.');
+  if (zone.facility_id !== facilityId) throw new Error(`Khu vực "${zone.name}" không thuộc kho của phiếu — chọn lại khu vực.`);
+}
 
 export function addStorageZone(
   input: { facilityId: string; code: string; name: string; zoneType?: string; capacityTons?: number },
@@ -201,11 +279,12 @@ export function approveGoodsReceipt(id: string, actor: AuditActor = {}): Record<
   };
 
   transaction(() => {
+    assertZoneOfFacility(grn.zone_id, grn.facility_id);
+    ensureOpeningLot(grn.facility_id, actor);
     update('goods_receipts', id, { status: 'da_duyet', approved_by: actor.name ?? null, approved_at: nowIso() });
     insert('stock_lots', lot);
-    run('UPDATE facilities SET current_stock_tons = current_stock_tons + ?, updated_at = ? WHERE id = ?', [
-      grn.received_tons, nowIso(), grn.facility_id,
-    ]);
+    recordMovement({ facilityId: grn.facility_id, lotId: lot.id, kind: 'nhap', tons: grn.received_tons, refType: 'goods_receipt', refId: grn.id, actor });
+    syncFacilityStock(grn.facility_id);
     if (grn.po_id) {
       // FN-33: liên thông với phân hệ Mua hàng.
       const po = one<{ unit_price: number; htx_id: string }>('SELECT unit_price, htx_id FROM purchase_orders WHERE id = ?', [grn.po_id]);
@@ -453,7 +532,10 @@ export function createGoodsIssue(
   return { ...record, suggestedLots: suggestedIssueOrder(input.facilityId).slice(0, 10) };
 }
 
-/** FN-18 — Phê duyệt phiếu xuất trước khi ghi GIẢM tồn kho; trừ lô theo thứ tự rủi ro. */
+/**
+ * FN-18 — Phê duyệt phiếu xuất: phân bổ ĐỦ lượng theo lô (rủi ro cao trước), ghi sổ vận động, dựng lại tổng tồn.
+ * Không có lô = không có hàng, dù tổng tồn cơ sở nói gì (review 24/09/2026, R3).
+ */
 export function approveGoodsIssue(id: string, actor: AuditActor = {}): Record<string, unknown> {
   const issue = one<{ id: string; code: string; status: string; facility_id: string; issued_tons: number; so_id: string | null }>(
     'SELECT * FROM goods_issues WHERE id = ?',
@@ -463,36 +545,35 @@ export function approveGoodsIssue(id: string, actor: AuditActor = {}): Record<st
   if (issue.status === 'da_duyet') throw new Error('Phiếu xuất đã được phê duyệt.');
   if (!Number.isFinite(issue.issued_tons) || issue.issued_tons <= 0) throw new Error('Phiếu xuất có số lượng không hợp lệ — không thể phê duyệt.');
 
-  const lots = suggestedIssueOrder(issue.facility_id);
-  let remaining = issue.issued_tons;
   const consumed: { lot: string; tons: number }[] = [];
-
   transaction(() => {
-    // Review 24/09/2026 P1 #3: tồn kho phải được kiểm LẠI tại thời điểm duyệt, trong cùng giao dịch —
-    // hai phiếu cùng xuất một lượng hàng từng được duyệt cả hai, phiếu sau không trừ lô nào nhưng vẫn ghi công nợ.
-    const facility = one<{ name: string; current_stock_tons: number }>('SELECT name, current_stock_tons FROM facilities WHERE id = ?', [issue.facility_id]);
+    const facility = one<{ name: string }>('SELECT name FROM facilities WHERE id = ?', [issue.facility_id]);
     if (!facility) throw new Error('Không tìm thấy kho của phiếu xuất.');
-    const lotTons = lots.reduce((sum, lot) => sum + Number(lot.remaining_tons), 0);
-    const available = lots.length ? Math.min(facility.current_stock_tons, lotTons) : facility.current_stock_tons;
-    if (available + 0.0005 < issue.issued_tons) {
-      throw new Error(`Không đủ hàng để duyệt phiếu ${issue.code}: kho ${facility.name} còn ${Math.round(available * 1000) / 1000} tấn, phiếu cần ${issue.issued_tons} tấn. Phiếu giữ trạng thái chờ duyệt.`);
+    ensureOpeningLot(issue.facility_id, actor);
+    // Tồn kho được kiểm LẠI tại thời điểm duyệt, trong cùng giao dịch, theo LÔ.
+    const lots = suggestedIssueOrder(issue.facility_id);
+    const available = round3(lots.reduce((sum, lot) => sum + Number(lot.remaining_tons), 0));
+    if (!lots.length || available + 0.0005 < issue.issued_tons) {
+      throw new Error(`Không đủ hàng để duyệt phiếu ${issue.code}: kho ${facility.name} còn ${available} tấn theo lô, phiếu cần ${issue.issued_tons} tấn. Phiếu giữ trạng thái chờ duyệt.`);
     }
+    let remaining = issue.issued_tons;
     for (const lot of lots) {
-      if (remaining <= 0) break;
-      const available = Number(lot.remaining_tons);
-      const take = Math.min(available, remaining);
-      update('stock_lots', String(lot.id), {
-        remaining_tons: Math.round((available - take) * 1000) / 1000,
-        status: available - take <= 0.0001 ? 'da_xuat' : 'ton',
-      });
-      consumed.push({ lot: String(lot.code), tons: Math.round(take * 1000) / 1000 });
-      remaining -= take;
+      if (remaining <= 0.0005) break;
+      const lotRemaining = Number(lot.remaining_tons);
+      const take = round3(Math.min(lotRemaining, remaining));
+      const left = round3(lotRemaining - take);
+      update('stock_lots', String(lot.id), { remaining_tons: left, status: left <= 0.0001 ? 'da_xuat' : 'ton' });
+      insert('issue_allocations', { id: uuid(), issue_id: id, lot_id: String(lot.id), tons: take, created_at: nowIso() });
+      recordMovement({ facilityId: issue.facility_id, lotId: String(lot.id), kind: 'xuat', tons: -take, refType: 'goods_issue', refId: id, actor });
+      consumed.push({ lot: String(lot.code), tons: take });
+      remaining = round3(remaining - take);
     }
-    if (lots.length && remaining > 0.0005) throw new Error(`Không đủ lô hàng để xuất ${issue.issued_tons} tấn (thiếu ${Math.round(remaining * 1000) / 1000} tấn).`);
+    const allocated = round3(one<{ s: number }>('SELECT COALESCE(SUM(tons), 0) AS s FROM issue_allocations WHERE issue_id = ?', [id])?.s ?? 0);
+    if (Math.abs(allocated - issue.issued_tons) > 0.0005) {
+      throw new Error(`Tổng phân bổ theo lô (${allocated} tấn) khác lượng xuất (${issue.issued_tons} tấn) — huỷ duyệt.`);
+    }
     update('goods_issues', id, { status: 'da_duyet', approved_by: actor.name ?? null, approved_at: nowIso() });
-    run('UPDATE facilities SET current_stock_tons = current_stock_tons - ?, updated_at = ? WHERE id = ?', [
-      issue.issued_tons, nowIso(), issue.facility_id,
-    ]);
+    syncFacilityStock(issue.facility_id);
     if (issue.so_id) {
       const so = one<{ unit_price: number; partner_id: string }>('SELECT unit_price, partner_id FROM sales_orders WHERE id = ?', [issue.so_id]);
       if (so) {
@@ -511,8 +592,9 @@ export function approveGoodsIssue(id: string, actor: AuditActor = {}): Record<st
 
   emitMrvRecord('warehouse', 'goods_issue', issue.id, actor);
   logEvent({ module: 'warehouse', entityType: 'goods_issues', entityId: id, action: 'approve', after: { consumed } }, actor);
-  // Duyệt xong là đã xuất đủ (thiếu hàng đã bị từ chối trong giao dịch) — `shortfall` giữ cho tương thích, luôn 0.
-  return { issue: one('SELECT * FROM goods_issues WHERE id = ?', [id]), consumed, shortfall: 0 };
+  const allocatedTons = round3(consumed.reduce((s, c) => s + c.tons, 0));
+  // shortfall chỉ = 0 khi đã XÁC MINH tổng phân bổ bằng lượng xuất (kiểm trong giao dịch ở trên).
+  return { issue: one('SELECT * FROM goods_issues WHERE id = ?', [id]), consumed, allocatedTons, shortfall: round3(Math.max(0, issue.issued_tons - allocatedTons)) };
 }
 
 // ---------------------------------------------------------------------------
@@ -545,6 +627,7 @@ export function planStocktake(
   input: { facilityId: string; zoneId?: string; plannedFor: string; kind?: string },
   actor: AuditActor = {},
 ): Record<string, unknown> {
+  assertZoneOfFacility(input.zoneId, input.facilityId);
   const record = {
     id: uuid(),
     code: nextCode('stocktakes', 'KK'),
@@ -586,24 +669,54 @@ export function submitCount(id: string, countedTons: number, reason?: string, ac
   return after;
 }
 
-/** FN-22 / FN-23 — Phê duyệt chênh lệch và cập nhật tồn kho sổ sách. */
+/**
+ * FN-22 / FN-23 — Phê duyệt chênh lệch kiểm kê Ở CẤP LÔ (review 24/09/2026, A03):
+ * tăng → tạo lô điều chỉnh có nguồn gốc; giảm → trừ lô theo thứ tự rủi ro, không để lô âm;
+ * tổng tồn cơ sở dựng lại từ lô nên lần kiểm kê sau đối chiếu đúng.
+ */
 export function approveStocktake(id: string, actor: AuditActor = {}): Record<string, unknown> {
-  const stocktake = one<{ id: string; facility_id: string; variance_tons: number | null; status: string }>(
+  const stocktake = one<{ id: string; code: string; facility_id: string; zone_id: string | null; variance_tons: number | null; status: string }>(
     'SELECT * FROM stocktakes WHERE id = ?',
     [id],
   );
   if (!stocktake) throw new Error('Không tìm thấy phiếu kiểm kê');
   if (stocktake.status !== 'cho_duyet') throw new Error('Phiếu kiểm kê chưa ở trạng thái chờ duyệt.');
-  const variance = stocktake.variance_tons ?? 0;
+  const variance = round3(stocktake.variance_tons ?? 0);
+  const adjustments: { lot: string; tons: number }[] = [];
 
   transaction(() => {
+    assertZoneOfFacility(stocktake.zone_id, stocktake.facility_id);
+    ensureOpeningLot(stocktake.facility_id, actor);
+    if (variance > 0.0005) {
+      const item = strawItem();
+      if (!item) throw new Error('Danh mục hàng hoá chưa có mặt hàng rơm (category = straw) — bổ sung trước khi duyệt kiểm kê.');
+      const lot = {
+        id: uuid(), code: nextCode('stock_lots', 'LOT'), facility_id: stocktake.facility_id, zone_id: stocktake.zone_id, grn_id: null, htx_id: null, plot_id: null,
+        item_id: item.id, quantity_tons: variance, remaining_tons: variance, received_at: nowIso(), moisture_pct: null, risk_score: 0, status: 'ton',
+      };
+      insert('stock_lots', lot);
+      recordMovement({ facilityId: stocktake.facility_id, lotId: lot.id, kind: 'dieu_chinh', tons: variance, refType: 'stocktake', refId: id, note: `Kiểm kê ${stocktake.code}: thừa ${variance} tấn so với sổ`, actor });
+      adjustments.push({ lot: lot.code, tons: variance });
+    } else if (variance < -0.0005) {
+      let remaining = -variance;
+      const lots = suggestedIssueOrder(stocktake.facility_id).filter((lot) => !stocktake.zone_id || lot.zone_id === stocktake.zone_id);
+      for (const lot of lots) {
+        if (remaining <= 0.0005) break;
+        const lotRemaining = Number(lot.remaining_tons);
+        const take = round3(Math.min(lotRemaining, remaining));
+        const left = round3(lotRemaining - take);
+        update('stock_lots', String(lot.id), { remaining_tons: left, status: left <= 0.0001 ? 'da_xuat' : 'ton' });
+        recordMovement({ facilityId: stocktake.facility_id, lotId: String(lot.id), kind: 'dieu_chinh', tons: -take, refType: 'stocktake', refId: id, note: `Kiểm kê ${stocktake.code}: thiếu so với sổ`, actor });
+        adjustments.push({ lot: String(lot.code), tons: -take });
+        remaining = round3(remaining - take);
+      }
+      if (remaining > 0.0005) throw new Error(`Chênh lệch giảm ${-variance} tấn lớn hơn tồn theo lô của ${stocktake.zone_id ? 'khu vực' : 'kho'} (${round3(-variance - remaining)} tấn) — kiểm lại số đếm hoặc phạm vi kiểm kê.`);
+    }
     update('stocktakes', id, { status: 'da_duyet', approved_by: actor.name ?? null, approved_at: nowIso() });
-    run('UPDATE facilities SET current_stock_tons = MAX(0, current_stock_tons + ?), updated_at = ? WHERE id = ?', [
-      variance, nowIso(), stocktake.facility_id,
-    ]);
+    syncFacilityStock(stocktake.facility_id);
   });
-  logEvent({ module: 'warehouse', entityType: 'stocktakes', entityId: id, action: 'approve', after: { variance } }, actor);
-  return one('SELECT * FROM stocktakes WHERE id = ?', [id])!;
+  logEvent({ module: 'warehouse', entityType: 'stocktakes', entityId: id, action: 'approve', after: { variance, adjustments } }, actor);
+  return { ...one<Record<string, unknown>>('SELECT * FROM stocktakes WHERE id = ?', [id])!, adjustments };
 }
 
 // ---------------------------------------------------------------------------
@@ -653,10 +766,17 @@ export function movementReport(from: string, to: string, facilityId?: string): R
     `SELECT COALESCE(SUM(current_stock_tons),0) AS tons FROM facilities WHERE kind IN ('hub','warehouse','yard') ${facilityId ? 'AND id = ?' : ''}`,
     facilityId ? [facilityId] : [],
   );
+  const movements = all(
+    `SELECT kind, COUNT(*) AS n, COALESCE(SUM(quantity_tons), 0) AS tons FROM stock_movements
+     WHERE substr(occurred_at,1,10) BETWEEN ? AND ? ${facilityClause} GROUP BY kind ORDER BY kind`,
+    params,
+  );
   return {
     period: { from, to },
     inbound: inbound ?? { tons: 0, n: 0 },
     outbound: outbound ?? { tons: 0, n: 0 },
+    movements,
+    consistency: stockConsistency(facilityId),
     closingStockTons: closing?.tons ?? 0,
     openingStockTons: (closing?.tons ?? 0) - (inbound?.tons ?? 0) + (outbound?.tons ?? 0),
   };
@@ -760,13 +880,15 @@ export function emitMrvRecord(
   return record;
 }
 
-export function syncToDataLakehouse(actor: AuditActor = {}) {
-  return runSync({ system: 'erp', direction: 'outbound', dataset: 'warehouse_to_lakehouse' }, () => {
-    const records = all('SELECT * FROM mrv_records ORDER BY created_at DESC LIMIT 1000');
-    logEvent({ module: 'mrv', entityType: 'lakehouse_sync', action: 'sync', after: { count: records.length } }, actor);
-    return { recordCount: records.length, result: { layer: 'raw', records } };
-  });
+function lakehousePayload(actor: AuditActor = {}) {
+  const records = all('SELECT * FROM mrv_records ORDER BY created_at DESC LIMIT 1000');
+  logEvent({ module: 'mrv', entityType: 'lakehouse_sync', action: 'sync', after: { count: records.length } }, actor);
+  return { recordCount: records.length, result: { layer: 'raw', records } };
 }
+export function syncToDataLakehouse(actor: AuditActor = {}) {
+  return runSync({ system: 'erp', direction: 'outbound', dataset: 'warehouse_to_lakehouse' }, () => lakehousePayload(actor));
+}
+registerRetryHandler('warehouse_to_lakehouse', () => lakehousePayload({ name: 'retry' }));
 
 export function mrvSummary(): Record<string, unknown> {
   return {

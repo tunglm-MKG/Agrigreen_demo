@@ -9,7 +9,8 @@
  *    mở rộng được, không hard-code một dòng.
  *  - Mọi phân hệ đều audit-trail: bảng `event_log` append-only là nguồn sự thật.
  */
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
+import { basename } from 'node:path';
 import { all, db, MONEY_COLUMNS } from './db.ts';
 import { encryptPiiAtRest } from '../security/fieldCrypto.ts';
 import { qualifyStatement, splitStatements, schemaOf, domainOf } from './domains.ts';
@@ -38,6 +39,36 @@ export function migrate(): void {
   normalizeMoneyColumns();
   const encrypted = encryptPiiAtRest();
   if (encrypted) console.log(`[db] đã mã hoá ${encrypted} số CCCD còn lưu rõ.`);
+  normalizeAttachmentPaths();
+  recordSchemaVersion(rebuilt.length, skipped.length);
+}
+
+// ---------------------------------------------------------------------------
+// Phiên bản lược đồ (A07)
+// ---------------------------------------------------------------------------
+export const SCHEMA_VERSION = '2026.09.24-c';
+export function schemaChecksum(): string {
+  return createHash('sha256').update(SCHEMA).update(JSON.stringify(COLUMN_ADDITIONS)).update(JSON.stringify(PERFORMANCE_INDEXES)).digest('hex');
+}
+function recordSchemaVersion(rebuiltTables: number, skippedTables: number): void {
+  const checksum = schemaChecksum();
+  const exists = db().prepare('SELECT id FROM schema_migrations WHERE checksum = ?').get(checksum);
+  if (exists) return;
+  db().prepare('INSERT INTO schema_migrations (version, checksum, applied_at, rebuilt_tables, skipped_tables, notes) VALUES (?, ?, ?, ?, ?, ?)')
+    .run(SCHEMA_VERSION, checksum, new Date().toISOString(), rebuiltTables, skippedTables, skippedTables ? 'Có bảng không dựng lại được — xem log khởi động' : null);
+}
+/** Trạng thái lược đồ trên tệp: phiên bản/băm đã áp gần nhất và băm hiện tại của mã — khác nhau nghĩa là khởi động lại chưa chạy migrate. */
+export function schemaStatus(): { version: string; checksum: string; applied: Record<string, unknown> | null; upToDate: boolean; history: number } {
+  const checksum = schemaChecksum();
+  const applied = db().prepare('SELECT version, checksum, applied_at, rebuilt_tables, skipped_tables, notes FROM schema_migrations ORDER BY id DESC LIMIT 1').get() as Record<string, unknown> | undefined;
+  const history = (db().prepare('SELECT COUNT(*) AS n FROM schema_migrations').get() as { n: number }).n;
+  return { version: SCHEMA_VERSION, checksum, applied: applied ?? null, upToDate: applied?.checksum === checksum, history };
+}
+
+/** attachments.storage_path từng lưu đường dẫn tuyệt đối của máy chạy → chuyển thành khoá tương đối (O03). */
+function normalizeAttachmentPaths(): void {
+  const rows = db().prepare("SELECT id, storage_path FROM attachments WHERE storage_path LIKE '%/%' OR storage_path LIKE '%\\%'").all() as { id: string; storage_path: string }[];
+  for (const row of rows) db().prepare('UPDATE attachments SET storage_path = ? WHERE id = ?').run(basename(row.storage_path), row.id);
 }
 
 // ---------------------------------------------------------------------------
@@ -291,6 +322,10 @@ export const PERFORMANCE_INDEXES: { name: string; table: string; columns: string
   { name: 'idx_transport_routes_province', table: 'transport_routes', columns: ['province_id'] },
   { name: 'idx_waterway_structures_route', table: 'waterway_structures', columns: ['route_id'] },
   { name: 'idx_weather_area', table: 'weather_observations', columns: ['area_id', 'observed_for'] },
+  // Review 24/09/2026 (D05): theo EXPLAIN của truy vấn thật — thứ tự xuất kho, sổ cái theo kho/ngày, phiếu khảo sát theo kỳ.
+  { name: 'idx_stock_lots_issue_order', table: 'stock_lots', columns: ['facility_id', 'status', 'risk_score DESC', 'received_at'] },
+  { name: 'idx_ledger_facility_date', table: 'ledger_entries', columns: ['facility_id', 'entry_date'] },
+  { name: 'idx_survey_responses_period', table: 'survey_responses', columns: ['template_id', 'period', 'subject_kind'] },
 ];
 
 function applyPerformanceIndexes(): { created: number; skipped: string[] } {
@@ -300,7 +335,7 @@ function applyPerformanceIndexes(): { created: number; skipped: string[] } {
   for (const index of PERFORMANCE_INDEXES) {
     const schema = schemaOf(domainOf(index.table));
     const existing = new Set((handle.prepare(`PRAGMA ${schema}.table_info(${index.table})`).all() as { name: string }[]).map((c) => c.name));
-    const missing = index.columns.filter((c) => !existing.has(c));
+    const missing = index.columns.map((c) => c.replace(/\s+(ASC|DESC)$/i, '')).filter((c) => !existing.has(c));
     if (!existing.size || missing.length) { skipped.push(`${index.name} (thiếu ${missing.join(', ') || 'bảng'})`); continue; }
     handle.exec(`CREATE INDEX IF NOT EXISTS ${schema}.${index.name} ON ${index.table}(${index.columns.join(', ')})`);
     created += 1;
@@ -408,6 +443,11 @@ export const COLUMN_ADDITIONS: { table: string; column: string; definition: stri
     { table: 'extension_officers', column: 'duty_updated_at', definition: 'TEXT' },
     // Vụ canh tác gắn giống lúa từ danh mục (US-CAT-01, US-SEASON-01).
     { table: 'crop_cycles', column: 'variety_id', definition: 'TEXT' },
+    // Snapshot có watermark: thời điểm chụp thật và id sự kiện cuối — replay theo sequence, không theo ngày (A05).
+    { table: 'daily_snapshots', column: 'captured_at', definition: 'TEXT' },
+    { table: 'daily_snapshots', column: 'last_event_id', definition: 'INTEGER' },
+    // Outbox có lease: dòng đang gửi được claim kèm thời điểm, hết hạn thì trả về hàng đợi (O02).
+    { table: 'notifications', column: 'claimed_at', definition: 'TEXT' },
 ];
 
 function applyColumnMigrations(): void {
@@ -660,7 +700,7 @@ CREATE TABLE IF NOT EXISTS notifications (
   entity_type       TEXT,
   entity_id         TEXT,
   dedupe_key        TEXT,
-  status            TEXT NOT NULL CHECK (status IN ('cho_gui', 'da_gui', 'loi', 'cho_cau_hinh', 'khong_co_email')),   -- cho_gui | da_gui | loi | cho_cau_hinh
+  status            TEXT NOT NULL CHECK (status IN ('cho_gui', 'dang_gui', 'da_gui', 'loi', 'cho_cau_hinh', 'khong_co_email')),   -- cho_gui | da_gui | loi | cho_cau_hinh
   attempts          INTEGER NOT NULL DEFAULT 0,
   last_error        TEXT,
   created_at        TEXT NOT NULL,
@@ -1988,6 +2028,37 @@ CREATE TABLE IF NOT EXISTS stock_lots (         -- Lô tồn kho, gắn nguồn 
   FOREIGN KEY (grn_id) REFERENCES goods_receipts(id)
 );
 
+-- Review kiến trúc 24/09/2026 (A03/R3): nguồn sự thật duy nhất của tồn kho là LÔ; mọi thay đổi
+-- remaining_tons đi qua sổ vận động bất biến; tổng tồn cơ sở là số chiếu (projection) dựng lại được.
+CREATE TABLE IF NOT EXISTS stock_movements (
+  id            TEXT PRIMARY KEY,
+  facility_id   TEXT NOT NULL,
+  lot_id        TEXT NOT NULL,
+  kind          TEXT NOT NULL CHECK (kind IN ('nhap', 'xuat', 'dieu_chinh', 'chuyen', 'dao', 'ton_dau_ky')),
+  quantity_tons REAL NOT NULL CHECK (quantity_tons <> 0),   -- dương = tăng lô, âm = giảm lô
+  ref_type      TEXT,                                      -- goods_receipt | goods_issue | stocktake | opening
+  ref_id        TEXT,
+  note          TEXT,
+  occurred_at   TEXT NOT NULL,
+  recorded_by   TEXT,
+  FOREIGN KEY (lot_id) REFERENCES stock_lots(id)
+);
+CREATE INDEX IF NOT EXISTS idx_stock_movements_lot ON stock_movements(lot_id, occurred_at);
+CREATE INDEX IF NOT EXISTS idx_stock_movements_ref ON stock_movements(ref_type, ref_id);
+CREATE INDEX IF NOT EXISTS idx_stock_movements_facility ON stock_movements(facility_id, occurred_at);
+
+CREATE TABLE IF NOT EXISTS issue_allocations (  -- Phiếu xuất lấy bao nhiêu tấn từ lô nào (thay JSON "consumed" trong nhật ký)
+  id         TEXT PRIMARY KEY,
+  issue_id   TEXT NOT NULL,
+  lot_id     TEXT NOT NULL,
+  tons       REAL NOT NULL CHECK (tons > 0),
+  created_at TEXT NOT NULL,
+  FOREIGN KEY (issue_id) REFERENCES goods_issues(id),
+  FOREIGN KEY (lot_id) REFERENCES stock_lots(id)
+);
+CREATE INDEX IF NOT EXISTS idx_issue_allocations_issue ON issue_allocations(issue_id);
+CREATE INDEX IF NOT EXISTS idx_issue_allocations_lot ON issue_allocations(lot_id);
+
 CREATE TABLE IF NOT EXISTS env_readings (       -- WH FN-08/FN-31: cảm biến IoT
   id          TEXT PRIMARY KEY,
   facility_id TEXT NOT NULL,
@@ -2131,6 +2202,18 @@ CREATE TABLE IF NOT EXISTS system_config (
   value_json TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   updated_by TEXT
+);
+
+-- Review kiến trúc 24/09/2026 (A07): mỗi phiên bản lược đồ đã áp lên tệp được ghi lại kèm băm nội dung,
+-- số bảng dựng lại/bỏ qua — đối chiếu được "cài mới" và "nâng cấp" có cùng lược đồ hay không.
+CREATE TABLE IF NOT EXISTS schema_migrations (
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  version        TEXT NOT NULL,
+  checksum       TEXT NOT NULL UNIQUE,
+  applied_at     TEXT NOT NULL,
+  rebuilt_tables INTEGER NOT NULL DEFAULT 0,
+  skipped_tables INTEGER NOT NULL DEFAULT 0,
+  notes          TEXT
 );
 
 -- =====================================================================

@@ -96,6 +96,10 @@ const SNAPSHOT_LAYERS: { layer: string; sql: string }[] = [
 
 /** GIS FN-18: chụp snapshot trạng thái toàn hệ thống cho một ngày. */
 export function captureSnapshot(date = today()): { layer: string; count: number }[] {
+  // Review 24/09/2026 (A05): hàm chụp trạng thái HIỆN TẠI — gán ngày quá khứ sẽ tạo lịch sử sai.
+  if (date !== today()) throw new Error(`Snapshot chỉ chụp được trạng thái hiện tại (${today()}). Muốn xem ngày ${date} hãy dùng replay.`);
+  const capturedAt = nowIso();
+  const lastEventId = one<{ id: number | null }>('SELECT MAX(id) AS id FROM event_log')?.id ?? null;
   const summary: { layer: string; count: number }[] = [];
   for (const { layer, sql } of SNAPSHOT_LAYERS) {
     const rows = all(sql);
@@ -106,7 +110,9 @@ export function captureSnapshot(date = today()): { layer: string; count: number 
       payload_json: payload,
       checksum: digest(rows),
       record_count: rows.length,
-      created_at: nowIso(),
+      created_at: capturedAt,
+      captured_at: capturedAt,
+      last_event_id: lastEventId,
     });
     summary.push({ layer, count: rows.length });
   }
@@ -126,37 +132,32 @@ export function replay(date: string): {
   layers: Record<string, unknown[]>;
   appliedEvents: number;
 } {
-  const exact = all<{ layer: string; payload_json: string }>(
-    'SELECT layer, payload_json FROM daily_snapshots WHERE snapshot_date = ?',
+  // Review 24/09/2026 (A05): lấy snapshot gần nhất KHÔNG SAU ngày yêu cầu rồi áp mọi sự kiện có id lớn hơn
+  // watermark của snapshot cho tới hết ngày đó — sự kiện cùng ngày chụp (sau giờ chụp) không còn bị bỏ sót.
+  const base = one<{ snapshot_date: string; captured_at: string | null; last_event_id: number | null }>(
+    `SELECT snapshot_date, MAX(captured_at) AS captured_at, MAX(last_event_id) AS last_event_id
+     FROM daily_snapshots WHERE snapshot_date <= ? GROUP BY snapshot_date ORDER BY snapshot_date DESC LIMIT 1`,
     [date],
   );
-  if (exact.length) {
-    const layers: Record<string, unknown[]> = {};
-    for (const row of exact) layers[row.layer] = parseJson(row.payload_json, []);
-    return { date, basis: 'snapshot', layers, appliedEvents: 0 };
-  }
-
-  const previousDate = one<{ snapshot_date: string }>(
-    'SELECT snapshot_date FROM daily_snapshots WHERE snapshot_date < ? ORDER BY snapshot_date DESC LIMIT 1',
-    [date],
-  );
-  if (!previousDate) {
+  if (!base) {
     return { date, basis: 'empty', layers: {}, appliedEvents: 0 };
   }
-
-  const base = all<{ layer: string; payload_json: string }>(
-    'SELECT layer, payload_json FROM daily_snapshots WHERE snapshot_date = ?',
-    [previousDate.snapshot_date],
-  );
+  const rows = all<{ layer: string; payload_json: string }>('SELECT layer, payload_json FROM daily_snapshots WHERE snapshot_date = ?', [base.snapshot_date]);
   const layers: Record<string, unknown[]> = {};
-  for (const row of base) layers[row.layer] = parseJson(row.payload_json, []);
+  for (const row of rows) layers[row.layer] = parseJson(row.payload_json, []);
 
-  const events = all<{ entity_type: string; entity_id: string; action: string; after_json: string }>(
-    `SELECT entity_type, entity_id, action, after_json FROM event_log
-     WHERE substr(occurred_at, 1, 10) > ? AND substr(occurred_at, 1, 10) <= ?
-     ORDER BY id ASC`,
-    [previousDate.snapshot_date, date],
-  );
+  const events = base.last_event_id !== null
+    ? all<{ entity_type: string; entity_id: string; action: string; after_json: string }>(
+      `SELECT entity_type, entity_id, action, after_json FROM event_log
+       WHERE id > ? AND substr(occurred_at, 1, 10) <= ? ORDER BY id ASC`,
+      [base.last_event_id, date],
+    )
+    // Snapshot cũ chưa có watermark: giữ cách cũ theo ngày (chấp nhận sai số trong ngày chụp).
+    : all<{ entity_type: string; entity_id: string; action: string; after_json: string }>(
+      `SELECT entity_type, entity_id, action, after_json FROM event_log
+       WHERE substr(occurred_at, 1, 10) > ? AND substr(occurred_at, 1, 10) <= ? ORDER BY id ASC`,
+      [base.snapshot_date, date],
+    );
 
   for (const event of events) {
     const bucket = layers[event.entity_type];
@@ -172,7 +173,7 @@ export function replay(date: string): {
     else bucket.push(after);
   }
 
-  return { date, basis: 'reconstructed', layers, appliedEvents: events.length };
+  return { date, basis: events.length ? 'reconstructed' : 'snapshot', layers, appliedEvents: events.length };
 }
 
 export interface RetentionPolicy {

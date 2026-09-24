@@ -14,7 +14,7 @@ COPY README.md ./
 
 # Thư mục dữ liệu SQLite. Gắn volume vào đây nếu muốn giữ dữ liệu qua các lần
 # khởi động lại; không gắn thì `seedIfEmpty()` tự nạp lại dữ liệu mẫu.
-RUN mkdir -p /app/data
+RUN mkdir -p /app/data && chown -R node:node /app/data
 VOLUME /app/data
 
 ENV PORT=8080
