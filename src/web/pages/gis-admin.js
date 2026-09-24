@@ -518,7 +518,7 @@ registerPage('gis-admin', {
         el('div', { class: 'st' }, [el('b', { text: s.label }), el('span', { class: 'muted', text: s.datasets.join(' · ') }), s.feeds ? el('div', { class: 'chip-row', style: 'margin-top:6px' }, s.feeds.map((f) => badge(f, 'info'))) : null]),
         el('div', { style: 'text-align:right' }, [el('div', { class: 'muted', text: s.last ? `${dateTime(s.last.started_at)} · ${num(s.last.record_count)} bản ghi` : 'Chưa có giao dịch' }), s.last ? badge(SYNC_STATUS[s.last.status]?.[0] ?? s.last.status, SYNC_STATUS[s.last.status]?.[1] ?? 'neutral') : null]),
       ]);
-      const health = can('admin.config') ? await api('/admin/db-health').catch(() => null) : null;
+      const health = null;   // Sức khoẻ CSDL & sao lưu đã chuyển sang Cổng Quản trị hệ thống (sys-health) — cơ cấu 09/2026.
       const healthCard = health ? card('Sức khoẻ cơ sở dữ liệu', [
         el('div', { class: 'chip-row' }, [
           ...health.integrity.map((d) => badge(`${d.domain}: ${d.result === 'ok' ? 'toàn vẹn' : d.result}`, d.result === 'ok' ? 'good' : 'bad')),

@@ -448,6 +448,8 @@ export const COLUMN_ADDITIONS: { table: string; column: string; definition: stri
     { table: 'daily_snapshots', column: 'last_event_id', definition: 'INTEGER' },
     // Outbox có lease: dòng đang gửi được claim kèm thời điểm, hết hạn thì trả về hàng đợi (O02).
     { table: 'notifications', column: 'claimed_at', definition: 'TEXT' },
+    // Quản trị nền tảng đang ở trong hệ thống con nào (cơ cấu phân quyền 09/2026).
+    { table: 'sessions', column: 'active_system', definition: 'TEXT' },
 ];
 
 function applyColumnMigrations(): void {

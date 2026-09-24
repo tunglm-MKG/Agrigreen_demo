@@ -29,7 +29,7 @@ import * as field from './erp/field/service.ts';
 import { createContract } from './erp/straw/contracts.ts';
 import { createVessel } from './erp/tms/vessels.ts';
 import { confirmTicket, listTickets } from './erp/straw/tickets.ts';
-import { ROLES } from './platform/auth/rbac.ts';
+import { ROLES, SYSTEMS } from './platform/auth/rbac.ts';
 import { captureSnapshot } from './platform/audit/audit.ts';
 import { seedVarietiesIfEmpty } from './mdm/varieties.ts';
 
@@ -166,6 +166,38 @@ const WATERWAYS: { name: string; maxLoad: number; width: number; depth: number; 
     points: [[10.3800, 105.4350], [10.3450, 105.5600], [10.3000, 105.7000], [10.2800, 105.9100]],
   },
 ];
+
+/**
+ * Cơ cấu phân quyền 09/2026: CSDL có từ trước chưa có tài khoản quản trị từng hệ thống con → bổ sung khi khởi động
+ * (chỉ khi được phép seed demo). Tài khoản `qtri_<hệ thống>` đã tồn tại mà thiếu nhóm quản trị thì gán thêm nhóm.
+ * Mật khẩu: DEMO_ACCOUNT_PASSWORD, không có thì mật khẩu tạm in log một lần, bắt đổi khi đăng nhập.
+ */
+export function ensureSystemAdminDemoAccounts(): { created: string[]; upgraded: string[] } {
+  const created: string[] = [];
+  const upgraded: string[] = [];
+  const issued: string[] = [];
+  const demoPassword = process.env.DEMO_ACCOUNT_PASSWORD || null;
+  const labels: Record<string, string> = { kn: 'Khuyến nông', htx: 'Hợp tác xã', cgh: 'Cơ giới hoá', gis: 'Nền tảng GIS', erp: 'ERP', field: 'Hiện trường' };
+  for (const system of SYSTEMS) {
+    const username = `qtri_${system.code}`;
+    const existing = listUsers().find((u) => u.username === username);
+    if (existing) {
+      if (!existing.roles.includes(system.adminRole)) {
+        run('DELETE FROM user_roles WHERE user_id = ?', [existing.id]);
+        insert('user_roles', { user_id: existing.id, role: system.adminRole });
+        run('DELETE FROM sessions WHERE user_id = ?', [existing.id]);
+        upgraded.push(username);
+      }
+      continue;
+    }
+    const input = { username, fullName: `Quản trị hệ thống ${labels[system.code] ?? system.label}`, roles: [system.adminRole] };
+    if (demoPassword) createUser({ ...input, password: demoPassword }, { name: 'seed' }, { enforcePolicy: false });
+    else { const { temporaryPassword } = createUser(input, { name: 'seed' }); issued.push(`${username}: ${temporaryPassword}`); }
+    created.push(username);
+  }
+  if (issued.length) console.warn(`\n  [seed] Mật khẩu tạm của quản trị hệ thống con (chỉ hiện MỘT lần, phải đổi khi đăng nhập):\n    ${issued.join('\n    ')}\n`);
+  return { created, upgraded };
+}
 
 export function seedIfEmpty(): boolean {
   const existing = one<{ n: number }>('SELECT COUNT(*) AS n FROM cooperatives');
@@ -560,7 +592,13 @@ export function seedAll(): void {
     { username: 'nongdan', fullName: 'Nông dân Nguyễn Văn A', roles: [ROLES.FARMER], htxId: firstHtxId, provinceId: provinceOf('AG') },
     // Admin theo phạm vi (SA-08..12): KN tỉnh An Giang tự quản cán bộ tỉnh mình; ERP có admin toàn hệ thống.
     { username: 'qtri_kn_ag', fullName: 'Quản trị Khuyến nông tỉnh An Giang', roles: [ROLES.KN_TINH], provinceId: provinceOf('AG') },
-    { username: 'qtri_erp', fullName: 'Quản trị hệ thống ERP', roles: [ROLES.SUPPLY_CHAIN] },
+    // Quản trị TỪNG hệ thống con (cơ cấu 09/2026): toàn quyền trong hệ thống mình, không vào cổng khác, không sửa ma trận quyền.
+    { username: 'qtri_erp', fullName: 'Quản trị hệ thống ERP', roles: [ROLES.ERP_ADMIN] },
+    { username: 'qtri_kn', fullName: 'Quản trị hệ thống Khuyến nông', roles: [ROLES.KN_ADMIN] },
+    { username: 'qtri_htx', fullName: 'Quản trị hệ thống Hợp tác xã', roles: [ROLES.HTX_ADMIN] },
+    { username: 'qtri_cgh', fullName: 'Quản trị hệ thống Cơ giới hoá', roles: [ROLES.CGH_ADMIN] },
+    { username: 'qtri_gis', fullName: 'Quản trị Nền tảng GIS', roles: [ROLES.GIS_ADMIN] },
+    { username: 'qtri_field', fullName: 'Quản trị hệ thống Hiện trường', roles: [ROLES.FIELD_ADMIN] },
     { username: 'cuc_ktht', fullName: 'Cục KTHT & PTNT', roles: [ROLES.DCRD_VIEWER] },
     { username: 'vvb', fullName: 'Kiểm định viên SGS', roles: [ROLES.VVB_AUDITOR] },
   ];
@@ -588,7 +626,7 @@ export function seedAll(): void {
   const byName = (name: string) => listUsers().find((u) => u.username === name)!;
   const ag = provinceOf('AG');
   if (ag) grantScope({ userId: byName('qtri_kn_ag').id, system: 'kn', scopeType: 'province', scopeId: ag, note: 'Trung tâm Khuyến nông tỉnh tự quản cán bộ tỉnh' }, superCtx, { name: 'seed' });
-  grantScope({ userId: byName('qtri_erp').id, system: 'erp', scopeType: 'system', note: 'Quản trị toàn ERP nội bộ, được uỷ quyền tiếp cấp dưới' }, superCtx, { name: 'seed' });
+  // qtri_erp nay là nhóm erp_admin → phạm vi cấp hệ thống đi theo nhóm, không cần uỷ quyền riêng.
 
   // Hai tài khoản có Zalo id mẫu: khi chưa cấu hình Zalo OA, thông báo của họ nằm ở
   // trạng thái "chờ cấu hình" — để màn hình quản trị chỉ đúng chỗ đang thiếu.

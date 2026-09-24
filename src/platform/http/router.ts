@@ -20,7 +20,9 @@ export interface Context {
   /** Đường dẫn đã chuẩn hoá (gộp `//`, bỏ `/` cuối) — guard và nhật ký phải dùng cái này, không dùng URL thô. */
   path: string;
   /** Mẫu route đã khớp, ví dụ `/inputs/purchases/:id` — kiểm quyền theo route + params, không diễn giải URL lần hai. */
-    routePath: string;
+  routePath: string;
+  /** Quyền gác route (nếu có) — để guard suy ra hệ thống con của route. */
+  routePermission?: string;
 }
 
 /** Chuẩn hoá đường dẫn MỘT LẦN cho cả routing lẫn guard: `/a//b/` → `/a/b` (review 24/09/2026, R1). */
@@ -260,6 +262,7 @@ export class Router {
       actor: { id: user?.id ?? null, name: user?.fullName ?? 'anonymous' },
       path: pathname,
       routePath: found.route.path,
+      routePermission: found.route.permission,
     };
 
     // Yêu cầu GHI chạy trong một đơn vị công việc: guard + handler + nhật ký + outbox cùng commit;

@@ -63,6 +63,8 @@ const call = (token: string | null, method: string, path: string, body?: unknown
 const login = async (u: string, p: string) => ((await (await call(null, 'POST', '/auth/login', { username: u, password: p })).json()) as { token: string }).token;
 const htxToken = await login('htx01', '123456');
 const adminToken = await login('SAdmin', process.env.SUPER_ADMIN_PASSWORD!);
+// Cơ cấu 09/2026: quản trị nền tảng phải vào một hệ thống trước khi thao tác nghiệp vụ / dữ liệu dùng chung.
+await call(adminToken, 'POST', '/auth/enter-system', { system: 'htx' });
 const htxUser = users.listUsers().find((u) => u.username === 'htx01')!;
 const cooperatives = mdm.listCooperatives() as { id: string; name: string }[];
 const others = cooperatives.filter((c) => c.id !== htxUser.htxId);

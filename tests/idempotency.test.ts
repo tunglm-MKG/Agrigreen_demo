@@ -94,6 +94,7 @@ test('Khoá thuộc về người dùng: người khác dùng trùng khoá vẫn
   await post('/field/teams', { name: 'Đội của hientruong' }, key);
   const adminLogin = await fetch(`${base}/auth/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: 'SAdmin', password: process.env.SUPER_ADMIN_PASSWORD! }) });
   const adminToken = ((await adminLogin.json()) as { token: string }).token;
+  await fetch(`${base}/auth/enter-system`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${adminToken}` }, body: JSON.stringify({ system: 'field' }) });
   const before = all('SELECT id FROM field_teams').length;
   const res = await fetch(`${base}/field/teams`, {
     method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${adminToken}`, 'Idempotency-Key': key },

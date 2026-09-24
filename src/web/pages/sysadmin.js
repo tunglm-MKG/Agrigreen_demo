@@ -11,6 +11,80 @@ import {
   api, registerPage, el, card, kpi, table, badge, alert, num, dateTime,
   toast, guard, can, form, state, navigate, modal, confirmDialog, icon,
 } from '/app.js';
+import { PORTALS } from '/portals.js';
+
+// ---------------------------------------------------------------------------
+// Cơ cấu phân quyền 09/2026: SAdmin làm việc trong cổng Quản trị; muốn xem nghiệp vụ phải VÀO một hệ thống.
+// ---------------------------------------------------------------------------
+registerPage('sys-systems', {
+  title: 'Các hệ thống con',
+  subtitle: 'Mỗi hệ thống có quản trị riêng (nhóm *_admin). Quản trị nền tảng chỉ xem/thao tác nghiệp vụ SAU KHI vào hệ thống — mỗi phiên ở trong một hệ thống, có nhật ký',
+  async render(view) {
+    const [lookups, usersAll] = await Promise.all([guard(api('/admin/lookups')), api('/admin/user-views')]);
+    const me = state.user ?? {};
+    const systems = lookups.allSystems ?? [];
+    const roleSystem = Object.fromEntries((lookups.assignableRoles ?? []).map((r) => [r.code, r.system]));
+    const countBy = (code) => usersAll.filter((u) => (u.roles ?? []).some((r) => roleSystem[r] === code)).length;
+    const adminsOf = (code) => usersAll.filter((u) => (u.roles ?? []).includes(`${code}_admin`)).map((u) => u.username);
+    const enter = async (code) => {
+      await guard(api('/auth/enter-system', { body: { system: code } }));
+      const portal = PORTALS.find((p) => p.id === code);
+      toast(`Đã vào ${portal?.name ?? code}. Mọi thao tác trong hệ thống này được ghi nhật ký với phiên quản trị.`);
+      location.href = `${portal?.path ?? '/'}/`;
+    };
+    view.replaceChildren(
+      me.activeSystem
+        ? alert(`Phiên này đang ở trong ${systems.find((s) => s.code === me.activeSystem)?.label ?? me.activeSystem}. Vào hệ thống khác sẽ thay thế; "Rời hệ thống" để chỉ còn quyền quản trị nền tảng.`, 'info')
+        : alert('Phiên này chưa vào hệ thống nào — chỉ dùng được các tính năng quản trị nền tảng. Chọn "Vào hệ thống" để xem nghiệp vụ.', 'info'),
+      el('div', { class: 'portal-cards' }, systems.map((s) => {
+        const portal = PORTALS.find((p) => p.id === s.code);
+        const admins = adminsOf(s.code);
+        return el('div', { class: 'portal-card', style: `--card-accent:${portal?.accent ?? '#555'}` }, [
+          el('span', { class: 'portal-card-mark', text: portal?.mark ?? '▣' }),
+          el('strong', { text: s.label }),
+          el('p', { class: 'muted', text: `${num(countBy(s.code))} tài khoản · quản trị hệ thống: ${admins.length ? admins.join(', ') : 'chưa có'}` }),
+          el('div', { class: 'chip-row' }, [
+            me.activeSystem === s.code ? badge('Đang ở trong', 'good') : null,
+            el('button', { class: 'small', onclick: () => enter(s.code) }, [icon('login', 14), me.activeSystem === s.code ? 'Mở cổng' : 'Vào hệ thống']),
+            el('button', { class: 'small ghost', text: 'Tạo quản trị hệ thống', onclick: () => navigate('sys-users') }),
+          ]),
+        ]);
+      })),
+      me.activeSystem ? el('button', { class: 'ghost small', text: 'Rời hệ thống (chỉ còn quản trị nền tảng)', onclick: async () => { await guard(api('/auth/leave-system', { body: {} })); location.reload(); } }) : null,
+    );
+  },
+});
+
+registerPage('sys-health', {
+  title: 'Sức khoẻ cơ sở dữ liệu & sao lưu',
+  subtitle: 'Toàn vẹn từng tệp, tham chiếu xuyên miền, lược đồ, tồn kho khớp lô, sao lưu VACUUM INTO',
+  async render(view) {
+    const health = await guard(api('/admin/db-health'));
+    const refresh = () => this.render(view);
+    view.replaceChildren(
+      card('Tình trạng', [
+        el('div', { class: 'chip-row' }, [
+          ...health.integrity.map((d) => badge(`${d.domain}: ${d.result === 'ok' ? 'toàn vẹn' : d.result}`, d.result === 'ok' ? 'good' : 'bad')),
+          badge(`${health.indexes.reduce((a, d) => a + d.explicit, 0)} chỉ mục`, 'neutral'),
+          health.schema ? badge(`lược đồ ${health.schema.version}${health.schema.upToDate ? '' : ' — chưa áp, khởi động lại'}`, health.schema.upToDate ? 'good' : 'warn') : null,
+          health.stock ? badge(health.stock.length ? `${health.stock.length} kho lệch tổng tồn/lô` : 'tồn kho khớp lô', health.stock.length ? 'bad' : 'good') : null,
+        ]),
+      ]),
+      card(`Tham chiếu xuyên miền (${health.orphans.length} quan hệ không có khoá ngoại ở tầng SQLite — kiểm ở tầng ghi + rà hằng ngày)`, [
+        health.orphans.some((o) => o.orphans > 0)
+          ? table([{ key: 'table', label: 'Bảng con' }, { key: 'column', label: 'Cột' }, { key: 'parent', label: 'Bảng cha' }, { key: 'orphans', label: 'Mồ côi', align: 'right' }, { key: 'sample', label: 'Ví dụ', render: (r) => r.sample.join(', ') }], health.orphans.filter((o) => o.orphans > 0), { plain: true })
+          : alert('Không có bản ghi mồ côi — mọi tham chiếu xuyên miền đều còn bản ghi cha.', 'good'),
+      ]),
+      card('Sao lưu', [
+        el('div', { class: 'chip-row' }, [el('button', { class: 'small', onclick: async () => { const r = await guard(api('/admin/db-backup', { body: {} })); toast(`${r.manifest.ok ? 'Đã sao lưu' : 'Sao lưu lỗi'}: ${r.manifest.files.length} tệp trong ${r.manifest.durationMs} ms.`); await refresh(); } }, [icon('database', 14), 'Sao lưu ngay'])]),
+        table([
+          { key: 'createdAt', label: 'Lúc', render: (r) => dateTime(r.createdAt) }, { key: 'ok', label: 'Kết quả', render: (r) => badge(r.ok ? 'Hợp lệ' : 'Lỗi', r.ok ? 'good' : 'bad') },
+          { key: 'bytes', label: 'Dung lượng', align: 'right', render: (r) => `${num(r.bytes / 1024)} KB` }, { key: 'dir', label: 'Thư mục', render: (r) => el('code', { text: r.dir }) },
+        ], health.backups, { plain: true, empty: 'Chưa có đợt sao lưu nào — sao lưu tự động chạy 5 phút sau khi khởi động và mỗi 24 giờ (BACKUP_INTERVAL_HOURS).' }),
+      ]),
+    );
+  },
+});
 
 /** Nhãn trạng thái gửi email mật khẩu tạm (trả về từ máy chủ). */
 const EMAIL_STATUS = {

@@ -9,7 +9,7 @@
  * v1.3): theme của từng cổng được chọn qua `html[data-portal]` trong styles.css,
  * thanh bên có biểu tượng SVG (icons.js), điều hướng đáy trên điện thoại.
  */
-import { PORTALS, portalFromPath, portalItems } from '/portals.js';
+import { PORTALS, portalFromPath, portalItems, SYSADMIN_PORTAL_ID } from '/portals.js';
 import { icon } from '/icons.js';
 
 export { icon };
@@ -884,6 +884,14 @@ export async function boot() {
     return;
   }
 
+  // Cơ cấu 09/2026: quản trị nền tảng phải VÀO hệ thống con trước khi mở cổng của nó (mỗi phiên một hệ thống).
+  if (me.superAdmin && requestedPortal && requestedPortal.id !== SYSADMIN_PORTAL_ID && me.activeSystem !== requestedPortal.id) {
+    document.getElementById('shell').hidden = true;
+    document.getElementById('portal-picker').hidden = false;
+    renderEnterSystem(me, requestedPortal);
+    return;
+  }
+
   // "/" hoặc cổng không tồn tại/không có quyền → màn hình chọn cổng.
   if (!requestedPortal || !allowed.includes(requestedPortal)) {
     if (requestedPortal && !allowed.includes(requestedPortal)) {
@@ -901,6 +909,7 @@ export async function boot() {
   document.getElementById('shell').hidden = false;
   applyPortalIdentity(requestedPortal);
   renderUser(me);
+  if (me.superAdmin && requestedPortal.id !== SYSADMIN_PORTAL_ID) renderSystemBanner(requestedPortal);
   buildPortalSwitch(allowed, requestedPortal);
   buildNav();
   mountBell();
@@ -989,6 +998,44 @@ function forcePasswordChange(me) {
   });
 }
 
+/** SAdmin đang mở một cổng nghiệp vụ mà phiên chưa "vào" hệ thống đó → hỏi rõ trước khi vào (có nhật ký). */
+function renderEnterSystem(me, portal) {
+  document.title = `Vào ${portal.name} — Mekong Green`;
+  document.documentElement.dataset.portal = '';
+  const root = document.getElementById('portal-picker');
+  const current = me.activeSystem ? PORTALS.find((p) => p.id === me.activeSystem) : null;
+  root.replaceChildren(
+    el('div', { class: 'picker-inner' }, [
+      el('div', { class: 'brand' }, [el('span', { class: 'brand-mark', text: '🛡️' }), el('div', {}, [el('h1', { text: 'Quản trị nền tảng' }), el('p', { text: 'Bạn đang dùng phiên Super Admin' })])]),
+      el('div', { class: 'portal-cards' }, [el('div', { class: 'portal-card', style: `--card-accent:${portal.accent}` }, [
+        el('span', { class: 'portal-card-mark', text: portal.mark }),
+        el('strong', { text: `Vào ${portal.name}?` }),
+        el('p', { class: 'muted', text: 'Quản trị nền tảng chỉ xem và thao tác nghiệp vụ của một hệ thống sau khi vào hệ thống đó. Mỗi phiên ở trong một hệ thống; việc vào/rời được ghi nhật ký.' }),
+        current ? el('p', { class: 'muted', text: `Phiên đang ở trong ${current.name} — vào đây sẽ rời hệ thống đó.` }) : null,
+        el('div', { class: 'chip-row' }, [
+          el('button', { onclick: async () => {
+            try { await api('/auth/enter-system', { body: { system: portal.id } }); location.reload(); } catch (error) { toast(error.message, true); }
+          } }, [icon('login', 16), `Vào ${portal.short}`]),
+          el('a', { class: 'ghost small', href: `/${SYSADMIN_PORTAL_ID}/`, text: 'Về Quản trị hệ thống' }),
+        ]),
+      ])]),
+    ]),
+  );
+}
+
+/** Dải báo trên thanh trên cùng khi SAdmin đang ở trong một hệ thống con. */
+function renderSystemBanner(portal) {
+  const host = document.getElementById('topbar-user');
+  if (!host) return;
+  host.prepend(el('span', { class: 'role-pill', style: `background:${portal.accent};color:#fff`, title: 'Phiên quản trị nền tảng đang ở trong hệ thống này' }, [
+    icon('shield', 14), el('span', { text: `SAdmin trong ${portal.short}` }),
+    el('button', { class: 'ghost small', style: 'margin-left:6px;color:#fff;border-color:rgba(255,255,255,.5)', text: 'Rời', onclick: async () => {
+      await api('/auth/leave-system', { body: {} }).catch(() => {});
+      location.href = `/${SYSADMIN_PORTAL_ID}/`;
+    } }),
+  ]));
+}
+
 /** Màn hình chọn cổng tại "/" — thay cho một thanh điều hướng gộp tất cả. */
 function renderPortalPicker(me, allowed, warning) {
   document.title = 'Chọn cổng — Mekong Green';
@@ -1009,7 +1056,7 @@ function renderPortalPicker(me, allowed, warning) {
       ]),
       warning ? alert(warning, 'warn') : null,
       allowed.length
-        ? el('div', { class: 'portal-cards' }, allowed.map((portal) => el('a', {
+        ? el('div', { class: 'portal-cards' }, [...allowed].sort((a, b) => (a.id === SYSADMIN_PORTAL_ID ? -1 : b.id === SYSADMIN_PORTAL_ID ? 1 : 0)).map((portal) => el('a', {
             class: 'portal-card',
             href: `${portal.path}/`,
             style: `--card-accent:${portal.accent}`,
@@ -1017,7 +1064,7 @@ function renderPortalPicker(me, allowed, warning) {
             el('span', { class: 'portal-card-mark', text: portal.mark }),
             el('strong', { text: portal.name }),
             el('p', { class: 'muted', text: portal.tagline }),
-            el('p', { class: 'portal-card-audience', text: portal.audience }),
+            el('p', { class: 'portal-card-audience', text: me.superAdmin && portal.id !== SYSADMIN_PORTAL_ID ? (me.activeSystem === portal.id ? 'Đang ở trong hệ thống này' : 'Cần "vào hệ thống" trước khi xem') : portal.audience }),
           ])))
         : alert('Tài khoản của bạn chưa được cấp quyền vào cổng nào. Liên hệ quản trị nền tảng.', 'bad'),
       el('button', {

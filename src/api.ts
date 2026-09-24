@@ -12,6 +12,7 @@ import * as notifyService from './platform/notify/service.ts';
 import { PERMISSION_GROUPS, PERMISSIONS as P, ROLE_LABELS, ROLE_PERMISSIONS } from './platform/auth/rbac.ts';
 import * as users from './platform/auth/users.ts';
 import { enforceHtxScope, isHtxBound, assertEntityAccess } from './platform/auth/htxScope.ts';
+import { enforceSuperAdminSystemContext } from './platform/auth/systemContext.ts';
 import { clientIp, hitRateLimit } from './platform/http/rateLimit.ts';
 import * as sysadmin from './platform/auth/admin.ts';
 import * as scopes from './platform/auth/scopes.ts';
@@ -105,6 +106,25 @@ export function buildApi(): Router {
   });
 
   api.get('/auth/me', (ctx) => (ctx.user ? users.describeUser(ctx.user) : { anonymous: true }));
+
+  // Cơ cấu phân quyền 09/2026: quản trị nền tảng phải VÀO một hệ thống con trước khi thao tác trong đó.
+  const superAdminOnly = (ctx: Context) => {
+    if (!ctx.user) throw unauthorized();
+    if (!roleCan(ctx.user.roles, '*')) throw forbidden('Chỉ quản trị nền tảng mới chuyển hệ thống làm việc; tài khoản khác đã gắn sẵn hệ thống của mình.');
+    if (!ctx.user.sessionToken) throw badRequest('Không xác định được phiên.');
+  };
+  api.post('/auth/enter-system', (ctx) => {
+    superAdminOnly(ctx);
+    const system = String(body(ctx).system ?? '');
+    if (!SYSTEMS.some((s) => s.code === system)) throw badRequest('Hệ thống không hợp lệ.');
+    users.setActiveSystem(ctx.user!.sessionToken!, system as never, ctx.actor);
+    return users.describeUser({ ...ctx.user!, activeSystem: system as never });
+  });
+  api.post('/auth/leave-system', (ctx) => {
+    superAdminOnly(ctx);
+    users.setActiveSystem(ctx.user!.sessionToken!, null, ctx.actor);
+    return users.describeUser({ ...ctx.user!, activeSystem: null });
+  });
 
   api.post('/auth/password', (ctx) => {
     if (!ctx.user) throw badRequest('Chưa đăng nhập');
@@ -1085,6 +1105,8 @@ export function buildApi(): Router {
   registerBrdRoutes(api);
   // Tài khoản HTX chỉ chạm được dữ liệu HTX mình — áp cho mọi route, kể cả route đăng ký sau này.
   api.guard(enforceHtxScope);
+  // Quản trị nền tảng chỉ thao tác nghiệp vụ trong hệ thống con đã "vào"; route quản trị luôn mở.
+  api.guard(enforceSuperAdminSystemContext);
   // UAT DEF-AUTH-01: cờ "phải đổi mật khẩu" được THI HÀNH — mật khẩu tạm chỉ mở được ba đường: đổi mật khẩu, xem hồ sơ, đăng xuất.
   api.guard((ctx, pathname) => {
     if (ctx.user?.mustChangePassword && !['/auth/password', '/auth/me', '/auth/logout'].includes(pathname)) {

@@ -33,6 +33,14 @@ export const ROLES = {
   FIELD_CREW: 'field_crew',
   // Đối tác ngoài
   VVB_AUDITOR: 'vvb_auditor',
+  // QUẢN TRỊ HỆ THỐNG CON (09/2026): mỗi hệ thống một nhóm admin riêng — toàn quyền nghiệp vụ và quản lý tài khoản
+  // TRONG hệ thống đó, không vào cổng khác, không sửa ma trận nhóm–quyền, không cấu hình nền tảng.
+  KN_ADMIN: 'kn_admin',
+  HTX_ADMIN: 'htx_admin',
+  CGH_ADMIN: 'cgh_admin',
+  GIS_ADMIN: 'gis_admin',
+  ERP_ADMIN: 'erp_admin',
+  FIELD_ADMIN: 'field_admin',
 } as const;
 
 export type Role = (typeof ROLES)[keyof typeof ROLES];
@@ -53,6 +61,12 @@ export const ROLE_LABELS: Record<string, string> = {
   [ROLES.FIELD_MANAGER]: 'Điều hành hiện trường',
   [ROLES.FIELD_CREW]: 'Đội trưởng thu gom rơm',
   [ROLES.VVB_AUDITOR]: 'Tổ chức kiểm định (VVB)',
+  [ROLES.KN_ADMIN]: 'Quản trị hệ thống Khuyến nông',
+  [ROLES.HTX_ADMIN]: 'Quản trị hệ thống Hợp tác xã',
+  [ROLES.CGH_ADMIN]: 'Quản trị hệ thống Cơ giới hoá',
+  [ROLES.GIS_ADMIN]: 'Quản trị Nền tảng GIS',
+  [ROLES.ERP_ADMIN]: 'Quản trị hệ thống ERP',
+  [ROLES.FIELD_ADMIN]: 'Quản trị hệ thống Hiện trường',
 };
 
 /**
@@ -121,6 +135,8 @@ export const PERMISSIONS = {
   PORTAL_GIS: 'portal.gis',
   PORTAL_ERP: 'portal.erp',
   PORTAL_FIELD: 'portal.field',
+  /** Cổng Quản trị hệ thống — chỉ quản trị nền tảng (qua `*`); không nhóm nào khác được cấp. */
+  PORTAL_SYSADMIN: 'portal.sysadmin',
 } as const;
 
 export type Permission = (typeof PERMISSIONS)[keyof typeof PERMISSIONS];
@@ -202,6 +218,7 @@ export const PERMISSION_GROUPS: { group: string; permissions: { code: string; la
       { code: 'portal.gis', label: 'Vào Nền tảng GIS' },
       { code: 'portal.erp', label: 'Vào ERP nội bộ' },
       { code: 'portal.field', label: 'Vào Cổng Hiện trường' },
+      { code: 'portal.sysadmin', label: 'Vào Cổng Quản trị hệ thống (chỉ quản trị nền tảng)' },
     ],
   },
   {
@@ -224,14 +241,41 @@ export const PERMISSION_GROUPS: { group: string; permissions: { code: string; la
  */
 export type SystemCode = 'kn' | 'htx' | 'cgh' | 'gis' | 'erp' | 'field';
 
-export const SYSTEMS: { code: SystemCode; label: string; portal: string; roles: string[] }[] = [
-  { code: 'kn', label: 'Hệ thống Khuyến nông', portal: 'portal.kn', roles: [ROLES.KN_TRUNG_UONG, ROLES.KN_TINH, ROLES.KN_XA] },
-  { code: 'htx', label: 'Hệ thống Hợp tác xã', portal: 'portal.htx', roles: [ROLES.HTX_MANAGER, ROLES.FARMER] },
-  { code: 'cgh', label: 'Hệ thống Cơ giới hoá', portal: 'portal.cgh', roles: [ROLES.DCRD_VIEWER] },
-  { code: 'gis', label: 'Nền tảng GIS', portal: 'portal.gis', roles: [] },
-  { code: 'erp', label: 'ERP nội bộ Mekong Green', portal: 'portal.erp', roles: [ROLES.SUPPLY_CHAIN, ROLES.FINANCE, ROLES.WAREHOUSE_OP, ROLES.LOGISTICS, ROLES.EXECUTIVE, ROLES.VVB_AUDITOR] },
-  { code: 'field', label: 'Hệ thống Hiện trường', portal: 'portal.field', roles: [ROLES.FIELD_MANAGER, ROLES.FIELD_CREW] },
+export const SYSTEMS: { code: SystemCode; label: string; portal: string; adminRole: string; roles: string[] }[] = [
+  { code: 'kn', label: 'Hệ thống Khuyến nông', portal: 'portal.kn', adminRole: ROLES.KN_ADMIN, roles: [ROLES.KN_ADMIN, ROLES.KN_TRUNG_UONG, ROLES.KN_TINH, ROLES.KN_XA] },
+  { code: 'htx', label: 'Hệ thống Hợp tác xã', portal: 'portal.htx', adminRole: ROLES.HTX_ADMIN, roles: [ROLES.HTX_ADMIN, ROLES.HTX_MANAGER, ROLES.FARMER] },
+  { code: 'cgh', label: 'Hệ thống Cơ giới hoá', portal: 'portal.cgh', adminRole: ROLES.CGH_ADMIN, roles: [ROLES.CGH_ADMIN, ROLES.DCRD_VIEWER] },
+  { code: 'gis', label: 'Nền tảng GIS', portal: 'portal.gis', adminRole: ROLES.GIS_ADMIN, roles: [ROLES.GIS_ADMIN] },
+  { code: 'erp', label: 'ERP nội bộ Mekong Green', portal: 'portal.erp', adminRole: ROLES.ERP_ADMIN, roles: [ROLES.ERP_ADMIN, ROLES.SUPPLY_CHAIN, ROLES.FINANCE, ROLES.WAREHOUSE_OP, ROLES.LOGISTICS, ROLES.EXECUTIVE, ROLES.VVB_AUDITOR] },
+  { code: 'field', label: 'Hệ thống Hiện trường', portal: 'portal.field', adminRole: ROLES.FIELD_ADMIN, roles: [ROLES.FIELD_ADMIN, ROLES.FIELD_MANAGER, ROLES.FIELD_CREW] },
 ];
+
+/** Nhóm quản trị của từng hệ thống con và chiều ngược lại. */
+export const SYSTEM_ADMIN_ROLES: Record<SystemCode, string> = Object.fromEntries(SYSTEMS.map((s) => [s.code, s.adminRole])) as Record<SystemCode, string>;
+export const ADMIN_ROLE_SYSTEM: Record<string, SystemCode> = Object.fromEntries(SYSTEMS.map((s) => [s.adminRole, s.code]));
+export const isSystemAdminRole = (role: string): boolean => role in ADMIN_ROLE_SYSTEM;
+
+/**
+ * Hệ thống con mà một QUYỀN thuộc về — dùng để buộc quản trị nền tảng "vào" đúng hệ thống trước khi thao tác.
+ *   'shared' = dữ liệu dùng chung (mdm, reporting) — dùng được khi đã ở trong bất kỳ hệ thống nào;
+ *   'admin'  = quản trị nền tảng; null = quyền không thuộc hệ thống nào (route mở).
+ */
+export function systemOfPermission(permission: string | undefined | null): SystemCode | 'shared' | 'admin' | null {
+  if (!permission) return null;
+  const [domain, action] = permission.split('.');
+  if (domain === 'portal') return action === 'sysadmin' ? 'admin' : (action as SystemCode);
+  switch (domain) {
+    case 'khuyennong': return 'kn';
+    case 'htx': return 'htx';
+    case 'cgh': case 'rental': return 'cgh';
+    case 'gis': return 'gis';
+    case 'simulation': case 'warehouse': case 'procurement': case 'sales': case 'tms': case 'finance': case 'mrv': return 'erp';
+    case 'field': return 'field';
+    case 'mdm': case 'reporting': return 'shared';
+    case 'admin': return 'admin';
+    default: return null;
+  }
+}
 
 /** Nhóm → hệ thống. `*` là quản trị nền tảng. */
 export const ROLE_SYSTEM: Record<string, SystemCode | '*'> = Object.fromEntries([
@@ -337,6 +381,31 @@ export const ROLE_PERMISSIONS: Record<string, Permission[] | ['*']> = {
   // nghiệp vụ của nông dân và cán bộ khuyến nông.
   [ROLES.VVB_AUDITOR]: [P.PORTAL_ERP, P.GIS_READ, P.MRV_READ, P.REPORT_READ],
 };
+
+/**
+ * QUYỀN CỦA QUẢN TRỊ HỆ THỐNG CON (cơ cấu 09/2026) — CÁCH LY TUYỆT ĐỐI GIỮA CÁC HỆ THỐNG:
+ *   = cổng của mình + TOÀN BỘ quyền thuộc miền nghiệp vụ của hệ thống mình (đọc/ghi/duyệt)
+ *   + dữ liệu dùng chung chỉ đọc (mdm.read, gis.read, reporting.read; mdm.write nếu nhóm nghiệp vụ của hệ thống có)
+ *   + quản lý tài khoản và uỷ quyền TRONG hệ thống (admin.users, admin.delegate).
+ * KHÔNG có quyền đọc/ghi dữ liệu hệ thống khác dù nhóm nghiệp vụ của hệ thống có (cán bộ KN đọc HTX được,
+ * quản trị KN thì không), KHÔNG có admin.config / admin.groups / portal.sysadmin — ba thứ đó chỉ quản trị nền tảng có.
+ */
+const SYSTEM_PERMISSION_DOMAINS: Record<SystemCode, string[]> = {
+  kn: ['khuyennong'], htx: ['htx'], cgh: ['cgh', 'rental'], gis: ['gis'],
+  erp: ['simulation', 'warehouse', 'procurement', 'sales', 'tms', 'finance', 'mrv'], field: ['field'],
+};
+const SHARED_READ: Permission[] = [P.MDM_READ, P.GIS_READ, P.REPORT_READ];
+export function systemAdminPermissions(code: SystemCode): Permission[] {
+  const system = SYSTEMS.find((s) => s.code === code)!;
+  const domains = new Set(SYSTEM_PERMISSION_DOMAINS[code]);
+  const union = new Set<Permission>([system.portal as Permission, ...SHARED_READ, P.ADMIN_USERS, P.ADMIN_DELEGATE]);
+  for (const permission of Object.values(P)) if (domains.has(permission.split('.')[0])) union.add(permission);
+  const rolesWriteMdm = system.roles.some((role) => role !== system.adminRole && ((ROLE_PERMISSIONS[role] ?? []) as Permission[]).includes(P.MDM_WRITE));
+  if (rolesWriteMdm || code === 'gis') union.add(P.MDM_WRITE);
+  union.delete(P.ADMIN_CONFIG); union.delete(P.ADMIN_GROUPS); union.delete(P.PORTAL_SYSADMIN);
+  return [...union];
+}
+for (const system of SYSTEMS) ROLE_PERMISSIONS[system.adminRole] = systemAdminPermissions(system.code);
 
 /**
  * QUYỀN MẶC ĐỊNH THEO MÃ NGUỒN — baseline, không đọc CSDL.

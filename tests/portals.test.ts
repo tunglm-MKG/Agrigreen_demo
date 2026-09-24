@@ -36,7 +36,7 @@ function declaredPortals(): DeclaredPortal[] {
 
 test('Mỗi cổng có đường dẫn riêng và được gác bằng một quyền portal.* riêng', () => {
   const portals = declaredPortals();
-  assert.equal(portals.length, 6, 'phải có đúng 6 cổng: KN, HTX, CGH, GIS, Hiện trường, ERP');
+  assert.equal(portals.length, 7, 'phải có đúng 7 cổng: KN, HTX, CGH, GIS, Hiện trường, ERP và Quản trị hệ thống');
 
   const paths = portals.map((p) => p.path);
   assert.deepEqual([...new Set(paths)], paths, 'đường dẫn cổng không được trùng nhau');

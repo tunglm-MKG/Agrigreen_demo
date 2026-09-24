@@ -661,6 +661,12 @@ Mã nguồn: [`erp/params/actuals.ts`](src/erp/params/actuals.ts) ·
 
 ## 1N. Phân quyền theo phạm vi và tách cơ sở dữ liệu theo hệ thống con
 
+### Điều chỉnh 24/09/2026: quản trị riêng từng hệ thống, SAdmin tách ra cổng Quản trị
+
+- Mỗi hệ thống con có nhóm quản trị riêng: `kn_admin`, `htx_admin`, `cgh_admin`, `gis_admin`, `erp_admin`, `field_admin` — toàn quyền nghiệp vụ và quản lý tài khoản **trong** hệ thống mình (tạo tài khoản, gán nhóm thuộc hệ thống, khoá, đặt lại mật khẩu, uỷ quyền tỉnh/HTX), chỉ vào đúng một cổng, **không** đọc/ghi dữ liệu hệ thống khác, không sửa ma trận nhóm–quyền, không cấu hình nền tảng. Tài khoản trình diễn: `qtri_kn`, `qtri_htx`, `qtri_cgh`, `qtri_gis`, `qtri_erp`, `qtri_field`.
+- `SAdmin` làm việc ở **Cổng Quản trị hệ thống** (`/sysadmin/`) tách riêng: tài khoản toàn hệ thống, nhóm & phân quyền, phân cấp quản trị, sức khoẻ CSDL & sao lưu, miền dữ liệu, kênh gửi, nhật ký. Muốn xem tính năng của hệ thống nào, SAdmin phải **vào hệ thống đó** (mỗi phiên một hệ thống, có nhật ký); API nghiệp vụ của hệ thống khác trả `403 enter_system_required`.
+- Chi tiết: [docs/PHAN-QUYEN-2026-09-24.md](docs/PHAN-QUYEN-2026-09-24.md).
+
 ### Mỗi hệ thống con, mỗi cấp một admin riêng — super admin quản tất cả
 
 Ma trận nhóm–quyền (mục 1H) trả lời "nhóm này làm được gì". Phần này trả lời câu còn thiếu:

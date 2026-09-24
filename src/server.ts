@@ -17,7 +17,7 @@ import { today } from './platform/util/ids.ts';
 import { HttpError, sendJson, friendlyError } from './platform/http/router.ts';
 import { buildApi } from './api.ts';
 import { gateEnabled, handleGate } from './platform/http/accessGate.ts';
-import { seedIfEmpty } from './seed.ts';
+import { seedIfEmpty, ensureSystemAdminDemoAccounts } from './seed.ts';
 import { one as dbOne } from './platform/db/db.ts';
 import { assertEncryptionKeyConfigured } from './platform/security/fieldCrypto.ts';
 import { rotateChannelSecrets } from './platform/notify/service.ts';
@@ -64,6 +64,8 @@ export async function start(port = Number(process.env.PORT ?? 4173)): Promise<vo
   seedVarietiesIfEmpty();
   // Nông hộ, thửa, mùa vụ, nhật ký mẫu cho App HTX khi CSDL chưa có (chỉ chạy một lần) — cũng theo cờ demo.
   if (allowDemoSeed) seedHtxFieldDemoIfEmpty();
+  // Cơ cấu phân quyền 09/2026: mỗi hệ thống con một quản trị riêng — bổ sung tài khoản trình diễn cho CSDL cũ.
+  if (allowDemoSeed) { const r = ensureSystemAdminDemoAccounts(); if (r.created.length || r.upgraded.length) console.log(`[seed] quản trị hệ thống con: tạo ${r.created.join(', ') || '—'}; nâng nhóm ${r.upgraded.join(', ') || '—'}`); }
   // M-04: token kênh gửi còn lưu rõ trong system_config → mã hoá.
   const sealed = rotateChannelSecrets();
   if (sealed) console.log(`[notify] đã mã hoá ${sealed} bí mật kênh gửi.`);

@@ -28,7 +28,7 @@
 import { all, insert, one, run } from '../db/db.ts';
 import { nowIso, uuid } from '../util/ids.ts';
 import { logEvent, type AuditActor } from '../audit/audit.ts';
-import { permissionsFor, ROLE_LABELS, ROLE_SYSTEM, SYSTEMS, type SystemCode } from './rbac.ts';
+import { permissionsFor, ROLE_LABELS, ROLE_SYSTEM, SYSTEMS, ADMIN_ROLE_SYSTEM, isSystemAdminRole, type SystemCode } from './rbac.ts';
 import { getUser, type User } from './users.ts';
 
 export type ScopeType = 'system' | 'province' | 'htx';
@@ -82,12 +82,30 @@ function toScope(row: ScopeRow): AdminScope {
   };
 }
 
+/** Phạm vi NGẦM: nhóm quản trị hệ thống con (kn_admin, erp_admin…) = phạm vi cấp hệ thống của hệ thống đó. */
+export function implicitScopesOf(user: { id: string; roles: string[]; createdAt?: string }): AdminScope[] {
+  return user.roles.filter(isSystemAdminRole).map((role) => {
+    const system = ADMIN_ROLE_SYSTEM[role];
+    const systemLabel = SYSTEMS.find((s) => s.code === system)?.label ?? system;
+    return {
+      id: `role:${role}`, userId: user.id, system, systemLabel, scopeType: 'system' as ScopeType, scopeId: null, scopeName: null,
+      label: `${systemLabel} — toàn hệ thống (nhóm ${ROLE_LABELS[role] ?? role})`, grantedBy: 'nhóm quản trị', grantedAt: '', note: 'Phạm vi đi theo nhóm quản trị hệ thống; gỡ nhóm để thu hồi.',
+    };
+  });
+}
+
 export function scopesOf(userId: string): AdminScope[] {
+  let granted: AdminScope[] = [];
   try {
-    return all<ScopeRow>('SELECT * FROM admin_scopes WHERE user_id = ? ORDER BY system, scope_type', [userId]).map(toScope);
+    granted = all<ScopeRow>('SELECT * FROM admin_scopes WHERE user_id = ? ORDER BY system, scope_type', [userId]).map(toScope);
   } catch {
-    return []; // bảng chưa có (CSDL cũ)
+    granted = []; // bảng chưa có (CSDL cũ)
   }
+  const user = getUser(userId);
+  const implicit = user ? implicitScopesOf(user) : [];
+  // Phạm vi cấp hệ thống đã có từ nhóm thì bản ghi uỷ quyền trùng không cần liệt kê hai lần.
+  const covered = new Set(implicit.map((s) => s.system));
+  return [...implicit, ...granted.filter((s) => !(s.scopeType === 'system' && covered.has(s.system)))];
 }
 
 /** Bối cảnh quản trị của người đang thao tác, hoặc null nếu họ không quản trị gì. */
@@ -160,7 +178,14 @@ export function assertCanManage(ctx: AdminContext, targetUserId: string): User {
 export function assignableRoles(ctx: AdminContext): string[] {
   const all = Object.keys(ROLE_LABELS);
   if (ctx.superAdmin) return all;
-  return all.filter((role) => { const s = ROLE_SYSTEM[role]; return s && s !== '*' && ctx.systems.has(s); });
+  const systemLevel = new Set(ctx.scopes.filter((s) => s.scopeType === 'system').map((s) => s.system));
+  return all.filter((role) => {
+    const s = ROLE_SYSTEM[role];
+    if (!s || s === '*' || !ctx.systems.has(s)) return false;
+    // Nhóm quản trị hệ thống chỉ do quản trị cấp hệ thống (hoặc nền tảng) gán — admin tỉnh/HTX không tự nâng cấp.
+    if (isSystemAdminRole(role)) return systemLevel.has(s);
+    return true;
+  });
 }
 
 export function assertRolesAllowed(ctx: AdminContext, roles: string[]): void {
@@ -257,6 +282,7 @@ export function grantScope(
 }
 
 export function revokeScope(id: string, granter: AdminContext, actor: AuditActor = {}): void {
+  if (id.startsWith('role:')) throw new Error('Phạm vi này đến từ nhóm quản trị hệ thống — gỡ nhóm khỏi tài khoản (màn Tài khoản) thay vì gỡ phạm vi.');
   const row = one<ScopeRow>('SELECT * FROM admin_scopes WHERE id = ?', [id]);
   if (!row) throw new Error('Không tìm thấy phạm vi.');
   assertCanDelegate(granter, row.system as SystemCode, row.scope_type as ScopeType);

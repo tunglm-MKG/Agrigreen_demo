@@ -36,6 +36,8 @@ export const HTX_ROUTE_ALLOWLIST = new Set<string>([
   'GET /audit/replay/:date',
   'GET /audit/retention',
   'GET /auth/me',
+  'POST /auth/enter-system',
+  'POST /auth/leave-system',
   'GET /cgh/balance',
   'GET /cgh/balance/by-province',
   'GET /cgh/balance/snapshots',

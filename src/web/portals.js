@@ -330,20 +330,63 @@ export const PORTALS = [
         ],
       },
       {
-        group: 'Quản trị hệ thống',
+        group: 'Dữ liệu dùng chung',
         items: [
-          { id: 'sys-users', label: 'Tài khoản người dùng', icon: 'shield', permission: 'admin.users' },
+          { id: 'masterdata', label: 'Master Data', icon: 'database', permission: 'mdm.read' },
+        ],
+      },
+      ADMIN_GROUP,
+    ],
+  },
+
+  // -------------------------------------------------------------------------
+  // Cổng QUẢN TRỊ HỆ THỐNG — chỉ quản trị nền tảng (cơ cấu phân quyền 09/2026).
+  // Mọi tính năng quản trị nền tảng tách hẳn ra đây: tài khoản toàn hệ thống, nhóm & ma trận quyền,
+  // phân cấp quản trị, miền dữ liệu, sức khoẻ CSDL & sao lưu, kênh thông báo, nhật ký & đồng bộ.
+  // Muốn xem nghiệp vụ của hệ thống nào, SAdmin phải "vào" hệ thống đó (mục Hệ thống con).
+  // -------------------------------------------------------------------------
+  {
+    id: 'sysadmin',
+    path: '/sysadmin',
+    name: 'Quản trị hệ thống',
+    short: 'Quản trị',
+    tagline: 'Tài khoản toàn hệ thống, nhóm & phân quyền, phân cấp quản trị, dữ liệu, sao lưu, kênh gửi, nhật ký',
+    tagline2: 'Quản trị nền tảng',
+    mark: '🛡️',
+    accent: '#5B2A86',
+    permission: 'portal.sysadmin',
+    audience: 'Chỉ Super Admin (SAdmin)',
+    quick: ['sys-systems', 'sys-users', 'sys-groups', 'sys-health'],
+    nav: [
+      {
+        group: 'Hệ thống con',
+        items: [
+          { id: 'sys-systems', label: 'Các hệ thống & vào hệ thống', icon: 'grid', permission: 'portal.sysadmin' },
+        ],
+      },
+      {
+        group: 'Tài khoản & phân quyền',
+        items: [
+          { id: 'sys-users', label: 'Tài khoản toàn hệ thống', icon: 'shield', permission: 'admin.users' },
           { id: 'sys-scopes', label: 'Phân cấp quản trị', icon: 'tag', permission: 'admin.delegate' },
-          { id: 'sys-groups', label: 'Nhóm & phân quyền', icon: 'users', permission: 'admin.groups' },
+          { id: 'sys-groups', label: 'Nhóm & ma trận phân quyền', icon: 'users', permission: 'admin.groups' },
+        ],
+      },
+      {
+        group: 'Nền tảng',
+        items: [
+          { id: 'sys-health', label: 'Sức khoẻ CSDL & sao lưu', icon: 'database', permission: 'admin.config' },
           { id: 'sys-data', label: 'Miền dữ liệu & đồng bộ', icon: 'database', permission: 'admin.config' },
           { id: 'sys-notify', label: 'Thông báo & kênh gửi', icon: 'bell', permission: 'admin.config' },
-          { id: 'masterdata', label: 'Master Data', icon: 'database', permission: 'mdm.read' },
-          { id: 'admin', label: 'Nhật ký & đồng bộ', icon: 'history', permission: 'gis.read' },
+          { id: 'admin', label: 'Nhật ký & đồng bộ', icon: 'history', permission: 'admin.config' },
         ],
       },
     ],
   },
 ];
+
+/** Cổng Quản trị hệ thống (chỉ quản trị nền tảng). */
+export const SYSADMIN_PORTAL_ID = 'sysadmin';
 
 /** Tra cổng theo đường dẫn hiện tại; trả về null khi đang ở trang chọn cổng. */
 export function portalFromPath(pathname) {

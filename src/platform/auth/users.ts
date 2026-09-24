@@ -9,7 +9,7 @@ import { randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
 import { all, insert, one, run, transaction, update, upsert } from '../db/db.ts';
 import { hashPassword, nowIso, uuid } from '../util/ids.ts';
 import { logEvent } from '../audit/audit.ts';
-import { permissionsFor, ROLE_LABELS, ROLES } from './rbac.ts';
+import { permissionsFor, ROLE_LABELS, ROLES, SYSTEMS, isSystemAdminRole, ADMIN_ROLE_SYSTEM, type SystemCode } from './rbac.ts';
 
 // ---------------------------------------------------------------------------
 // Băm mật khẩu: scrypt (KDF có chi phí bộ nhớ) thay cho SHA-256 một vòng (rà soát CSDL 24/09/2026,
@@ -45,6 +45,10 @@ export interface User {
   /** Tỉnh (admin_units.id) — phạm vi quản trị cấp tỉnh bám vào cột này. */
   provinceId: string | null;
   roles: string[];
+  /** Quản trị nền tảng đang "ở trong" hệ thống con nào (theo phiên); null = chưa vào hệ thống nào. */
+  activeSystem?: SystemCode | null;
+  /** Token của phiên hiện tại (chỉ có khi được dựng từ token). */
+  sessionToken?: string;
 }
 
 interface UserRow {
@@ -419,8 +423,8 @@ export function logout(token: string): void {
 
 export function userFromToken(token: string | null | undefined): User | null {
   if (!token) return null;
-  const session = one<{ user_id: string; expires_at: string }>(
-    'SELECT user_id, expires_at FROM sessions WHERE token = ?',
+  const session = one<{ user_id: string; expires_at: string; active_system?: string | null }>(
+    'SELECT user_id, expires_at, active_system FROM sessions WHERE token = ?',
     [token],
   );
   if (!session) return null;
@@ -437,7 +441,17 @@ export function userFromToken(token: string | null | undefined): User | null {
     run('DELETE FROM sessions WHERE token = ?', [token]);
     return null;
   }
-  return user;
+  return { ...user, activeSystem: (session.active_system as SystemCode | null | undefined) ?? null, sessionToken: token };
+}
+
+/**
+ * Quản trị nền tảng phải "VÀO" một hệ thống con trước khi thao tác nghiệp vụ trong đó (cơ cấu 09/2026):
+ * ghi vào phiên, có nhật ký; rời hệ thống thì đặt null. Người không phải quản trị nền tảng không dùng.
+ */
+export function setActiveSystem(token: string, system: SystemCode | null, actor: { id?: string | null; name?: string | null } = {}): void {
+  if (system && !SYSTEMS.some((s) => s.code === system)) throw new Error('Hệ thống không hợp lệ.');
+  run('UPDATE sessions SET active_system = ? WHERE token = ?', [system, token]);
+  logEvent({ module: 'admin', entityType: 'admin_session', entityId: actor.id ?? null, action: 'update', after: { activeSystem: system }, note: system ? 'enter_system' : 'leave_system', source: 'ui' }, actor);
 }
 
 export function describeUser(user: User): Record<string, unknown> {
@@ -451,13 +465,19 @@ export function describeUser(user: User): Record<string, unknown> {
       adminScopes = all<{ system: string; scope_type: string; scope_id: string | null }>(
         'SELECT system, scope_type, scope_id FROM admin_scopes WHERE user_id = ?', [user.id]);
     } catch { /* bảng chưa có */ }
+    // Nhóm quản trị hệ thống con = phạm vi cấp hệ thống ngầm.
+    for (const role of user.roles.filter(isSystemAdminRole)) adminScopes.push({ system: ADMIN_ROLE_SYSTEM[role], scope_type: 'system', scope_id: null, fromRole: role });
     if (adminScopes.length) permissions.add('admin.users');
     if (adminScopes.some((s) => s.scope_type === 'system')) permissions.add('admin.delegate');
   }
+  const { sessionToken: _token, ...safe } = user;
   return {
-    ...user,
+    ...safe,
     roleLabels: user.roles.map((role) => ROLE_LABELS[role] ?? role),
     permissions: [...permissions],
     adminScopes,
+    superAdmin: permissions.has('*'),
+    activeSystem: user.activeSystem ?? null,
+    systemAdminOf: user.roles.filter(isSystemAdminRole).map((role) => ADMIN_ROLE_SYSTEM[role]),
   };
 }
