@@ -43,8 +43,17 @@ export const notFound = (message = 'Không tìm thấy dữ liệu') => new Http
 export const forbidden = (message = 'Không đủ quyền truy cập') => new HttpError(403, message);
 export const unauthorized = (message = 'Chưa đăng nhập') => new HttpError(401, message);
 
+export type Guard = (ctx: Context, pathname: string) => void | Promise<void>;
+
 export class Router {
   private readonly routes: Route[] = [];
+  private readonly guards: Guard[] = [];
+
+  /** Hàm chạy trước MỌI handler (sau khi đã xác thực và đọc body) — dùng để chốt phạm vi dữ liệu. */
+  guard(fn: Guard): this {
+    this.guards.push(fn);
+    return this;
+  }
 
   add(method: string, path: string, handler: Handler, permission?: string): this {
     this.routes.push({
@@ -125,9 +134,12 @@ export class Router {
     }
 
     // Chống ghi trùng: cùng khoá của cùng người → trả lại kết quả cũ, không chạy lại.
+    // Route xác thực (/auth/*) KHÔNG tham gia: phản hồi đăng nhập chứa token, nếu lưu lại thì
+    // một yêu cầu sai mật khẩu dùng cùng khoá sẽ nhận lại token cũ (review 24/09/2026, P1 #5).
     const method = req.method ?? 'GET';
     const idemHeader = req.headers['idempotency-key'];
-    const idemKey = method !== 'GET' && method !== 'HEAD' && typeof idemHeader === 'string' && idemHeader.length >= 8
+    const isAuthRoute = /(^|\/)auth\//.test(url.pathname);
+    const idemKey = method !== 'GET' && method !== 'HEAD' && !isAuthRoute && typeof idemHeader === 'string' && idemHeader.length >= 8
       ? idemHeader.slice(0, 128)
       : null;
     if (idemKey) {
@@ -149,6 +161,8 @@ export class Router {
       user,
       actor: { id: user?.id ?? null, name: user?.fullName ?? 'anonymous' },
     };
+
+    for (const guard of this.guards) await guard(ctx, url.pathname);
 
     const result = await found.route.handler(ctx);
     if (result !== undefined && !res.writableEnded) {

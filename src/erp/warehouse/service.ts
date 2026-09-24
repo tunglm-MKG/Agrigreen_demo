@@ -427,6 +427,10 @@ export function createGoodsIssue(
     [input.facilityId],
   );
   if (!facility) throw new Error('Không tìm thấy kho');
+  // Review 24/09/2026 P1 #4: số âm/NaN/∞ từng lọt qua và LÀM TĂNG tồn kho khi duyệt.
+  if (!Number.isFinite(input.issuedTons) || input.issuedTons <= 0) {
+    throw new Error('Số lượng xuất phải là số lớn hơn 0 (tấn).');
+  }
   if (input.issuedTons > facility.current_stock_tons) {
     throw new Error(`Tồn kho ${facility.name} chỉ còn ${facility.current_stock_tons} tấn — không đủ để xuất ${input.issuedTons} tấn.`);
   }
@@ -456,12 +460,22 @@ export function approveGoodsIssue(id: string, actor: AuditActor = {}): Record<st
   );
   if (!issue) throw new Error('Không tìm thấy phiếu xuất');
   if (issue.status === 'da_duyet') throw new Error('Phiếu xuất đã được phê duyệt.');
+  if (!Number.isFinite(issue.issued_tons) || issue.issued_tons <= 0) throw new Error('Phiếu xuất có số lượng không hợp lệ — không thể phê duyệt.');
 
   const lots = suggestedIssueOrder(issue.facility_id);
   let remaining = issue.issued_tons;
   const consumed: { lot: string; tons: number }[] = [];
 
   transaction(() => {
+    // Review 24/09/2026 P1 #3: tồn kho phải được kiểm LẠI tại thời điểm duyệt, trong cùng giao dịch —
+    // hai phiếu cùng xuất một lượng hàng từng được duyệt cả hai, phiếu sau không trừ lô nào nhưng vẫn ghi công nợ.
+    const facility = one<{ name: string; current_stock_tons: number }>('SELECT name, current_stock_tons FROM facilities WHERE id = ?', [issue.facility_id]);
+    if (!facility) throw new Error('Không tìm thấy kho của phiếu xuất.');
+    const lotTons = lots.reduce((sum, lot) => sum + Number(lot.remaining_tons), 0);
+    const available = lots.length ? Math.min(facility.current_stock_tons, lotTons) : facility.current_stock_tons;
+    if (available + 0.0005 < issue.issued_tons) {
+      throw new Error(`Không đủ hàng để duyệt phiếu ${issue.code}: kho ${facility.name} còn ${Math.round(available * 1000) / 1000} tấn, phiếu cần ${issue.issued_tons} tấn. Phiếu giữ trạng thái chờ duyệt.`);
+    }
     for (const lot of lots) {
       if (remaining <= 0) break;
       const available = Number(lot.remaining_tons);
@@ -473,8 +487,9 @@ export function approveGoodsIssue(id: string, actor: AuditActor = {}): Record<st
       consumed.push({ lot: String(lot.code), tons: Math.round(take * 1000) / 1000 });
       remaining -= take;
     }
+    if (lots.length && remaining > 0.0005) throw new Error(`Không đủ lô hàng để xuất ${issue.issued_tons} tấn (thiếu ${Math.round(remaining * 1000) / 1000} tấn).`);
     update('goods_issues', id, { status: 'da_duyet', approved_by: actor.name ?? null, approved_at: nowIso() });
-    run('UPDATE facilities SET current_stock_tons = MAX(0, current_stock_tons - ?), updated_at = ? WHERE id = ?', [
+    run('UPDATE facilities SET current_stock_tons = current_stock_tons - ?, updated_at = ? WHERE id = ?', [
       issue.issued_tons, nowIso(), issue.facility_id,
     ]);
     if (issue.so_id) {
@@ -495,7 +510,8 @@ export function approveGoodsIssue(id: string, actor: AuditActor = {}): Record<st
 
   emitMrvRecord('warehouse', 'goods_issue', issue.id, actor);
   logEvent({ module: 'warehouse', entityType: 'goods_issues', entityId: id, action: 'approve', after: { consumed } }, actor);
-  return { issue: one('SELECT * FROM goods_issues WHERE id = ?', [id]), consumed, shortfall: Math.max(0, remaining) };
+  // Duyệt xong là đã xuất đủ (thiếu hàng đã bị từ chối trong giao dịch) — `shortfall` giữ cho tương thích, luôn 0.
+  return { issue: one('SELECT * FROM goods_issues WHERE id = ?', [id]), consumed, shortfall: 0 };
 }
 
 // ---------------------------------------------------------------------------

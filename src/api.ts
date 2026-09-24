@@ -11,6 +11,7 @@ import * as files from './platform/files/attachments.ts';
 import * as notifyService from './platform/notify/service.ts';
 import { PERMISSION_GROUPS, PERMISSIONS as P, ROLE_LABELS, ROLE_PERMISSIONS } from './platform/auth/rbac.ts';
 import * as users from './platform/auth/users.ts';
+import { enforceHtxScope } from './platform/auth/htxScope.ts';
 import * as sysadmin from './platform/auth/admin.ts';
 import * as scopes from './platform/auth/scopes.ts';
 import * as sharedFlows from './platform/sync/sharedFlows.ts';
@@ -736,9 +737,16 @@ export function buildApi(): Router {
   api.post('/htx-registry/register', (ctx) =>
     registry.registerByExtension(body(ctx) as never, ctx.actor), P.KN_WRITE);
   api.post('/htx-registry/preview-claim', (ctx) => registry.previewClaim(body(ctx).taxCode), P.MDM_READ);
-  api.post('/htx-registry/claim', (ctx) => registry.claimByTaxCode(
-    { ...body(ctx), userId: body(ctx).userId ?? ctx.actor.id }, ctx.actor,
-  ), P.HTX_WRITE);
+  // Người nhận HTX luôn là người đang đăng nhập; gắn HTX cho người KHÁC là thao tác quản trị tài khoản
+  // (review 24/09/2026, P1 #2 — trước đây tin `userId` trong body).
+  api.post('/htx-registry/claim', (ctx) => {
+    const requested = body(ctx).userId ? String(body(ctx).userId) : null;
+    const self = ctx.user!.id;
+    if (requested && requested !== self && !roleCan(ctx.user!.roles, P.ADMIN_USERS)) {
+      throw forbidden('Chỉ quản trị tài khoản mới được gắn hợp tác xã cho người dùng khác.');
+    }
+    return registry.claimByTaxCode({ ...body(ctx), userId: requested && roleCan(ctx.user!.roles, P.ADMIN_USERS) ? requested : self }, ctx.actor);
+  }, P.HTX_WRITE);
   api.put('/htx-registry/:id/tax-code', (ctx) =>
     registry.setTaxCode(ctx.params.id, body(ctx).taxCode, ctx.actor), P.MDM_WRITE);
 
@@ -1028,6 +1036,8 @@ export function buildApi(): Router {
 
   // Bổ sung theo BRD / User Story 09-2026 — xem api-brd.ts.
   registerBrdRoutes(api);
+  // Tài khoản HTX chỉ chạm được dữ liệu HTX mình — áp cho mọi route, kể cả route đăng ký sau này.
+  api.guard(enforceHtxScope);
 
   return api;
 }
