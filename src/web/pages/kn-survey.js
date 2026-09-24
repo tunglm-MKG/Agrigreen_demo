@@ -11,7 +11,7 @@
  */
 import {
   api, registerPage, el, card, kpi, table, badge, alert, num, dateTime,
-  toast, guard, can, form, mapContainer, createMap, LEAFLET_AVAILABLE,
+  toast, guard, can, form, mapContainer, createMap, LEAFLET_AVAILABLE, apiConfirm,
 } from '/app.js';
 
 const FREQ_LABEL = { tuan: 'Hàng tuần', thang: 'Hàng tháng', dot_xuat: 'Đột xuất' };
@@ -437,7 +437,7 @@ registerPage('kn-plots', {
       };
 
       const save = async () => {
-        if (drawing.length < 3) return toast('Ranh giới thửa ruộng phải có tối thiểu 3 đỉnh.', true);
+        if (drawing.length < 4) return toast('Ranh giới thửa ruộng phải có tối thiểu 4 đỉnh không thẳng hàng (BR-01).', true);
         if (editingPlotId) {
           const updated = await guard(api(`/mdm/plots/${editingPlotId}/boundary`, {
             method: 'PUT', body: { boundary: drawing },
@@ -445,9 +445,10 @@ registerPage('kn-plots', {
           toast(`Đã cập nhật ${updated.code}: ${updated.areaLabel} (${updated.deltaHa >= 0 ? '+' : ''}${num(updated.deltaHa, 3)} ha).`);
           for (const warning of updated.warnings ?? []) toast(warning, true);
         } else {
-          const created = await guard(api('/mdm/plots', {
+          // Cùng luật với Cổng HTX: ≥ 4 điểm, không tự cắt, chồng lấn cùng HTX phải xác nhận, khác HTX bị chặn (UAT DEF-KN-PLOT-01/02).
+          const created = await guard(apiConfirm('/mdm/plots', {
             body: { htxId: currentHtx, boundary: drawing, source: 'app_khuyennong' },
-          }));
+          }, 'confirmOverlap'));
           toast(`Đã tạo thửa ${created.code} — diện tích ${created.areaLabel} (hệ thống tự tính).`);
         }
         drawing.length = 0;
@@ -512,7 +513,7 @@ registerPage('kn-plots', {
 
             can('mdm.write')
               ? el('div', {}, [
-                  el('p', { class: 'muted', text: 'Nhấp ≥ 3 điểm theo viền thửa rồi bấm Lưu. Diện tích do hệ thống tính bằng công thức diện tích cầu — không nhập tay được.' }),
+                  el('p', { class: 'muted', text: 'Nhấp ≥ 4 điểm theo đúng thứ tự đi vòng quanh viền thửa (không cắt chéo) rồi bấm Lưu. Diện tích do hệ thống tính bằng công thức diện tích cầu — không nhập tay được.' }),
                   el('div', { class: 'chip-row' }, [
                     el('button', { class: 'small', text: '💾 Lưu thửa', onclick: save }),
                     el('button', { class: 'ghost small', text: '↶ Xoá điểm cuối', onclick: () => { drawing.pop(); redraw(); } }),

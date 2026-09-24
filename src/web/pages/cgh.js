@@ -97,7 +97,7 @@ registerPage('cgh-map', {
   title: 'Bản đồ mức đáp ứng cơ giới hoá',
   subtitle: 'Mỗi HTX tô màu theo khâu YẾU NHẤT · lọc vụ / khâu / mức · tìm HTX, xã, mã máy, chủ máy · nhấp để xem chi tiết',
   async render(view, actions, params = {}) {
-    const [balance, seasons, dashboard] = await Promise.all([guard(api('/cgh/balance')), api('/mdm/seasons').catch(() => []), api('/cgh/dashboard')]);
+    const [balance, seasons, dashboard, cooperatives] = await Promise.all([guard(api('/cgh/balance')), api('/mdm/seasons').catch(() => []), api('/cgh/dashboard'), api('/mdm/cooperatives').catch(() => [])]);
     let rows = balance.rows; let stage = ''; let level = '';
     const mapNode = mapContainer('cgh-map-canvas', 'tall');
     const detail = el('div', { class: 'card' }, [emptyState('Nhấp một HTX trên bản đồ hoặc tìm kiếm để xem chi tiết.', 'map')]);
@@ -133,6 +133,11 @@ registerPage('cgh-map', {
         const cur = worst.get(row.htxId);
         if (!cur || (row.coveragePct ?? 999) < (cur.coveragePct ?? 999)) worst.set(row.htxId, row);
       }
+      // UAT DEF-CGH-21: HTX chưa có kế hoạch canh tác / định mức phải hiện là "Chưa có dữ liệu" (xám), không bị ẩn hay tô đỏ.
+      for (const c of cooperatives) {
+        if (!c.lat || worst.has(c.id)) continue;
+        worst.set(c.id, { htxId: c.id, htxCode: c.code, htxName: c.name, lat: c.lat, lng: c.lng, stage: null, coveragePct: null, level: 'chua_co_du_lieu', levelLabel: 'Chưa có dữ liệu', color: '#9CADA5', requiredMachines: null, operationalMachines: null, gap: null });
+      }
       return [...worst.values()].filter((r) => !level || r.level === level);
     };
     function draw() {
@@ -147,7 +152,7 @@ registerPage('cgh-map', {
       markers.forEach((m) => map.removeLayer(m)); markers = [];
       for (const row of list) {
         markers.push(window.L.circleMarker([row.lat, row.lng], { radius: 9, color: '#fff', fillColor: row.color, fillOpacity: 0.9, weight: 2 })
-          .bindTooltip(`${row.htxName} · ${STAGE[row.stage] ?? row.stage} · ${row.coveragePct === null ? 'Chưa có dữ liệu' : pct(row.coveragePct)}`)
+          .bindTooltip(`${row.htxName} · ${row.stage ? (STAGE[row.stage] ?? row.stage) : 'Chưa có kế hoạch canh tác'} · ${row.coveragePct === null ? 'Chưa có dữ liệu' : pct(row.coveragePct)}`)
           .on('click', () => openDetail(row.htxId)).addTo(map));
       }
     }

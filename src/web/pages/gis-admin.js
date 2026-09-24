@@ -126,6 +126,7 @@ registerPage('gis-admin', {
       { id: 'history', label: 'Nhật ký', icon: 'history', render: renderHistory },
       { id: 'retention', label: 'Lưu trữ', icon: 'database', render: renderRetention },
       { id: 'integration', label: 'Tích hợp', icon: 'link', render: renderIntegration },
+      { id: 'catalog', label: 'Giống & mùa vụ', icon: 'seed', render: renderCatalog },
     ], { initial: sessionStorage.getItem('mg.gis.admin.tab') ?? 'config', onChange: (id) => { try { sessionStorage.setItem('mg.gis.admin.tab', id); } catch { /* bỏ qua */ } } }));
 
     // ------------------------------------------------------------------ Cấu hình
@@ -521,6 +522,43 @@ registerPage('gis-admin', {
         card('Luồng dữ liệu VÀO GIS (FN-21)', el('div', { class: 'stack' }, (info.inbound ?? []).map(row))),
         card('Luồng dữ liệu RA từ GIS', el('div', { class: 'stack' }, (info.outbound ?? []).map(row))),
         alert(`Đang có ${info.manualOverrides ?? 0} bản ghi nhập tay dự phòng. GIS chỉ HIỂN THỊ kết quả thiếu/thừa máy từ Bản đồ CGH, không tính lại.`, 'info'),
+      );
+    }
+
+    // ------------------------------------------------------------------ Giống lúa & mùa vụ (UAT DEF-HTX-13)
+    async function renderCatalog(panel) {
+      const [varieties, seasons] = await Promise.all([guard(api('/mdm/rice-varieties?all=1')), api('/mdm/seasons').catch(() => [])]);
+      panel.replaceChildren(
+        el('div', { class: 'grid cols-2' }, [
+          card('Giống lúa', [
+            el('p', { class: 'muted', text: 'Giống đang được vụ tham chiếu thì chỉ ẩn được, không xoá; giống ẩn khôi phục lại được.' }),
+            mdmWrite ? form([
+              { name: 'code', label: 'Mã giống', required: true, placeholder: 'OM5451' }, { name: 'name', label: 'Tên giống', required: true },
+              { name: 'growthDays', label: 'Ngày sinh trưởng', type: 'number', min: '60', value: 95 },
+              { name: 'yieldMinTHa', label: 'Năng suất tối thiểu (t/ha)', type: 'number', step: '0.1', value: 5 }, { name: 'yieldMaxTHa', label: 'Năng suất tối đa (t/ha)', type: 'number', step: '0.1', value: 8 },
+            ], async (v) => { await api('/mdm/rice-varieties', { body: v }); toast('Đã lưu giống lúa.'); await renderCatalog(panel); }, { submitLabel: 'Thêm / cập nhật giống' }) : null,
+            table([
+              { key: 'code', label: 'Mã' }, { key: 'name', label: 'Tên' }, { key: 'growth_days', label: 'Ngày ST', align: 'right' },
+              { key: 'yield', label: 'Năng suất (t/ha)', render: (r) => `${num(r.yield_min_t_ha, 1)} – ${num(r.yield_max_t_ha, 1)}` },
+              { key: 'status', label: 'Trạng thái', render: (r) => badge(r.status === 'hidden' ? 'Đã ẩn' : 'Đang dùng', r.status === 'hidden' ? 'neutral' : 'good') },
+              { key: 'act', label: '', render: (r) => (mdmWrite ? (r.status === 'hidden'
+                ? el('button', { class: 'ghost small', onclick: async () => { await guard(api(`/mdm/rice-varieties/${r.id}/restore`, { body: {} })); toast('Đã khôi phục.'); await renderCatalog(panel); } }, [icon('unlock', 14), 'Khôi phục'])
+                : el('button', { class: 'ghost small danger', onclick: async () => { if (!(await confirmDialog(`Ẩn/xoá giống ${r.name}? Giống đang được vụ tham chiếu sẽ chỉ bị ẩn.`))) return; const out = await guard(api(`/mdm/rice-varieties/${r.id}`, { method: 'DELETE' })); toast(out.hidden ? `Đã ẩn (đang có ${out.referenced} vụ tham chiếu).` : 'Đã xoá.'); await renderCatalog(panel); } }, [icon('trash', 14)])) : '—') },
+            ], varieties, { empty: 'Chưa có giống lúa.' }),
+          ]),
+          card('Mùa vụ', [
+            mdmWrite ? form([
+              { name: 'code', label: 'Mã vụ', required: true, placeholder: 'DX-2026-2027' }, { name: 'name', label: 'Tên vụ', required: true, placeholder: 'Đông Xuân 2026-2027' },
+              { name: 'year', label: 'Năm', type: 'number', required: true, value: new Date().getFullYear() },
+              { name: 'startMonth', label: 'Tháng bắt đầu', type: 'number', min: '1', max: '12', required: true, value: 11 }, { name: 'endMonth', label: 'Tháng kết thúc', type: 'number', min: '1', max: '12', required: true, value: 3 },
+              { name: 'sortOrder', label: 'Thứ tự', type: 'number', value: 1 },
+            ], async (v) => { await api('/mdm/seasons', { body: v }); toast('Đã thêm mùa vụ.'); await renderCatalog(panel); }, { submitLabel: 'Thêm mùa vụ' }) : null,
+            table([
+              { key: 'code', label: 'Mã' }, { key: 'name', label: 'Tên' }, { key: 'year', label: 'Năm', align: 'right' },
+              { key: 'months', label: 'Tháng', render: (r) => `${r.start_month} → ${r.end_month}` }, { key: 'sort_order', label: 'Thứ tự', align: 'right' },
+            ], seasons, { empty: 'Chưa có mùa vụ.' }),
+          ]),
+        ]),
       );
     }
 

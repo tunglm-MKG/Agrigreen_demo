@@ -20,7 +20,7 @@ import {
   PERMISSION_GROUPS, ROLE_LABELS, ROLE_PERMISSIONS,
   defaultPermissionsFor, invalidatePermissionCache, permissionLabel, permissionsFor,
 } from './rbac.ts';
-import { getUser, listUsers, resetPassword, setUserStatus, type User, assertEmailAvailable } from './users.ts';
+import { getUser, listUsers, resetPassword, setUserStatus, type User, assertEmailAvailable, normalizePhone, assertPhoneAvailable } from './users.ts';
 import { ROLE_SYSTEM } from './rbac.ts';
 
 /** Mọi mã quyền hợp lệ, lấy từ danh mục có nhãn. */
@@ -341,7 +341,7 @@ export function updateProfile(
     values.full_name = input.fullName.trim();
   }
   if (input.email !== undefined) { assertEmailAvailable(input.email, userId); values.email = input.email || null; }
-  if (input.phone !== undefined) values.phone = input.phone || null;
+  if (input.phone !== undefined) { const phone = normalizePhone(input.phone); assertPhoneAvailable(phone, userId); values.phone = phone; }
   if (input.orgNodeId !== undefined) values.org_node_id = input.orgNodeId || null;
   if (input.htxId !== undefined) values.htx_id = input.htxId || null;
 

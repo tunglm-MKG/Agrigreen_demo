@@ -87,6 +87,8 @@ export function registerBrdRoutes(api: Router): void {
   api.delete('/mdm/rice-varieties/:id', (ctx) => varieties.removeVariety(ctx.params.id, ctx.actor), P.MDM_WRITE);
   api.post('/mdm/rice-varieties/:id/restore', (ctx) => { varieties.restoreVariety(ctx.params.id, ctx.actor); return { ok: true }; }, P.MDM_WRITE);
   api.post('/mdm/rice-varieties/import', (ctx) => varieties.importVarieties(body(ctx).rows ?? [], ctx.actor), P.MDM_WRITE);
+  // UAT DEF-HTX-13: danh mục mùa vụ có endpoint tạo/sửa (Master Data Hub không còn chỉ đọc).
+  api.post('/mdm/seasons', (ctx) => varieties.upsertSeason(body(ctx) as never, ctx.actor), P.MDM_WRITE);
 
   // ===================== Xoá mềm / khôi phục / lịch sử (GIS BR-14/17/19) =====================
   api.delete('/mdm/plots/:id', (ctx) => { lifecycle.softDelete('plots', ctx.params.id, String(body(ctx).reason ?? ''), ctx.actor); return { ok: true }; }, P.MDM_WRITE);
@@ -212,7 +214,8 @@ export function registerBrdRoutes(api: Router): void {
   api.post('/kn/tasks/bulk-assign', (ctx) => knOps.bulkAssignTasks(body(ctx).ids ?? [], String(body(ctx).assigneeId ?? ''), ctx.actor), P.KN_PUBLISH);
   api.post('/kn/tasks/escalate-overdue', (ctx) => ({ escalated: knOps.escalateOverdueTasks(ctx.actor) }), P.KN_PUBLISH);
   api.post('/kn/alerts/regional', (ctx) => knOps.regionalAlert(body(ctx) as never, ctx.actor), P.KN_PUBLISH);
-  api.get('/kn/staff', () => users.listUsers().filter((u) => u.roles.some((r) => r.startsWith('kn_'))).map((u) => ({ id: u.id, fullName: u.fullName, roles: u.roles, provinceId: u.provinceId })), P.KN_READ);
+  // UAT DEF-KN-TASK-01: chỉ liệt kê cán bộ đang hoạt động để phân công.
+  api.get('/kn/staff', () => users.listUsers().filter((u) => u.status === 'active' && u.roles.some((r) => r.startsWith('kn_'))).map((u) => ({ id: u.id, fullName: u.fullName, roles: u.roles, provinceId: u.provinceId })), P.KN_READ);
 
   api.post('/kn/articles/v2', (ctx) => knOps.createArticleV2(body(ctx) as never, ctx.actor), P.KN_WRITE);
   api.post('/kn/articles/:id/publish/v2', (ctx) => knOps.publishArticleV2(ctx.params.id, ctx.actor), P.KN_PUBLISH);

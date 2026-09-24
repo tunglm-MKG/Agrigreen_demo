@@ -174,9 +174,12 @@ export function escalateTask(id: string, note: string, actor: AuditActor = {}): 
   return one<Record<string, unknown>>('SELECT * FROM support_tasks WHERE id = ?', [id])!;
 }
 
-export function bulkAssignTasks(ids: string[], assigneeId: string, actor: AuditActor = {}): { assigned: number } {
-  const assignee = one<{ id: string; full_name: string }>('SELECT id, full_name FROM users WHERE id = ?', [assigneeId]);
+export function bulkAssignTasks(ids: string[], assigneeId: string, actor: AuditActor = {}): { assigned: number; skipped: number } {
+  const assignee = one<{ id: string; full_name: string; status: string }>('SELECT id, full_name, status FROM users WHERE id = ?', [assigneeId]);
   if (!assignee) throw new Error('Không tìm thấy cán bộ được phân công.');
+  // UAT DEF-KN-TASK-01: không phân công cho tài khoản đã khoá; không có nhiệm vụ nào nhận được thì báo rõ thay vì im lặng.
+  if (assignee.status !== 'active') throw new Error(`Cán bộ ${assignee.full_name} đang bị khoá tài khoản — không thể phân công.`);
+  if (!ids.length) throw new Error('Chưa chọn nhiệm vụ nào để phân công.');
   let assigned = 0;
   for (const id of ids) {
     const task = one<{ status: string }>('SELECT status FROM support_tasks WHERE id = ?', [id]);
@@ -184,9 +187,10 @@ export function bulkAssignTasks(ids: string[], assigneeId: string, actor: AuditA
     update('support_tasks', id, { assignee_id: assigneeId, status: task.status === 'moi' ? 'tiep_nhan' : task.status, updated_at: nowIso() });
     assigned += 1;
   }
+  if (assigned === 0) throw new Error('Không nhiệm vụ nào được phân công: các nhiệm vụ đã chọn đều đã hoàn thành hoặc đã đóng.');
   notify({ module: 'khuyennong', severity: 'info', title: `Bạn được phân công ${assigned} nhiệm vụ`, body: `${actor.name ?? 'Quản lý'} vừa phân công hàng loạt.`, link: '/kn/#kn-tasks', userIds: [assigneeId], dedupeKey: `kn.task.bulk.${assigneeId}.${Date.now()}` }, actor);
   logEvent({ module: 'khuyennong', entityType: 'support_tasks', action: 'update', after: { ids, assigneeId, assigned }, note: 'bulk_assign' }, actor);
-  return { assigned };
+  return { assigned, skipped: ids.length - assigned };
 }
 
 /** Chỉ đạo/cảnh báo khẩn theo vùng có xác nhận đã đọc — gửi thông báo tới cán bộ và HTX trong tỉnh (US-TASK-03). */
@@ -264,11 +268,12 @@ export function publishArticleV2(id: string, actor: AuditActor = {}): Record<str
 export function searchArticles(filter: { q?: string; kind?: string; category?: string; status?: string; parentId?: string } = {}): { items: Record<string, unknown>[]; suggestions: string[] } {
   const clauses: string[] = [];
   const params: unknown[] = [];
-  if (filter.q) { clauses.push('(title LIKE ? OR summary LIKE ? OR body LIKE ? OR crop LIKE ?)'); params.push(...Array(4).fill(`%${filter.q}%`)); }
-  if (filter.kind) { clauses.push('kind = ?'); params.push(filter.kind); }
-  if (filter.category) { clauses.push('category = ?'); params.push(filter.category); }
-  if (filter.status) { clauses.push('status = ?'); params.push(filter.status); }
-  if (filter.parentId) { clauses.push('parent_id = ?'); params.push(filter.parentId); }
+  // UAT DEF-KN-LIB-01: bảng bài viết được JOIN với chính nó (bài gốc) nên mọi cột phải có tiền tố `a.` — thiếu là "ambiguous column name: title".
+  if (filter.q) { clauses.push('(a.title LIKE ? OR a.summary LIKE ? OR a.body LIKE ? OR a.crop LIKE ?)'); params.push(...Array(4).fill(`%${filter.q}%`)); }
+  if (filter.kind) { clauses.push('a.kind = ?'); params.push(filter.kind); }
+  if (filter.category) { clauses.push('a.category = ?'); params.push(filter.category); }
+  if (filter.status) { clauses.push('a.status = ?'); params.push(filter.status); }
+  if (filter.parentId) { clauses.push('a.parent_id = ?'); params.push(filter.parentId); }
   const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
   const items = all(`SELECT a.*, o.name AS scope_name, pa.title AS parent_title FROM knowledge_articles a LEFT JOIN org_nodes o ON o.id = a.scope_node_id LEFT JOIN knowledge_articles pa ON pa.id = a.parent_id ${where} ORDER BY a.urgent DESC, COALESCE(a.published_at, a.created_at) DESC LIMIT 300`, params);
   // Không có kết quả → gợi ý chủ đề liên quan (US-LIB-04 AC-2).

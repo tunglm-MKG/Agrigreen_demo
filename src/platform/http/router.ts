@@ -38,6 +38,40 @@ export class HttpError extends Error {
   }
 }
 
+/** Nhãn tiếng Việt cho ràng buộc CSDL hay gặp — để lỗi UNIQUE/NOT NULL không lộ tên bảng/cột ra người dùng (UAT DEF-SYS-01). */
+const DB_FIELD_LABELS: Record<string, string> = {
+  'org_nodes.code': 'Mã đầu mối tổ chức', 'org_nodes.name': 'Tên đầu mối tổ chức',
+  'users.username': 'Tên đăng nhập', 'users.full_name': 'Họ tên', 'users.email': 'Email', 'users.phone': 'Số điện thoại',
+  'protocol_steps.activity': 'Hoạt động của bước quy trình', 'protocol_steps.name': 'Tên bước quy trình',
+  'machine_types.code': 'Mã chủng loại máy', 'machine_types.name': 'Tên chủng loại máy',
+  'seasons.code': 'Mã mùa vụ', 'rice_varieties.code': 'Mã giống lúa', 'market_prices.commodity, market_prices.price_date, market_prices.region': 'Bản ghi giá (mặt hàng, ngày, vùng)',
+  'cooperatives.tax_code': 'Mã số thuế', 'cooperatives.code': 'Mã HTX', 'machines.serial_number': 'Số máy (SN)', 'facilities.code': 'Mã cơ sở',
+  'knowledge_articles.code': 'Mã bài viết', 'extension_officers.phone': 'Số điện thoại cán bộ',
+};
+const labelOf = (path: string) => DB_FIELD_LABELS[path] ?? `trường "${path.split('.').pop()}"`;
+
+/**
+ * Chuyển lỗi kỹ thuật (ràng buộc SQLite, lỗi kiểu dữ liệu JS) thành thông điệp nghiệp vụ tiếng Việt.
+ * Trả về `{ message, technical }`: `technical` khác null nghĩa là thông điệp gốc đã bị che và nên ghi log máy chủ.
+ */
+export function friendlyError(error: unknown): { message: string; technical: string | null } {
+  const raw = error instanceof Error ? error.message : String(error);
+  let m = /UNIQUE constraint failed: (.+)$/.exec(raw);
+  if (m) return { message: `${labelOf(m[1].trim())} đã tồn tại — vui lòng dùng giá trị khác.`, technical: raw };
+  m = /NOT NULL constraint failed: ([\w.]+)/.exec(raw);
+  if (m) return { message: `Thiếu trường bắt buộc: ${labelOf(m[1])}.`, technical: raw };
+  m = /CHECK constraint failed: ([\w.]+)/.exec(raw);
+  if (m) return { message: `Giá trị của ${labelOf(m[1])} không hợp lệ.`, technical: raw };
+  if (/FOREIGN KEY constraint failed/.test(raw)) return { message: 'Bản ghi tham chiếu tới dữ liệu không tồn tại hoặc đã bị xoá.', technical: raw };
+  if (/cannot be bound|is not iterable|Cannot read propert|is not a function|Cannot convert undefined|Invalid time value|Unexpected token/.test(raw)) {
+    return { message: 'Dữ liệu gửi lên không đúng định dạng hoặc thiếu trường bắt buộc. Kiểm tra lại biểu mẫu rồi thử lại.', technical: raw };
+  }
+  if (/no such column|ambiguous column|no such table|SQLITE_|syntax error|database is locked/.test(raw)) {
+    return { message: 'Hệ thống gặp lỗi khi truy vấn dữ liệu. Vui lòng thử lại; nếu vẫn lỗi hãy báo quản trị viên (mã lỗi: DB).', technical: raw };
+  }
+  return { message: raw, technical: null };
+}
+
 export const badRequest = (message: string, details?: unknown) => new HttpError(400, message, details);
 export const notFound = (message = 'Không tìm thấy dữ liệu') => new HttpError(404, message);
 export const forbidden = (message = 'Không đủ quyền truy cập') => new HttpError(403, message);

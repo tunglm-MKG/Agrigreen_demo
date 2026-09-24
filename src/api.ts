@@ -20,6 +20,7 @@ import { SYSTEMS } from './platform/auth/rbac.ts';
 import * as audit from './platform/audit/audit.ts';
 import * as sync from './platform/sync/sync.ts';
 import * as mdm from './mdm/service.ts';
+import * as lifecycle from './mdm/lifecycle.ts';
 import { importCooperatives } from './mdm/import/cooperatives.ts';
 import {
   communeHarvestProgress, importCropSeason, listCommuneCropSeasons, listSheets,
@@ -276,7 +277,11 @@ export function buildApi(): Router {
   // Tạo tài khoản: trả mật khẩu tạm MỘT lần để quản trị viên copy; tuỳ chọn gửi email cho người dùng.
   api.post('/admin/users', (ctx) => {
     const a = adminCtx(ctx);
-    const input = scopes.coerceCreateInput(a, body(ctx) as never);
+    const input = scopes.coerceCreateInput(a, body(ctx) as never) as { roles?: string[]; htxId?: string | null };
+    // UAT DEF-ADM-01 (US-ACC-01 AC-7): tài khoản Nông dân / Quản lý HTX phải liên kết một HTX.
+    if ((input.roles ?? []).some((r) => r === 'farmer' || r === 'htx_manager') && !input.htxId) {
+      throw badRequest('Tài khoản vai trò Nông dân / Quản lý HTX phải chọn Hợp tác xã liên kết.');
+    }
     const created = users.createUser(input as never, ctx.actor);
     const email = body(ctx).sendEmail ? notifyService.sendCredentialEmail(created.user.id, { username: created.user.username, temporaryPassword: created.temporaryPassword, kind: 'created' }, ctx.actor) : null;
     return { ...created, email };
@@ -371,7 +376,16 @@ export function buildApi(): Router {
   api.get('/mdm/farmers', (ctx) => mdm.listFarmers(ctx.query.get('htxId') ?? undefined), P.MDM_READ);
   api.post('/mdm/farmers', (ctx) => mdm.createFarmer(body(ctx) as never, ctx.actor), P.MDM_WRITE);
   api.get('/mdm/plots', (ctx) => mdm.listPlots(ctx.query.get('htxId') ?? undefined), P.MDM_READ);
-  api.post('/mdm/plots', (ctx) => mdm.createPlot(body(ctx) as never, ctx.actor), P.MDM_WRITE);
+  // UAT DEF-KN-PLOT-01/02: mọi đường tạo thửa (kể cả cán bộ khuyến nông vẽ hộ) đều qua kiểm tra ≥ 4 điểm, không tự cắt, chồng lấn.
+  api.post('/mdm/plots', (ctx) => {
+    try {
+      return lifecycle.createPlotChecked(body(ctx) as never, ctx.actor);
+    } catch (error) {
+      const e = error as Error & { needsConfirm?: boolean; overlaps?: unknown };
+      if (e.needsConfirm) throw new HttpError(409, e.message, { needsConfirm: true, overlaps: e.overlaps ?? null });
+      throw error;
+    }
+  }, P.MDM_WRITE);
   api.put('/mdm/plots/:id/boundary', (ctx) => mdm.updatePlotBoundary(ctx.params.id, body(ctx).boundary, ctx.actor), P.MDM_WRITE);
   api.get('/mdm/facilities', (ctx) => mdm.listFacilities(ctx.query.get('kind') ?? undefined), P.MDM_READ);
   api.post('/mdm/facilities', (ctx) => mdm.createFacility(body(ctx) as never, ctx.actor), P.MDM_WRITE);
@@ -1038,6 +1052,12 @@ export function buildApi(): Router {
   registerBrdRoutes(api);
   // Tài khoản HTX chỉ chạm được dữ liệu HTX mình — áp cho mọi route, kể cả route đăng ký sau này.
   api.guard(enforceHtxScope);
+  // UAT DEF-AUTH-01: cờ "phải đổi mật khẩu" được THI HÀNH — mật khẩu tạm chỉ mở được ba đường: đổi mật khẩu, xem hồ sơ, đăng xuất.
+  api.guard((ctx, pathname) => {
+    if (ctx.user?.mustChangePassword && !['/auth/password', '/auth/me', '/auth/logout'].includes(pathname)) {
+      throw new HttpError(403, 'Bạn phải đổi mật khẩu tạm trước khi sử dụng hệ thống.', { code: 'must_change_password' });
+    }
+  });
 
   return api;
 }

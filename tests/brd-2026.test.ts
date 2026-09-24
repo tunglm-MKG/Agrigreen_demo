@@ -461,3 +461,100 @@ test('UAT DEF-CGH-08: số điện thoại được che theo mẫu 4 đầu · 3
     assert.equal(maskPhone(null), null);
     assert.equal(maskPhone('123'), '•••');
 });
+
+
+// ===========================================================================
+// Sửa lỗi theo báo cáo UAT toàn bộ 23/09/2026
+// ===========================================================================
+
+test('UAT DEF-KN-PLOT-01: đa giác tự cắt (nơ bướm) và điểm đóng vòng trùng đầu bị từ chối', () => {
+    const o = { lat: htxB.lat + 0.08, lng: htxB.lng + 0.08 };
+    const bowtie = [{ lat: o.lat, lng: o.lng }, { lat: o.lat + 0.003, lng: o.lng + 0.003 }, { lat: o.lat, lng: o.lng + 0.003 }, { lat: o.lat + 0.003, lng: o.lng }];
+    assert.throws(() => lifecycle.createPlotChecked({ htxId: htxB.id, boundary: bowtie }, actor), /tự cắt/);
+    const closed = [...square(o.lat + 0.02, o.lng + 0.02, 0.001), { lat: o.lat + 0.02 - 0.001, lng: o.lng + 0.02 - 0.001 }];
+    assert.doesNotThrow(() => lifecycle.createPlotChecked({ htxId: htxB.id, boundary: closed }, actor), 'điểm đóng vòng được bỏ, 4 điểm thật vẫn hợp lệ');
+    const threePlusClose = [{ lat: o.lat + 0.04, lng: o.lng }, { lat: o.lat + 0.042, lng: o.lng + 0.002 }, { lat: o.lat + 0.04, lng: o.lng + 0.003 }, { lat: o.lat + 0.04, lng: o.lng }];
+    assert.throws(() => lifecycle.createPlotChecked({ htxId: htxB.id, boundary: threePlusClose }, actor), /4 điểm/, 'tam giác có điểm đóng vòng vẫn là 3 điểm');
+});
+
+test('UAT DEF-KN-PLOT-02: hai thửa cắt nhau mà không nuốt đỉnh hay tâm của nhau vẫn bị phát hiện chồng lấn', () => {
+    const o = { lat: htxA.lat + 0.12, lng: htxA.lng + 0.12 };
+    const k = 0.001;
+    // A: rộng-thấp; B: cao-hẹp, lệch tâm — không đỉnh nào nằm trong nhau, tâm cũng không, chỉ cạnh giao nhau.
+    const rectA = [{ lat: o.lat + 1 * k, lng: o.lng }, { lat: o.lat + 1 * k, lng: o.lng + 4 * k }, { lat: o.lat + 1.8 * k, lng: o.lng + 4 * k }, { lat: o.lat + 1.8 * k, lng: o.lng }];
+    const rectB = [{ lat: o.lat, lng: o.lng + 2.5 * k }, { lat: o.lat, lng: o.lng + 3.5 * k }, { lat: o.lat + 4 * k, lng: o.lng + 3.5 * k }, { lat: o.lat + 4 * k, lng: o.lng + 2.5 * k }];
+    const a = lifecycle.createPlotChecked({ htxId: htxA.id, boundary: rectA }, actor);
+    const hits = lifecycle.findOverlaps(rectB);
+    assert.ok(hits.some((h) => h.plotId === a.id), 'phải phát hiện chồng lấn qua giao cạnh');
+    assert.throws(() => lifecycle.createPlotChecked({ htxId: htxA.id, boundary: rectB }, actor), (e: Error & { needsConfirm?: boolean }) => e.needsConfirm === true);
+    assert.throws(() => lifecycle.createPlotChecked({ htxId: htxB.id, boundary: rectB, confirmOverlap: true }, actor), /khác/);
+});
+
+test('UAT DEF-HTX-12/10: yêu cầu hỗ trợ lưu đủ mô tả, loại vấn đề, mức khẩn; thiếu mô tả bị chặn', () => {
+    assert.throws(() => htx.requestSupport({ htxId: htxA.id, title: 'Rầy nâu', category: 'dich_hai', priority: 'khan' }, actor), /mô tả/);
+    assert.throws(() => htx.requestSupport({ htxId: htxA.id, title: 'x', description: 'y', category: 'khong_co' }, actor), /Loại vấn đề/);
+    const saved = htx.requestSupport({ htxId: htxA.id, title: 'Máy gặt hỏng', description: 'Máy gặt đập liên hợp hỏng bộ đập giữa vụ.', category: 'may_moc', priority: 'khan' }, actor) as { category: string; priority: string; description: string };
+    assert.equal(saved.category, 'may_moc');
+    assert.equal(saved.priority, 'khan');
+    assert.match(saved.description, /bộ đập/);
+    const legacy = htx.requestSupport({ htxId: htxA.id, title: 'Tên cũ', content: 'mô tả qua trường content', urgency: 'khan' } as never, actor) as { priority: string; description: string };
+    assert.equal(legacy.priority, 'khan', 'tên trường cũ urgency/content vẫn được nhận');
+});
+
+test('UAT DEF-ADM-02: trùng số điện thoại bị chặn; định dạng SĐT/email sai bị chặn; đăng nhập ưu tiên tài khoản hoạt động', async () => {
+    const sysadmin = await import('../src/platform/auth/admin.ts');
+    users.createUser({ username: 'sdt_a', fullName: 'A', roles: ['farmer'], phone: '0987 654 321' }, { id: admin.id, name: admin.fullName });
+    assert.throws(() => users.createUser({ username: 'sdt_b', fullName: 'B', roles: ['farmer'], phone: '0987654321' }, { id: admin.id, name: admin.fullName }), /đã được đăng ký/);
+    assert.throws(() => users.createUser({ username: 'sdt_c', fullName: 'C', roles: ['farmer'], phone: '12345' }, { id: admin.id, name: admin.fullName }), /định dạng/);
+    assert.throws(() => users.createUser({ username: 'sdt_d', fullName: 'D', roles: ['farmer'], email: 'hoangvanem-invalid' }, { id: admin.id, name: admin.fullName }), /Email không đúng định dạng/);
+    assert.throws(() => users.createUser({ username: 'sdt_e', fullName: '', roles: ['farmer'] }, { id: admin.id, name: admin.fullName }), /Họ tên/);
+    assert.throws(() => users.createUser({ username: 'sdt_f', fullName: 'F', roles: [] }, { id: admin.id, name: admin.fullName }), /nhóm quyền/);
+    const other = users.createUser({ username: 'sdt_g', fullName: 'G', roles: ['farmer'] }, { id: admin.id, name: admin.fullName });
+    assert.throws(() => sysadmin.updateProfile(other.user.id, { phone: '0987654321' }, actor), /đã được đăng ký/);
+    // Dữ liệu cũ còn trùng: bản ghi bị khoá không được che tài khoản hợp lệ.
+    users.createUser({ username: 'sdt_h', fullName: 'H', roles: ['farmer'], password: 'MatKhau123' }, { id: admin.id, name: admin.fullName });
+    run("UPDATE users SET phone = '0977000111' WHERE username IN ('sdt_a', 'sdt_h')");
+    run("UPDATE users SET status = 'locked' WHERE username = 'sdt_a'");
+    assert.ok(users.login('0977000111', 'MatKhau123')?.token, 'người dùng đang hoạt động đăng nhập được bằng SĐT dù có bản ghi trùng đã khoá');
+});
+
+test('UAT DEF-KN-LIB-01: tìm kiếm thư viện với từ khoá không còn lỗi cột nhập nhằng', () => {
+    for (const q of ['AWD', 'rầy', 'lúa', 'xyz-khong-co']) assert.doesNotThrow(() => knOps.searchArticles({ q }));
+    assert.ok(knOps.searchArticles({ q: 'AWD' }).items.length >= 1);
+    const none = knOps.searchArticles({ q: 'xyz-khong-co' });
+    assert.equal(none.items.length, 0);
+    assert.ok(none.suggestions.length >= 1, 'không có kết quả thì gợi ý chuyên mục');
+});
+
+test('UAT DEF-KN-TASK-01: không phân công cho tài khoản khoá; không nhiệm vụ nào nhận được thì báo lỗi', () => {
+    const task = htx.requestSupport({ htxId: htxA.id, title: 'Test phân công', description: 'x'.repeat(10) }, actor) as { id: string };
+    const staff = users.createUser({ username: 'kn_locked', fullName: 'Cán bộ khoá', roles: ['kn_xa'], password: 'MatKhau123' }, { id: admin.id, name: admin.fullName });
+    run("UPDATE users SET status = 'locked' WHERE id = ?", [staff.user.id]);
+    assert.throws(() => knOps.bulkAssignTasks([task.id], staff.user.id, actor), /bị khoá/);
+    const active = users.createUser({ username: 'kn_active', fullName: 'Cán bộ hoạt động', roles: ['kn_xa'], password: 'MatKhau123' }, { id: admin.id, name: admin.fullName });
+    run("UPDATE support_tasks SET status = 'dong' WHERE id = ?", [task.id]);
+    assert.throws(() => knOps.bulkAssignTasks([task.id], active.user.id, actor), /Không nhiệm vụ nào/);
+    assert.throws(() => knOps.bulkAssignTasks([], active.user.id, actor), /Chưa chọn/);
+});
+
+test('UAT DEF-KN-HTX-01: không vô hiệu hoá được HTX còn vụ đang canh tác / nhật ký chờ duyệt', () => {
+    const impact = lifecycle.cooperativeImpact(htxB.id);
+    assert.ok(impact.openCycles > 0 || impact.pendingLogs > 0, 'htxB có vụ đang canh tác từ các test trước');
+    assert.throws(() => lifecycle.deactivateCooperative(htxB.id, 'Thử vô hiệu hoá HTX còn dữ liệu sản xuất đang mở', actor), /vụ đang canh tác/);
+});
+
+test('UAT DEF-HTX-13: tạo mùa vụ có kiểm tra và không trùng mã', () => {
+    const created = varieties.upsertSeason({ code: 'dx-2027-2028', name: 'Đông Xuân 2027-2028', year: 2028, startMonth: 11, endMonth: 3, sortOrder: 1 }, actor) as { code: string };
+    assert.equal(created.code, 'DX-2027-2028');
+    assert.throws(() => varieties.upsertSeason({ code: 'DX-2027-2028', name: 'Trùng', year: 2028, startMonth: 11, endMonth: 3 }, actor), /đã tồn tại/);
+    assert.throws(() => varieties.upsertSeason({ code: 'X', name: 'Sai tháng', year: 2028, startMonth: 13, endMonth: 3 }, actor), /từ 1 đến 12/);
+});
+
+test('UAT DEF-SYS-01: lỗi ràng buộc CSDL được dịch sang thông điệp nghiệp vụ tiếng Việt', async () => {
+    const { friendlyError } = await import('../src/platform/http/router.ts');
+    assert.match(friendlyError(new Error('UNIQUE constraint failed: org_nodes.code')).message, /Mã đầu mối tổ chức đã tồn tại/);
+    assert.match(friendlyError(new Error('NOT NULL constraint failed: users.full_name')).message, /Thiếu trường bắt buộc: Họ tên/);
+    assert.match(friendlyError(new Error('input.roles is not iterable')).message, /không đúng định dạng/);
+    assert.match(friendlyError(new Error('ambiguous column name: title')).message, /truy vấn dữ liệu/);
+    assert.equal(friendlyError(new Error('Lý do vô hiệu hóa phải có ít nhất 20 ký tự.')).technical, null, 'thông điệp nghiệp vụ giữ nguyên');
+});

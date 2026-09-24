@@ -32,24 +32,82 @@ function ringOf(boundary: string | null): LatLng[] {
  * bên này nằm trong bên kia. Sai số của cách kiểm này chỉ ở các đa giác cắt nhau
  * mà không nuốt đỉnh nào của nhau — hiếm với ranh thửa thực tế.
  */
-export function findOverlaps(boundary: LatLng[], excludePlotId?: string): OverlapHit[] {
+/** Hai đoạn thẳng cắt nhau (kể cả chạm) — kiểm bằng hướng quay, không cần thư viện. */
+function orientation(a: LatLng, b: LatLng, c: LatLng): number {
+  const v = (b.lng - a.lng) * (c.lat - a.lat) - (b.lat - a.lat) * (c.lng - a.lng);
+  return Math.abs(v) < 1e-14 ? 0 : v > 0 ? 1 : 2;
+}
+function onSegment(a: LatLng, b: LatLng, p: LatLng): boolean {
+  return Math.min(a.lng, b.lng) - 1e-12 <= p.lng && p.lng <= Math.max(a.lng, b.lng) + 1e-12 && Math.min(a.lat, b.lat) - 1e-12 <= p.lat && p.lat <= Math.max(a.lat, b.lat) + 1e-12;
+}
+export function segmentsIntersect(a: LatLng, b: LatLng, c: LatLng, d: LatLng): boolean {
+  const o1 = orientation(a, b, c); const o2 = orientation(a, b, d); const o3 = orientation(c, d, a); const o4 = orientation(c, d, b);
+  if (o1 !== o2 && o3 !== o4) return true;
+  if (o1 === 0 && onSegment(a, b, c)) return true;
+  if (o2 === 0 && onSegment(a, b, d)) return true;
+  if (o3 === 0 && onSegment(c, d, a)) return true;
+  if (o4 === 0 && onSegment(c, d, b)) return true;
+  return false;
+}
+/** Bỏ điểm đóng vòng trùng điểm đầu và điểm lặp liên tiếp. */
+export function cleanRing(points: LatLng[]): LatLng[] {
+  const out: LatLng[] = [];
+  for (const p of points) {
+    const last = out[out.length - 1];
+    if (last && Math.abs(last.lat - p.lat) < 1e-9 && Math.abs(last.lng - p.lng) < 1e-9) continue;
+    out.push({ lat: Number(p.lat), lng: Number(p.lng) });
+  }
+  if (out.length > 1 && Math.abs(out[0].lat - out[out.length - 1].lat) < 1e-9 && Math.abs(out[0].lng - out[out.length - 1].lng) < 1e-9) out.pop();
+  return out;
+}
+/** Đa giác tự cắt (hình nơ bướm): hai cạnh KHÔNG kề nhau giao nhau (UAT DEF-KN-PLOT-01). */
+export function polygonSelfIntersects(ring: LatLng[]): boolean {
+  const n = ring.length;
+  if (n < 4) return false;
+  for (let i = 0; i < n; i += 1) {
+    for (let j = i + 1; j < n; j += 1) {
+      if (j === i + 1 || (i === 0 && j === n - 1)) continue; // cạnh kề
+      if (segmentsIntersect(ring[i], ring[(i + 1) % n], ring[j], ring[(j + 1) % n])) return true;
+    }
+  }
+  return false;
+}
+/** Hai đa giác chồng nhau: đỉnh bên này nằm trong bên kia, tâm nằm trong, hoặc có cạnh giao nhau. */
+export function polygonsOverlap(a: LatLng[], b: LatLng[]): { vertices: number; centroidInside: boolean; edgesCross: boolean } {
+  const vertices = a.filter((p) => pointInPolygon(p, b)).length + b.filter((p) => pointInPolygon(p, a)).length;
+  const centroidInside = pointInPolygon(centroid(a), b) || pointInPolygon(centroid(b), a);
+  let edgesCross = false;
+  outer: for (let i = 0; i < a.length; i += 1) {
+    for (let j = 0; j < b.length; j += 1) {
+      if (segmentsIntersect(a[i], a[(i + 1) % a.length], b[j], b[(j + 1) % b.length])) { edgesCross = true; break outer; }
+    }
+  }
+  return { vertices, centroidInside, edgesCross };
+}
+
+/**
+ * Phát hiện thửa đã có mà ranh giới mới đè lên. Lọc thô bằng khung bao tính trực tiếp từ
+ * ranh giới (không dựa vào cột centroid có thể trống), rồi kiểm đỉnh-trong-đa-giác, tâm và
+ * GIAO CẠNH — bắt được cả trường hợp hai thửa cắt nhau mà không nuốt đỉnh nào (UAT DEF-KN-PLOT-02).
+ */
+export function findOverlaps(boundaryInput: LatLng[], excludePlotId?: string): OverlapHit[] {
+  const boundary = cleanRing(boundaryInput);
   if (boundary.length < 3) return [];
-  const bounds = { south: Math.min(...boundary.map((p) => p.lat)), north: Math.max(...boundary.map((p) => p.lat)), west: Math.min(...boundary.map((p) => p.lng)), east: Math.max(...boundary.map((p) => p.lng)) };
+  const box = { south: Math.min(...boundary.map((p) => p.lat)), north: Math.max(...boundary.map((p) => p.lat)), west: Math.min(...boundary.map((p) => p.lng)), east: Math.max(...boundary.map((p) => p.lng)) };
   const candidates = all<{ id: string; code: string; htx_id: string; farmer_id: string | null; boundary: string | null }>(
-    `SELECT id, code, htx_id, farmer_id, boundary FROM plots
-     WHERE deleted_at IS NULL AND boundary IS NOT NULL
-       AND centroid_lat BETWEEN ? AND ? AND centroid_lng BETWEEN ? AND ?`,
-    [bounds.south - 0.02, bounds.north + 0.02, bounds.west - 0.02, bounds.east + 0.02],
+    'SELECT id, code, htx_id, farmer_id, boundary FROM plots WHERE deleted_at IS NULL AND boundary IS NOT NULL',
   );
-  const mine = centroid(boundary);
   const hits: OverlapHit[] = [];
   for (const row of candidates) {
     if (row.id === excludePlotId) continue;
-    const ring = ringOf(row.boundary);
+    const ring = cleanRing(ringOf(row.boundary));
     if (ring.length < 3) continue;
-    const inside = boundary.filter((p) => pointInPolygon(p, ring)).length + ring.filter((p) => pointInPolygon(p, boundary)).length;
-    const centroidInside = pointInPolygon(mine, ring) || pointInPolygon(centroid(ring), boundary);
-    if (inside > 0 || centroidInside) hits.push({ plotId: row.id, code: row.code, htxId: row.htx_id, farmerId: row.farmer_id, sharedVertices: inside, centroidInside });
+    const rb = { south: Math.min(...ring.map((p) => p.lat)), north: Math.max(...ring.map((p) => p.lat)), west: Math.min(...ring.map((p) => p.lng)), east: Math.max(...ring.map((p) => p.lng)) };
+    if (rb.south > box.north || rb.north < box.south || rb.west > box.east || rb.east < box.west) continue;
+    const test = polygonsOverlap(boundary, ring);
+    if (test.vertices > 0 || test.centroidInside || test.edgesCross) {
+      hits.push({ plotId: row.id, code: row.code, htxId: row.htx_id, farmerId: row.farmer_id, sharedVertices: test.vertices, centroidInside: test.centroidInside || test.edgesCross });
+    }
   }
   return hits;
 }
@@ -66,6 +124,14 @@ export function createPlotChecked(
   const minimum = input.minPoints ?? 4;
   if (!input.boundary || input.boundary.length < minimum) {
     throw new Error(`Cần tối thiểu ${minimum} điểm ranh giới không thẳng hàng để khép vùng.`);
+  }
+  input.boundary = cleanRing(input.boundary);
+  if (input.boundary.length < minimum) {
+    throw new Error(`Cần tối thiểu ${minimum} điểm ranh giới KHÁC NHAU để khép vùng (điểm trùng/điểm đóng vòng không tính).`);
+  }
+  // Kiểm tự cắt TRƯỚC diện tích: hình nơ bướm đối xứng có diện tích shoelace = 0 nên sẽ bị báo nhầm là "thẳng hàng".
+  if (polygonSelfIntersects(input.boundary)) {
+    throw new Error('Ranh giới tự cắt nhau (các cạnh giao nhau như hình nơ bướm) — hãy nhấp các điểm theo đúng thứ tự đi vòng quanh thửa.');
   }
   if (!(polygonAreaHectares(input.boundary) > 0.0001)) {
     throw new Error('Các điểm ranh giới thẳng hàng hoặc trùng nhau — không khép được vùng. Vẽ lại tối thiểu 4 điểm không thẳng hàng.');
@@ -141,6 +207,10 @@ export function historyOf(entityType: string, entityId: string, limit = 100): Re
 export function deactivateCooperative(id: string, reason: string, actor: AuditActor = {}): { lockedAccounts: number; farmers: number; openCycles: number; pendingLogs: number } {
   if (!reason || reason.trim().length < 20) throw new Error('Lý do vô hiệu hóa phải có ít nhất 20 ký tự.');
   const impact = cooperativeImpact(id);
+  // UAT DEF-KN-HTX-01: còn vụ đang canh tác hoặc nhật ký chờ duyệt thì KHÔNG cho vô hiệu hoá — dữ liệu sản xuất sẽ treo vô chủ.
+  if (impact.openCycles > 0 || impact.pendingLogs > 0) {
+    throw new Error(`Không thể vô hiệu hoá HTX: còn ${impact.openCycles} vụ đang canh tác và ${impact.pendingLogs} nhật ký chờ duyệt. Hãy khai báo sản lượng để đóng vụ và duyệt hết nhật ký trước.`);
+  }
   let lockedAccounts = 0;
   transaction(() => {
     update('cooperatives', id, { status: 'inactive', status_reason: reason.trim(), deactivated_at: nowIso(), deleted_at: nowIso(), updated_at: nowIso() });

@@ -68,6 +68,22 @@ export function assertEmailAvailable(email: string | null | undefined, exceptUse
   if (clash) throw new Error('Email này đã được sử dụng');
 }
 
+export const PHONE_RE = /^0\d{9}$/;
+export const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
+export const normalizePhone = (phone: unknown): string | null => {
+  const digits = String(phone ?? '').replace(/[\s.\-()]/g, '');
+  return digits ? digits : null;
+};
+
+/** UAT DEF-ADM-02 (BR-03): số điện thoại là định danh đăng nhập nên phải duy nhất toàn hệ thống. */
+export function assertPhoneAvailable(phone: string | null | undefined, exceptUserId?: string): void {
+  const value = normalizePhone(phone);
+  if (!value) return;
+  if (!PHONE_RE.test(value)) throw new Error('Số điện thoại không đúng định dạng — cần 10 chữ số, bắt đầu bằng 0 (VD: 0912345678).');
+  const clash = one<{ id: string }>('SELECT id FROM users WHERE phone = ? AND id <> ?', [value, exceptUserId ?? '']);
+  if (clash) throw new Error('Số điện thoại này đã được đăng ký cho tài khoản khác');
+}
+
 export interface CreateUserInput {
   username: string;
   fullName: string;
@@ -89,6 +105,13 @@ export interface CreateUserInput {
 export function createUser(input: CreateUserInput, actor = {}, options: { enforcePolicy?: boolean } = {}): { user: User; temporaryPassword: string } {
   const existing = one('SELECT id FROM users WHERE username = ?', [input.username]);
   if (existing) throw new Error(`Tên đăng nhập "${input.username}" đã tồn tại`);
+  // UAT DEF-SYS-01 / DEF-ADM-01: kiểm dữ liệu bắt buộc bằng thông điệp nghiệp vụ, không để lỗi NOT NULL của CSDL lọt ra.
+  if (!input.username?.trim()) throw new Error('Tên đăng nhập là trường bắt buộc.');
+  if (!input.fullName?.trim()) throw new Error('Họ tên là trường bắt buộc.');
+  if (!Array.isArray(input.roles) || !input.roles.length) throw new Error('Tài khoản phải thuộc ít nhất một nhóm quyền.');
+  if (input.email && !EMAIL_RE.test(input.email.trim())) throw new Error('Email không đúng định dạng (VD: ten@donvi.vn).');
+  const phone = normalizePhone(input.phone);
+  assertPhoneAvailable(phone);
   assertEmailAvailable(input.email);
   if (input.password && options.enforcePolicy !== false) assertStrongPassword(input.password);
 
@@ -102,8 +125,8 @@ export function createUser(input: CreateUserInput, actor = {}, options: { enforc
       id,
       username: input.username,
       full_name: input.fullName,
-      email: input.email ?? null,
-      phone: input.phone ?? null,
+      email: input.email?.trim() || null,
+      phone,
       password_hash: hashPassword(temporaryPassword, salt),
       password_salt: salt,
       must_change_pw: input.password ? 0 : 1,
@@ -197,7 +220,8 @@ export class LoginError extends Error {
 export function login(identifier: string, password: string): { token: string; user: User } | null {
   const key = identifier.trim();
   const row = one<UserRow & { failed_attempts?: number; locked_until?: string | null; lock_reason?: string | null }>(
-    'SELECT * FROM users WHERE username = ? OR (phone IS NOT NULL AND phone = ?)', [key, key.replace(/\s+/g, '')]);
+    // Nếu dữ liệu cũ còn trùng SĐT, ưu tiên tài khoản đang hoạt động để người hợp lệ không bị chặn bởi bản ghi đã khoá (UAT DEF-ADM-02).
+    "SELECT * FROM users WHERE username = ? OR (phone IS NOT NULL AND phone = ?) ORDER BY (username = ?) DESC, (status = 'active') DESC LIMIT 1", [key, key.replace(/\s+/g, ''), key]);
   if (!row) return null;
   if (row.status !== 'active') {
     throw new LoginError('Tài khoản đã bị khoá, vui lòng liên hệ quản trị viên để mở khoá.', 'locked');

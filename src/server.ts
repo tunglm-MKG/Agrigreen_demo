@@ -7,7 +7,7 @@ import { readFile, stat } from 'node:fs/promises';
 import { extname, join, normalize, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { migrate } from './platform/db/schema.ts';
-import { HttpError, sendJson } from './platform/http/router.ts';
+import { HttpError, sendJson, friendlyError } from './platform/http/router.ts';
 import { buildApi } from './api.ts';
 import { gateEnabled, handleGate } from './platform/http/accessGate.ts';
 import { seedIfEmpty } from './seed.ts';
@@ -82,9 +82,11 @@ export async function start(port = Number(process.env.PORT ?? 4173)): Promise<vo
         sendJson(res, error.status, { error: error.message, details: error.details ?? null });
         return;
       }
-      const message = error instanceof Error ? error.message : String(error);
-      // Lỗi nghiệp vụ (throw new Error trong service) trả 400 kèm thông điệp tiếng Việt.
-      sendJson(res, 400, { error: message });
+      // Lỗi nghiệp vụ (throw new Error trong service) trả 400 kèm thông điệp tiếng Việt; lỗi kỹ thuật
+      // (ràng buộc CSDL, lỗi kiểu dữ liệu) được dịch sang thông điệp nghiệp vụ và ghi log máy chủ (UAT DEF-SYS-01).
+      const { message, technical } = friendlyError(error);
+      if (technical) console.error(`[api] ${req.method} ${url.pathname} lỗi kỹ thuật:`, technical);
+      sendJson(res, technical ? 422 : 400, { error: message });
     }
   });
 

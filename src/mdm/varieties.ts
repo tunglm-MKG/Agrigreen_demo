@@ -128,3 +128,35 @@ export function importVarieties(rows: Record<string, unknown>[], actor: AuditAct
   });
   return { created, updated, errors };
 }
+
+
+// ---------------------------------------------------------------------------
+// Danh mục mùa vụ (UAT DEF-HTX-13)
+// ---------------------------------------------------------------------------
+
+export function upsertSeason(
+  input: { id?: string; code: string; name: string; year: number; startMonth: number; endMonth: number; sortOrder?: number },
+  actor: AuditActor = {},
+): Record<string, unknown> {
+  const code = String(input.code ?? '').trim().toUpperCase();
+  if (!code) throw new Error('Mã mùa vụ là trường bắt buộc (VD: DX-2026-2027).');
+  if (!input.name?.trim()) throw new Error('Tên mùa vụ là trường bắt buộc.');
+  const year = Number(input.year); const startMonth = Number(input.startMonth); const endMonth = Number(input.endMonth);
+  if (!Number.isInteger(year) || year < 2000 || year > 2100) throw new Error('Năm mùa vụ không hợp lệ.');
+  for (const [label, m] of [['Tháng bắt đầu', startMonth], ['Tháng kết thúc', endMonth]] as const) {
+    if (!Number.isInteger(m) || m < 1 || m > 12) throw new Error(`${label} phải là số từ 1 đến 12.`);
+  }
+  const existing = input.id ? one<{ id: string }>('SELECT id FROM seasons WHERE id = ?', [input.id]) : null;
+  const clash = one<{ id: string }>('SELECT id FROM seasons WHERE code = ? AND id <> ?', [code, existing?.id ?? '']);
+  if (clash) throw new Error(`Mã mùa vụ "${code}" đã tồn tại.`);
+  const values = { code, name: input.name.trim(), year, start_month: startMonth, end_month: endMonth, sort_order: Number(input.sortOrder ?? 0) };
+  if (existing) {
+    update('seasons', existing.id, values);
+    logEvent({ module: 'mdm', entityType: 'seasons', entityId: existing.id, action: 'update', after: values }, actor);
+    return { id: existing.id, ...values };
+  }
+  const id = uuid();
+  insert('seasons', { id, ...values });
+  logEvent({ module: 'mdm', entityType: 'seasons', entityId: id, action: 'create', after: values }, actor);
+  return { id, ...values };
+}

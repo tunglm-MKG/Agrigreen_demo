@@ -36,7 +36,7 @@ const server = createServer(async (req, res) => {
     const apiUrl = new URL(url.toString()); apiUrl.pathname = url.pathname.slice(4);
     if (!(await api.handle(req, res, apiUrl))) sendJson(res, 404, { error: 'no route' });
   } catch (error) {
-    sendJson(res, error instanceof HttpError ? error.status : 400, { error: (error as Error).message });
+    sendJson(res, error instanceof HttpError ? error.status : 400, { error: (error as Error).message, details: error instanceof HttpError ? error.details ?? null : null });
   }
 });
 await new Promise<void>((resolve) => server.listen(0, resolve));
@@ -155,4 +155,36 @@ test('P1#5 Đăng nhập sai mật khẩu với cùng Idempotency-Key của lầ
   assert.equal(bad.headers.get('idempotency-replayed'), null);
   const payload = (await bad.json()) as { token?: string };
   assert.equal(payload.token, undefined);
+});
+
+
+// ===========================================================================
+// UAT 23/09/2026 — DEF-AUTH-01 mật khẩu tạm phải đổi trước khi dùng; DEF-ADM-01 HTX bắt buộc theo vai trò
+// ===========================================================================
+
+test('UAT DEF-AUTH-01: tài khoản dùng mật khẩu tạm chỉ gọi được /auth/*, mọi API khác trả 403 must_change_password cho tới khi đổi', async () => {
+  const adminToken = await loginToken('SAdmin', 'TungLM18@');
+  const created = await (await call(adminToken, 'POST', '/admin/users', { username: 'tam_thoi_01', fullName: 'Tạm thời', roles: ['htx_manager'], htxId: htxUser.htxId })).json() as { temporaryPassword: string };
+  const temp = await loginToken('tam_thoi_01', created.temporaryPassword);
+  assert.ok(temp, 'đăng nhập được bằng mật khẩu tạm');
+  const blocked = await call(temp, 'GET', '/htx/dashboard');
+  assert.equal(blocked.status, 403);
+  assert.equal(((await blocked.json()) as { details: { code: string } }).details.code, 'must_change_password');
+  const me = await call(temp, 'GET', '/auth/me');
+  assert.equal(me.status, 200);
+  assert.equal(((await me.json()) as { mustChangePassword: boolean }).mustChangePassword, true);
+  const weak = await call(temp, 'POST', '/auth/password', { password: 'yeu' });
+  assert.equal(weak.status, 400);
+  const ok = await call(temp, 'POST', '/auth/password', { password: 'MatKhauMoi9' });
+  assert.equal(ok.status, 200);
+  assert.equal((await call(temp, 'GET', '/htx/dashboard')).status, 200, 'sau khi đổi mật khẩu thì dùng bình thường');
+});
+
+test('UAT DEF-ADM-01: tạo tài khoản Nông dân / Quản lý HTX phải chọn HTX liên kết', async () => {
+  const adminToken = await loginToken('SAdmin', 'TungLM18@');
+  const res = await call(adminToken, 'POST', '/admin/users', { username: 'nd_khong_htx', fullName: 'Nông dân', roles: ['farmer'] });
+  assert.equal(res.status, 400);
+  assert.match(((await res.json()) as { error: string }).error, /Hợp tác xã liên kết/);
+  const admin2 = await call(adminToken, 'POST', '/admin/users', { username: 'qt_khong_htx', fullName: 'Quản trị', roles: ['platform_admin'] });
+  assert.equal(admin2.status, 200, 'vai trò quản trị không cần HTX');
 });

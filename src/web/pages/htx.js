@@ -718,7 +718,11 @@ registerPage('htx-support', {
             { name: 'content', label: 'Mô tả chi tiết', type: 'textarea', rows: 3, required: true },
             { name: 'plotId', label: 'Thửa liên quan', type: 'select', options: [{ value: '', label: '— Không xác định —' }, ...plots.map((p) => ({ value: p.id, label: `${p.code} — ${num(p.area_ha, 2)} ha` }))] },
             { name: 'urgency', label: 'Mức độ', type: 'select', options: [{ value: 'binh_thuong', label: 'Bình thường' }, { value: 'khan', label: 'Khẩn — dịch hại lây lan' }] },
-          ], async (v) => { await api('/htx/support-requests', { body: { ...v, title: `[${ISSUE.find((i) => i[0] === issue)?.[2]}] ${v.title}`, htxId: id, plotId: v.plotId || null } }); toast('Đã gửi yêu cầu — cán bộ khuyến nông sẽ tiếp nhận trong 24 giờ.'); await rerender(this, view, actions); }, { submitLabel: 'Gửi yêu cầu' }),
+          ], async (v) => {
+            // UAT DEF-HTX-12/10: gửi đúng tên trường máy chủ đọc — description / category / priority — thay vì ghép vào tiêu đề.
+            await api('/htx/support-requests', { body: { title: v.title, description: v.content, category: issue, priority: v.urgency, htxId: id, plotId: v.plotId || null } });
+            toast('Đã gửi yêu cầu — cán bộ khuyến nông sẽ tiếp nhận trong 24 giờ.'); await rerender(this, view, actions);
+          }, { submitLabel: 'Gửi yêu cầu' }),
         ]) : el('div'),
         el('div', { class: 'stack' }, [
           card('Trạng thái các yêu cầu', table([{ key: 'status', label: 'Trạng thái' }, { key: 'n', label: 'Số lượng', align: 'right', render: (r) => num(r.n) }], dashboard.openTasks ?? [], { empty: 'Chưa gửi yêu cầu nào.' })),

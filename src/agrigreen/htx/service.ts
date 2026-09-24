@@ -320,10 +320,23 @@ export function declareHarvest(
 // FN-13 — Gửi yêu cầu hỗ trợ kỹ thuật (tự sinh nhiệm vụ cho App Khuyến nông FN-14)
 // ---------------------------------------------------------------------------
 
+export const SUPPORT_CATEGORIES: Record<string, string> = {
+  dich_hai: 'Dịch hại', benh_lua: 'Bệnh lúa', thoi_tiet: 'Thời tiết', ky_thuat: 'Kỹ thuật canh tác', may_moc: 'Máy móc', khac: 'Khác',
+};
+export const SUPPORT_PRIORITIES: Record<string, string> = { binh_thuong: 'Bình thường', khan: 'Khẩn' };
+
 export function requestSupport(
-  input: { htxId: string; farmerId?: string; plotId?: string; title: string; description?: string; category?: string; priority?: string },
+  input: { htxId: string; farmerId?: string; plotId?: string; title: string; description?: string; content?: string; category?: string; priority?: string; urgency?: string },
   actor: AuditActor = {},
 ): Record<string, unknown> {
+  // UAT DEF-HTX-12/10: mô tả là bắt buộc; loại vấn đề và mức khẩn phải được lưu thành trường riêng (chấp nhận cả tên cũ content/urgency).
+  if (!input.title?.trim()) throw new Error('Vui lòng nhập tiêu đề yêu cầu hỗ trợ.');
+  const description = String(input.description ?? input.content ?? '').trim();
+  if (!description) throw new Error('Vui lòng mô tả chi tiết vấn đề (triệu chứng, diện tích ảnh hưởng, thời điểm phát hiện) để cán bộ nắm được tình hình.');
+  const category = input.category ?? 'ky_thuat';
+  if (!SUPPORT_CATEGORIES[category]) throw new Error(`Loại vấn đề không hợp lệ. Chọn một trong: ${Object.values(SUPPORT_CATEGORIES).join(', ')}.`);
+  const priority = input.priority ?? input.urgency ?? 'binh_thuong';
+  if (!SUPPORT_PRIORITIES[priority]) throw new Error('Mức độ khẩn không hợp lệ (Bình thường / Khẩn).');
   const count = one<{ n: number }>('SELECT COUNT(*) AS n FROM support_tasks');
   const record = {
     id: uuid(),
@@ -331,10 +344,10 @@ export function requestSupport(
     htx_id: input.htxId,
     farmer_id: input.farmerId ?? null,
     plot_id: input.plotId ?? null,
-    title: input.title,
-    description: input.description ?? null,
-    category: input.category ?? 'ky_thuat',
-    priority: input.priority ?? 'binh_thuong',
+    title: input.title.trim(),
+    description,
+    category,
+    priority,
     status: 'moi',
     assignee_id: null,
     origin: 'app_htx',

@@ -29,6 +29,7 @@ const FLOW = ['moi', 'tiep_nhan', 'dang_xu_ly', 'hoan_thanh', 'dong'];
 const nextStatus = (status) => FLOW[Math.min(FLOW.indexOf(status) + 1, FLOW.length - 1)];
 const nextLabel = (status) => ({ moi: 'Tiếp nhận', tiep_nhan: 'Xử lý', dang_xu_ly: 'Hoàn thành', hoan_thanh: 'Đóng' })[status] ?? '—';
 const STAGE_LABEL = { lam_dat: 'Làm đất', gieo_sa: 'Gieo sạ', cham_soc: 'Chăm sóc', thu_hoach: 'Thu hoạch', sau_thu_hoach: 'Sau thu hoạch' };
+const SUPPORT_CATEGORY = { dich_hai: 'Dịch hại', benh_lua: 'Bệnh lúa', thoi_tiet: 'Thời tiết', ky_thuat: 'Kỹ thuật', may_moc: 'Máy móc', khac: 'Khác' };
 const CAT_COLORS = { ky_thuat: 'linear-gradient(140deg,#22B86C,#0B5F3C)', canh_bao: 'linear-gradient(140deg,#FF7A7A,#B91C1C)', chinh_sach: 'linear-gradient(140deg,#6366F1,#3730A3)', thi_truong: 'linear-gradient(140deg,#FFB43C,#D9700C)', su_kien: 'linear-gradient(140deg,#38BDF8,#0B6E93)' };
 
 const taskBadge = (row) => badge(TASK_STATUS[row.status]?.label ?? row.status, TASK_STATUS[row.status]?.tone ?? 'neutral');
@@ -226,7 +227,7 @@ registerPage('kn-tasks', {
       if (!selected.size) return;
       const sel = el('select', {}, staff.map((s) => el('option', { value: s.id }, [`${s.fullName} (${s.roles.join(', ')})`])));
       bulkBar.replaceChildren(el('strong', { text: `${selected.size} nhiệm vụ đã chọn` }), sel,
-        el('button', { class: 'small', onclick: async () => { const r = await guard(api('/kn/tasks/bulk-assign', { body: { ids: [...selected], assigneeId: sel.value } })); toast(`Đã phân công ${r.assigned} nhiệm vụ.`); selected.clear(); await this.render(view, (actions.replaceChildren(), actions)); } }, [icon('users', 14), 'Phân công']),
+        el('button', { class: 'small', onclick: async () => { const r = await guard(api('/kn/tasks/bulk-assign', { body: { ids: [...selected], assigneeId: sel.value } })); toast(`Đã phân công ${r.assigned} nhiệm vụ${r.skipped ? `, bỏ qua ${r.skipped} nhiệm vụ đã đóng/hoàn thành` : ''}.`); selected.clear(); await this.render(view, (actions.replaceChildren(), actions)); } }, [icon('users', 14), 'Phân công']),
         el('button', { class: 'ghost small', onclick: () => { selected.clear(); draw(); } }, ['Bỏ chọn']));
     };
     const draw = () => {
@@ -235,6 +236,9 @@ registerPage('kn-tasks', {
         can('khuyennong.publish') ? { key: 'sel', label: '', render: (r) => (r.status !== 'dong' && r.status !== 'hoan_thanh' ? el('input', { type: 'checkbox', checked: selected.has(r.id) ? true : null, onchange: (e) => { if (e.target.checked) selected.add(r.id); else selected.delete(r.id); drawBulk(); } }) : '') } : null,
         { key: 'code', label: 'Mã' }, { key: 'title', label: 'Nội dung' }, { key: 'htx_name', label: 'HTX', render: (r) => r.htx_name ?? '—' },
         { key: 'origin', label: 'Nguồn', render: (r) => badge(r.origin === 'app_htx' ? 'Cổng HTX' : 'Chỉ đạo', 'neutral') },
+        { key: 'priority', label: 'Mức', render: (r) => (r.priority === 'khan' ? badge('KHẨN', 'bad') : badge('Bình thường', 'neutral')) },
+        { key: 'category', label: 'Loại', render: (r) => SUPPORT_CATEGORY[r.category] ?? r.category ?? '—' },
+        { key: 'description', label: 'Mô tả', render: (r) => (r.description ? el('span', { title: r.description, text: String(r.description).slice(0, 60) + (String(r.description).length > 60 ? '…' : '') }) : '—') },
         { key: 'sla', label: 'SLA 24h', render: (r) => (r.status === 'moi' ? badge(r.slaBreached ? `Quá ${r.ageHours - r.slaHours}h` : `Còn ${r.slaRemainingHours}h`, r.slaBreached ? 'bad' : 'warn') : (r.escalated_to ? badge(`→ ${r.escalated_to}`, 'info') : '—')) },
         { key: 'assignee_name', label: 'Phụ trách', render: (r) => r.assignee_name ?? r.assignee_id ?? '—' },
         { key: 'status', label: 'Trạng thái', render: taskBadge },

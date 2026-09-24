@@ -447,7 +447,8 @@ export function confirmDialog(message, options = {}) {
   return new Promise((resolve) => {
     const dialog = modal(options.title ?? 'Xác nhận', [el('p', { text: message }), ...(options.extra ?? [])], [
       el('button', { class: 'ghost', text: options.cancelLabel ?? 'Huỷ', onclick: () => { dialog.close(); resolve(false); } }),
-      el('button', { class: options.danger ? 'danger' : '', text: options.okLabel ?? 'Đồng ý', onclick: () => { dialog.close(); resolve(true); } }),
+      // UAT DEF-SYS-02: phải resolve(true) TRƯỚC khi close(), vì close() gọi onClose → resolve(false) đồng bộ và Promise chỉ nhận lần đầu.
+      el('button', { class: options.danger ? 'danger' : '', text: options.okLabel ?? 'Đồng ý', onclick: () => { resolve(true); dialog.close(); } }),
     ], { onClose: () => resolve(false), dismissible: false });
   });
 }
@@ -462,7 +463,7 @@ export function promptDialog(title, options = {}) {
       el('button', { text: options.okLabel ?? 'Xác nhận', onclick: () => {
         const value = box.value.trim();
         if (options.minLength && value.length < options.minLength) { err.textContent = `Cần tối thiểu ${options.minLength} ký tự.`; return; }
-        dialog.close(); resolve(value);
+        resolve(value); dialog.close();
       } }),
     ], { onClose: () => resolve(null), dismissible: false });
     setTimeout(() => box.focus(), 30);
@@ -835,6 +836,14 @@ export async function boot() {
   state.permissions = new Set(me.permissions ?? []);
   document.getElementById('login').hidden = true;
 
+  // UAT DEF-AUTH-01: mật khẩu tạm phải được đổi ngay lần đăng nhập đầu — máy chủ cũng chặn mọi API khác (403 must_change_password).
+  if (me.mustChangePassword) {
+    document.getElementById('shell').hidden = true;
+    document.getElementById('portal-picker').hidden = true;
+    await forcePasswordChange(me);
+    return boot();
+  }
+
   // ---- Phân giải cổng từ đường dẫn ----
   const requestedPortal = portalFromPath(location.pathname);
   const allowed = allowedPortals();
@@ -925,6 +934,35 @@ function buildPortalSwitch(allowed, current) {
     }, [el('span', { class: 'mark', text: portal.mark }), el('span', { text: portal.short })]));
   }
   box.append(el('a', { class: 'portal-link muted', href: '/', title: 'Tất cả các cổng' }, [el('span', { class: 'mark', text: '⌂' }), el('span', { text: 'Tất cả các cổng' })]));
+}
+
+/** Hộp thoại bắt buộc đổi mật khẩu tạm; chỉ đóng khi đổi thành công hoặc đăng xuất. */
+function forcePasswordChange(me) {
+  return new Promise((resolve) => {
+    const pw = el('input', { type: 'password', placeholder: 'Mật khẩu mới', autocomplete: 'new-password' });
+    const pw2 = el('input', { type: 'password', placeholder: 'Nhập lại mật khẩu mới', autocomplete: 'new-password' });
+    const err = el('p', { class: 'login-error' });
+    const dialog = modal('Đổi mật khẩu tạm trước khi tiếp tục', [
+      el('p', { text: `Xin chào ${me.fullName}. Tài khoản đang dùng mật khẩu tạm do quản trị viên cấp — hãy đặt mật khẩu riêng để tiếp tục.` }),
+      el('p', { class: 'muted', text: 'Mật khẩu mới: tối thiểu 8 ký tự, có chữ thường, chữ in hoa và chữ số.' }),
+      el('label', {}, ['Mật khẩu mới', pw]),
+      el('label', {}, ['Nhập lại mật khẩu mới', pw2]),
+      err,
+    ], [
+      el('button', { class: 'ghost', text: 'Đăng xuất', onclick: async () => { await api('/auth/logout', { body: {} }).catch(() => {}); location.reload(); } }),
+      el('button', { text: 'Đổi mật khẩu', onclick: async () => {
+        err.textContent = '';
+        if (pw.value !== pw2.value) { err.textContent = 'Hai lần nhập mật khẩu không khớp.'; return; }
+        try {
+          await api('/auth/password', { body: { password: pw.value } });
+          toast('Đã đổi mật khẩu. Chào mừng bạn!');
+          resolve();
+          dialog.close();
+        } catch (error) { err.textContent = error.message; }
+      } }),
+    ], { dismissible: false });
+    setTimeout(() => pw.focus(), 30);
+  });
 }
 
 /** Màn hình chọn cổng tại "/" — thay cho một thanh điều hướng gộp tất cả. */
