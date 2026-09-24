@@ -85,6 +85,32 @@ export function tablesOf(domain: Domain): string[] {
 /** Tên schema SQLite của miền: tệp dùng chung mở làm `main`, các miền khác được ATTACH đúng tên. */
 export const schemaOf = (domain: Domain): string => (domain === 'shared' ? 'main' : domain);
 
+/**
+ * 15 quan hệ cha–con nằm ở hai tệp khác nhau — SQLite gỡ FOREIGN KEY của chúng khi tách miền
+ * (xem qualifyStatement). `db.insert/update` kiểm danh sách này trước khi ghi, và
+ * `integrity.findOrphans()` rà định kỳ (rà soát CSDL 24/09/2026, nguyên tắc 4).
+ */
+export const CROSS_DOMAIN_REFS: { table: string; column: string; parent: string }[] = [
+  { table: 'crop_cycles', column: 'plot_id', parent: 'plots' },
+  { table: 'crop_cycles', column: 'season_id', parent: 'seasons' },
+  { table: 'production_protocols', column: 'htx_id', parent: 'cooperatives' },
+  { table: 'plan_step_assignments', column: 'farmer_id', parent: 'farmers' },
+  { table: 'plan_step_assignments', column: 'machine_id', parent: 'machines' },
+  { table: 'input_items', column: 'htx_id', parent: 'cooperatives' },
+  { table: 'input_purchases', column: 'htx_id', parent: 'cooperatives' },
+  { table: 'input_stock', column: 'htx_id', parent: 'cooperatives' },
+  { table: 'input_issues', column: 'htx_id', parent: 'cooperatives' },
+  { table: 'input_issues', column: 'plot_id', parent: 'plots' },
+  { table: 'productivity_norms', column: 'machine_type_id', parent: 'machine_types' },
+  { table: 'rental_listings', column: 'machine_id', parent: 'machines' },
+  { table: 'storage_zones', column: 'facility_id', parent: 'facilities' },
+  { table: 'straw_contracts', column: 'htx_id', parent: 'cooperatives' },
+  { table: 'straw_purchase_tickets', column: 'job_id', parent: 'field_jobs' },
+];
+const REFS_BY_TABLE = new Map<string, { column: string; parent: string }[]>();
+for (const ref of CROSS_DOMAIN_REFS) REFS_BY_TABLE.set(ref.table, [...(REFS_BY_TABLE.get(ref.table) ?? []), ref]);
+export const crossDomainRefsOf = (table: string) => REFS_BY_TABLE.get(table) ?? [];
+
 export function qualifyStatement(statement: string): string {
   const table = /CREATE TABLE IF NOT EXISTS (\w+)/.exec(statement);
   if (table) {

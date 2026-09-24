@@ -13,7 +13,7 @@
 import { DatabaseSync } from 'node:sqlite';
 import { existsSync, mkdirSync, statSync } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
-import { DOMAINS, tablesOf, type Domain } from './domains.ts';
+import { DOMAINS, tablesOf, type Domain, crossDomainRefsOf } from './domains.ts';
 
 export type Row = Record<string, unknown>;
 
@@ -121,7 +121,19 @@ export function transaction<T>(fn: () => T): T {
  * Chèn một bản ghi từ object. Các giá trị object/array được tự động JSON hoá,
  * boolean được quy đổi về 0/1 vì SQLite không có kiểu boolean.
  */
+/** Khoá ngoại xuyên miền không tồn tại ở tầng SQLite → kiểm ở đây, đúng một SELECT cho mỗi cột tham chiếu có giá trị. */
+function assertCrossDomainRefs(table: string, values: Record<string, unknown>): void {
+  for (const ref of crossDomainRefsOf(table)) {
+    const id = values[ref.column];
+    if (id === undefined || id === null || id === '') continue;
+    if (!one(`SELECT 1 FROM ${ref.parent} WHERE id = ?`, [id])) {
+      throw new Error(`Tham chiếu không tồn tại: ${table}.${ref.column} → ${ref.parent} (${String(id)}). Bản ghi cha có thể đã bị xoá.`);
+    }
+  }
+}
+
 export function insert(table: string, values: Record<string, unknown>): void {
+  assertCrossDomainRefs(table, values);
   const columns = Object.keys(values);
   const placeholders = columns.map(() => '?').join(', ');
   run(
@@ -149,6 +161,7 @@ export function update(
 ): void {
   const columns = Object.keys(values);
   if (!columns.length) return;
+  assertCrossDomainRefs(table, values);
   const assignments = columns.map((column) => `${column} = ?`).join(', ');
   run(
     `UPDATE ${table} SET ${assignments} WHERE ${keyColumn} = ?`,

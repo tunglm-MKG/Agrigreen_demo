@@ -4,6 +4,8 @@
 data/*.db
 data/*.db-shm
 data/*.db-wal
+# Bản sao lưu SQLite (VACUUM INTO) — lưu ngoài repo.
+data/backups/
 
 # Thư mục làm việc tạm của quá trình phát triển.
 tmp/

@@ -98,6 +98,19 @@ Kết luận: nền tảng thiết kế hợp lý (khoá chính, chuẩn hoá, p
 
 ---
 
+## Đã thực hiện (cùng ngày 24/09/2026)
+
+Ba việc ưu tiên 1–4 ở bảng dưới đã được triển khai và có test riêng trong `tests/db-ops.test.ts` (341/341 test đạt):
+
+| Việc | Cách làm | Tệp |
+| --- | --- | --- |
+| Chỉ mục (NT 8) | 80 chỉ mục `CREATE INDEX IF NOT EXISTS` trong `PERFORMANCE_INDEXES`, tạo ở cuối `migrate()` sau khi thêm cột; kiểm cột tồn tại trước nên CSDL cũ khởi động vẫn an toàn. Phủ `htx_id`, `user_id`, `facility_id`, `plan_id`, `crop_cycle_id`, `recipient_user_id` và các cặp lọc (`status`, ngày). | `src/platform/db/schema.ts` |
+| Sao lưu & phục hồi (NT 11) | `backupAll()` chạy `VACUUM <miền> INTO` cho 7 tệp → `data/backups/<thời điểm>/` + `manifest.json` (SHA-256, `integrity_check`, số bảng); `verifyBackup()` đối chiếu băm và integrity; `restoreBackup()` xoá `-wal/-shm` rồi chép đè; luân chuyển giữ 14 đợt. Máy chủ tự chạy 5 phút sau khởi động và mỗi 24 giờ. CLI `npm run backup` / `npm run restore`. Nút *Sao lưu ngay* và danh sách đợt trên màn GIS → Quản trị → Tích hợp. Quy trình diễn tập trong README. | `src/platform/db/backup.ts`, `scripts/backup.ts`, `scripts/restore.ts`, `src/server.ts` |
+| Băm mật khẩu (NT 10) | scrypt (N=16384, r=8, p=1, 32 byte, tiền tố `scrypt$`), so khớp hằng thời gian. Hash SHA-256 cũ vẫn đăng nhập được và được băm lại bằng scrypt với salt mới ngay lần đăng nhập thành công đầu tiên — không cần đặt lại mật khẩu hàng loạt. | `src/platform/auth/users.ts` |
+| Khoá ngoại xuyên miền (NT 4) | `CROSS_DOMAIN_REFS` liệt kê 15 quan hệ; `insert()`/`update()` kiểm bản ghi cha trước khi ghi (lỗi tiếng Việt "Tham chiếu không tồn tại"); `findOrphans()` rà mồ côi, `dailyIntegrityScan()` chạy mỗi ngày ghi `event_log` khi phát hiện; kết quả hiển thị trên màn Sức khoẻ CSDL kèm `quick_check` từng tệp. | `src/platform/db/domains.ts`, `db.ts`, `integrity.ts`, `src/api-brd.ts` |
+
+Chưa làm: mã hoá cột `national_id`, khai FOREIGN KEY cho các cột `*_id` cùng miền còn thiếu, và các mục 5–8.
+
 ## Việc đề xuất, theo thứ tự ưu tiên
 
 | Ưu tiên | Việc | Phạm vi | Công sức |

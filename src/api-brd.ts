@@ -8,6 +8,8 @@
 import { HttpError, Router, badRequest, forbidden, notFound, unauthorized, type Context } from './platform/http/router.ts';
 import { PERMISSIONS as P, can as roleCan } from './platform/auth/rbac.ts';
 import { logEvent } from './platform/audit/audit.ts';
+import { backupAll, listBackups, verifyBackup } from './platform/db/backup.ts';
+import { findOrphans, indexSummary, integrityByDomain } from './platform/db/integrity.ts';
 import * as users from './platform/auth/users.ts';
 import * as reporting from './erp/reporting/service.ts';
 import * as mdm from './mdm/service.ts';
@@ -167,6 +169,18 @@ export function registerBrdRoutes(api: Router): void {
   api.get('/gis/admin/overrides', () => gisAdmin.pendingOverrides(), P.GIS_READ);
   api.post('/gis/admin/overrides/resolve', (ctx) => { gisAdmin.resolveOverride(body(ctx) as never, ctx.actor); return { ok: true }; }, P.GIS_ADMIN);
   api.get('/gis/admin/integration', () => gisAdmin.integrationOverview(), P.GIS_READ);
+
+  // ===================== Sức khoẻ CSDL & sao lưu (rà soát 24/09/2026) =====================
+  api.get('/admin/db-health', () => ({
+    integrity: integrityByDomain(true), orphans: findOrphans(), indexes: indexSummary(),
+    backups: listBackups().slice(0, 10).map((b) => ({ dir: b.dir, ok: b.manifest?.ok ?? false, createdAt: b.manifest?.createdAt ?? null, bytes: b.manifest?.files.reduce((a, f) => a + f.bytes, 0) ?? 0, durationMs: b.manifest?.durationMs ?? null })),
+  }), P.ADMIN_CONFIG);
+  api.post('/admin/db-backup', (ctx) => {
+    const result = backupAll({ keep: Number(body(ctx)?.keep ?? 14) });
+    logEvent({ module: 'admin', entityType: 'db_backup', entityId: result.dir, action: 'create', after: { ok: result.manifest.ok, files: result.manifest.files.length, durationMs: result.manifest.durationMs }, source: 'ui' }, ctx.actor);
+    return result;
+  }, P.ADMIN_CONFIG);
+  api.post('/admin/db-backup/verify', (ctx) => verifyBackup(String(body(ctx).dir ?? '')), P.ADMIN_CONFIG);
 
   // FN-08/FN-09 — tra cứu tuyến phù hợp tải trọng (US-ROAD-01, US-WATER-01)
   api.get('/gis/routes/suitable', (ctx) => {

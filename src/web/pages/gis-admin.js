@@ -518,7 +518,25 @@ registerPage('gis-admin', {
         el('div', { class: 'st' }, [el('b', { text: s.label }), el('span', { class: 'muted', text: s.datasets.join(' · ') }), s.feeds ? el('div', { class: 'chip-row', style: 'margin-top:6px' }, s.feeds.map((f) => badge(f, 'info'))) : null]),
         el('div', { style: 'text-align:right' }, [el('div', { class: 'muted', text: s.last ? `${dateTime(s.last.started_at)} · ${num(s.last.record_count)} bản ghi` : 'Chưa có giao dịch' }), s.last ? badge(SYNC_STATUS[s.last.status]?.[0] ?? s.last.status, SYNC_STATUS[s.last.status]?.[1] ?? 'neutral') : null]),
       ]);
+      const health = can('admin.config') ? await api('/admin/db-health').catch(() => null) : null;
+      const healthCard = health ? card('Sức khoẻ cơ sở dữ liệu', [
+        el('div', { class: 'chip-row' }, [
+          ...health.integrity.map((d) => badge(`${d.domain}: ${d.result === 'ok' ? 'toàn vẹn' : d.result}`, d.result === 'ok' ? 'good' : 'bad')),
+          badge(`${health.indexes.reduce((a, d) => a + d.explicit, 0)} chỉ mục`, 'neutral'),
+        ]),
+        el('h4', { text: 'Tham chiếu xuyên miền (15 quan hệ không có khoá ngoại ở tầng SQLite)' }),
+        health.orphans.some((o) => o.orphans > 0)
+          ? table([{ key: 'table', label: 'Bảng con' }, { key: 'column', label: 'Cột' }, { key: 'parent', label: 'Bảng cha' }, { key: 'orphans', label: 'Mồ côi', align: 'right' }, { key: 'sample', label: 'Ví dụ', render: (r) => r.sample.join(', ') }], health.orphans.filter((o) => o.orphans > 0), { plain: true })
+          : alert('Không có bản ghi mồ côi — mọi tham chiếu xuyên miền đều còn bản ghi cha.', 'good'),
+        el('h4', { text: 'Sao lưu' }),
+        el('div', { class: 'chip-row' }, [el('button', { class: 'small', onclick: async () => { const r = await guard(api('/admin/db-backup', { body: {} })); toast(`${r.manifest.ok ? 'Đã sao lưu' : 'Sao lưu lỗi'}: ${r.manifest.files.length} tệp trong ${r.manifest.durationMs} ms.`); await renderIntegration(panel); } }, [icon('database', 14), 'Sao lưu ngay'])]),
+        table([
+          { key: 'createdAt', label: 'Lúc', render: (r) => dateTime(r.createdAt) }, { key: 'ok', label: 'Kết quả', render: (r) => badge(r.ok ? 'Hợp lệ' : 'Lỗi', r.ok ? 'good' : 'bad') },
+          { key: 'bytes', label: 'Dung lượng', align: 'right', render: (r) => `${num(r.bytes / 1024)} KB` }, { key: 'dir', label: 'Thư mục', render: (r) => el('code', { text: r.dir }) },
+        ], health.backups, { plain: true, empty: 'Chưa có đợt sao lưu nào — sao lưu tự động chạy 5 phút sau khi khởi động và mỗi 24 giờ (BACKUP_INTERVAL_HOURS).' }),
+      ]) : null;
       panel.replaceChildren(
+        healthCard,
         card('Luồng dữ liệu VÀO GIS (FN-21)', el('div', { class: 'stack' }, (info.inbound ?? []).map(row))),
         card('Luồng dữ liệu RA từ GIS', el('div', { class: 'stack' }, (info.outbound ?? []).map(row))),
         alert(`Đang có ${info.manualOverrides ?? 0} bản ghi nhập tay dự phòng. GIS chỉ HIỂN THỊ kết quả thiếu/thừa máy từ Bản đồ CGH, không tính lại.`, 'info'),

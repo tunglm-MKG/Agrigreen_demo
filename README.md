@@ -48,6 +48,31 @@ npm test
 - `npm run seed -- --reset` — xoá và nạp lại dữ liệu nền (26 HTX ĐBSCL, 3 mùa vụ, 378 máy cơ giới, 7 tuyến đường thuỷ, nhà máy VFT, 49 tham số).
 - `npm run demo` — chạy trọn vẹn nghiệp vụ trên dòng lệnh: đặt 5 Hub ứng viên → dựng 3 kịch bản → mô phỏng → so sánh → khuyến nghị → độ nhạy → phê duyệt tham số → kết xuất Hub sang kho → nhập kho → định tuyến TMS → cân đối cơ giới hoá.
 - `npm test` — hơn 300 test kiểm chứng các Acceptance Criteria trong BRD và luồng nhập Excel.
+- `npm run backup` — sao lưu 7 tệp CSDL bằng `VACUUM INTO` (xem mục *Sao lưu & phục hồi* bên dưới).
+
+### Sao lưu & phục hồi
+
+Máy chủ tự sao lưu **5 phút sau khi khởi động và mỗi 24 giờ** vào `data/backups/<thời điểm>/` (7 tệp miền + `manifest.json` ghi băm SHA-256, kết quả `integrity_check`, số bảng). Chỉ giữ 14 đợt gần nhất. Biến môi trường: `BACKUP_DIR`, `BACKUP_KEEP`, `BACKUP_INTERVAL_HOURS` (0 = tắt).
+
+```bash
+npm run backup
+```
+
+```bash
+npm run backup -- --list
+```
+
+```bash
+npm run backup -- --verify data/backups/2026-09-24T02-00-00
+```
+
+Khôi phục (dừng máy chủ trước; script từ chối bản sao lưu có băm không khớp hoặc `integrity_check` lỗi):
+
+```bash
+npm run restore -- data/backups/2026-09-24T02-00-00
+```
+
+Diễn tập phục hồi (nên làm mỗi quý): dừng máy chủ, đổi tên thư mục `data/` hiện tại thành `data.truoc-dien-tap/`, khôi phục đợt gần nhất vào `data/` bằng lệnh trên, khởi động lại và đăng nhập kiểm tra vài màn hình; xong thì đổi tên ngược lại. Muốn kiểm tra không đụng dữ liệu đang chạy thì dùng `--target data/dien-tap` rồi mở các tệp `.db` bằng công cụ SQLite bất kỳ. Màn **GIS → Quản trị → Tích hợp → Sức khoẻ cơ sở dữ liệu** cho phép sao lưu thủ công, xem 10 đợt gần nhất, kết quả `quick_check` từng tệp và bản ghi mồ côi xuyên miền.
 
 ### Tài khoản
 

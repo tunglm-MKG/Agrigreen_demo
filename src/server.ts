@@ -17,6 +17,8 @@ import { purgeExpired } from './platform/http/idempotency.ts';
 import { seedVarietiesIfEmpty } from './mdm/varieties.ts';
 import { seedHtxFieldDemoIfEmpty, ensureXaScopeAssignments } from './seedDemoHtx.ts';
 import { ensureSuperAdmin } from './platform/auth/users.ts';
+import { backupAll } from './platform/db/backup.ts';
+import { dailyIntegrityScan } from './platform/db/integrity.ts';
 import { escalateOverdueTasks, scanWatchlists } from './agrigreen/khuyennong/ops.ts';
 import { runDueReportSchedules } from './agrigreen/htx/fieldOps.ts';
 
@@ -56,6 +58,20 @@ export async function start(port = Number(process.env.PORT ?? 4173)): Promise<vo
   };
   scan();
   setInterval(scan, 10 * 60_000).unref();
+  // Rà toàn vẹn CSDL mỗi ngày (bản ghi mồ côi xuyên miền, quick_check từng tệp) — nguyên tắc 4.
+  setInterval(() => { try { dailyIntegrityScan(); } catch (error) { console.error('[db] rà toàn vẹn lỗi:', (error as Error).message); } }, 60 * 60_000).unref();
+  // Sao lưu tự động: BACKUP_INTERVAL_HOURS (mặc định 24, 0 = tắt), BACKUP_DIR, BACKUP_KEEP — nguyên tắc 11.
+  const backupHours = Number(process.env.BACKUP_INTERVAL_HOURS ?? 24);
+  if (backupHours > 0) {
+    const runBackup = () => {
+      try {
+        const { dir, manifest, pruned } = backupAll({ keep: Number(process.env.BACKUP_KEEP ?? 14) });
+        console.log(`[db] ${manifest.ok ? 'đã sao lưu' : 'SAO LƯU LỖI'} → ${dir} (${manifest.durationMs} ms${pruned.length ? `, xoá ${pruned.length} đợt cũ` : ''})`);
+      } catch (error) { console.error('[db] sao lưu lỗi:', (error as Error).message); }
+    };
+    setTimeout(runBackup, 5 * 60_000).unref();
+    setInterval(runBackup, backupHours * 3_600_000).unref();
+  }
   setInterval(() => { processOutbox().catch((error) => console.error('[notify] outbox lỗi:', error.message)); }, 30_000).unref();
 
   const server = createServer(async (req, res) => {

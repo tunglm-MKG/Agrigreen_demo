@@ -5,11 +5,32 @@
  * Warehouse FN-36. Không có cơ chế tự đăng ký công khai — mọi tài khoản do
  * Admin khởi tạo (App HTX BR-01).
  */
-import { randomBytes } from 'node:crypto';
+import { randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
 import { all, insert, one, run, transaction, update } from '../db/db.ts';
 import { hashPassword, nowIso, uuid } from '../util/ids.ts';
 import { logEvent } from '../audit/audit.ts';
 import { permissionsFor, ROLE_LABELS, ROLES } from './rbac.ts';
+
+// ---------------------------------------------------------------------------
+// Băm mật khẩu: scrypt (KDF có chi phí bộ nhớ) thay cho SHA-256 một vòng (rà soát CSDL 24/09/2026,
+// nguyên tắc 10). Bản ghi cũ vẫn xác thực được và được nâng cấp trong suốt ở lần đăng nhập thành công.
+// ---------------------------------------------------------------------------
+const SCRYPT_N = Number(process.env.SCRYPT_N ?? 16384);
+const SCRYPT_PARAMS = { N: SCRYPT_N, r: 8, p: 1, maxmem: 64 * 1024 * 1024 };
+const SCRYPT_PREFIX = 'scrypt$';
+
+export function hashSecret(password: string, salt: string): string {
+  return SCRYPT_PREFIX + scryptSync(password, salt, 32, SCRYPT_PARAMS).toString('hex');
+}
+
+export function isLegacyHash(stored: string): boolean { return !stored.startsWith(SCRYPT_PREFIX); }
+
+/** So khớp hằng thời gian; nhận cả hash cũ (sha256) lẫn hash mới (scrypt). */
+export function verifySecret(password: string, salt: string, stored: string): boolean {
+  const candidate = isLegacyHash(stored) ? hashPassword(password, salt) : hashSecret(password, salt);
+  const a = Buffer.from(candidate); const b = Buffer.from(stored);
+  return a.length === b.length && timingSafeEqual(a, b);
+}
 
 export interface User {
   id: string;
@@ -127,7 +148,7 @@ export function createUser(input: CreateUserInput, actor = {}, options: { enforc
       full_name: input.fullName,
       email: input.email?.trim() || null,
       phone,
-      password_hash: hashPassword(temporaryPassword, salt),
+      password_hash: hashSecret(temporaryPassword, salt),
       password_salt: salt,
       must_change_pw: input.password ? 0 : 1,
       status: 'active',
@@ -176,7 +197,7 @@ export function resetPassword(id: string, actor = {}): string {
   const temporaryPassword = generateTemporaryPassword();
   update('users', id, {
     password_salt: salt,
-    password_hash: hashPassword(temporaryPassword, salt),
+    password_hash: hashSecret(temporaryPassword, salt),
     must_change_pw: 1,
     updated_at: nowIso(),
   });
@@ -190,7 +211,7 @@ export function changePassword(id: string, newPassword: string, options: { enfor
   const salt = randomBytes(12).toString('hex');
   update('users', id, {
     password_salt: salt,
-    password_hash: hashPassword(newPassword, salt),
+    password_hash: hashSecret(newPassword, salt),
     must_change_pw: 0,
     updated_at: nowIso(),
   });
@@ -231,7 +252,7 @@ export function login(identifier: string, password: string): { token: string; us
     const minutes = Math.max(1, Math.ceil((new Date(row.locked_until).getTime() - Date.now()) / 60_000));
     throw new LoginError(lockoutMessage(minutes), 'temporarily_locked');
   }
-  if (hashPassword(password, row.password_salt) !== row.password_hash) {
+  if (!verifySecret(password, row.password_salt, row.password_hash)) {
     // Cửa sổ 15 phút: đã hết khoá tạm thì đếm lại từ đầu.
     const attempts = (row.locked_until && row.locked_until <= now ? 0 : (row.failed_attempts ?? 0)) + 1;
     const values: Record<string, unknown> = { failed_attempts: attempts, updated_at: now };
@@ -246,7 +267,14 @@ export function login(identifier: string, password: string): { token: string; us
     return null;
   }
 
-  update('users', row.id, { failed_attempts: 0, locked_until: null, last_login_at: now, updated_at: now });
+  const upgrade: Record<string, unknown> = {};
+  if (isLegacyHash(row.password_hash)) {
+    // Nâng cấp trong suốt: mật khẩu vừa xác thực đúng → băm lại bằng scrypt với salt mới.
+    const salt = randomBytes(12).toString('hex');
+    upgrade.password_salt = salt;
+    upgrade.password_hash = hashSecret(password, salt);
+  }
+  update('users', row.id, { failed_attempts: 0, locked_until: null, last_login_at: now, updated_at: now, ...upgrade });
   const token = randomBytes(24).toString('hex');
   const created = new Date();
   const expires = new Date(created.getTime() + SESSION_HOURS * 3600_000);
@@ -324,7 +352,7 @@ export function ensureSuperAdmin(initialPassword = process.env.SUPER_ADMIN_PASSW
     transaction(() => {
       update('users', legacy.id, {
         username: SUPER_ADMIN_USERNAME, full_name: 'Quản trị hệ thống (Super Admin)', password_salt: salt,
-        password_hash: hashPassword(initialPassword, salt), must_change_pw: 0, status: 'active', failed_attempts: 0, locked_until: null, updated_at: timestamp,
+        password_hash: hashSecret(initialPassword, salt), must_change_pw: 0, status: 'active', failed_attempts: 0, locked_until: null, updated_at: timestamp,
       });
       ensureRole(legacy.id);
       run('DELETE FROM sessions WHERE user_id = ?', [legacy.id]);
@@ -336,7 +364,7 @@ export function ensureSuperAdmin(initialPassword = process.env.SUPER_ADMIN_PASSW
   transaction(() => {
     insert('users', {
       id, username: SUPER_ADMIN_USERNAME, full_name: 'Quản trị hệ thống (Super Admin)', email: null, phone: null,
-      password_hash: hashPassword(initialPassword, salt), password_salt: salt, must_change_pw: 0, status: 'active',
+      password_hash: hashSecret(initialPassword, salt), password_salt: salt, must_change_pw: 0, status: 'active',
       org_node_id: null, htx_id: null, province_id: null, created_at: timestamp, updated_at: timestamp,
     });
     insert('user_roles', { user_id: id, role: ROLES.PLATFORM_ADMIN });

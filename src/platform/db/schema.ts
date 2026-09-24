@@ -10,7 +10,7 @@
  *  - Mọi phân hệ đều audit-trail: bảng `event_log` append-only là nguồn sự thật.
  */
 import { all, db } from './db.ts';
-import { qualifyStatement, splitStatements } from './domains.ts';
+import { qualifyStatement, splitStatements, schemaOf, domainOf } from './domains.ts';
 
 /**
  * Lược đồ hợp nhất được viết một lần; lúc chạy, từng câu CREATE được gắn tiền tố
@@ -21,6 +21,118 @@ export function migrate(): void {
   const handle = db();
   for (const statement of splitStatements(SCHEMA)) handle.exec(qualifyStatement(statement));
   applyColumnMigrations();
+  applyPerformanceIndexes();
+}
+
+/**
+ * Chỉ mục cho cột lọc/khoá ngoại nóng (rà soát CSDL 24/09/2026, nguyên tắc 8).
+ * Chạy sau applyColumnMigrations vì vài chỉ mục dùng cột được thêm sau (deleted_at, approval_status).
+ * Cột chưa tồn tại (CSDL rất cũ) → bỏ qua chỉ mục đó, không làm hỏng khởi động.
+ */
+export const PERFORMANCE_INDEXES: { name: string; table: string; columns: string[] }[] = [
+  // dùng chung
+  { name: 'idx_plots_htx', table: 'plots', columns: ['htx_id', 'deleted_at'] },
+  { name: 'idx_plots_farmer', table: 'plots', columns: ['farmer_id'] },
+  { name: 'idx_farmers_htx', table: 'farmers', columns: ['htx_id', 'status'] },
+  { name: 'idx_farmers_phone', table: 'farmers', columns: ['phone'] },
+  { name: 'idx_users_phone', table: 'users', columns: ['phone'] },
+  { name: 'idx_users_htx', table: 'users', columns: ['htx_id'] },
+  { name: 'idx_users_org', table: 'users', columns: ['org_node_id'] },
+  { name: 'idx_sessions_user', table: 'sessions', columns: ['user_id', 'expires_at'] },
+  { name: 'idx_event_log_actor', table: 'event_log', columns: ['actor_id'] },
+  { name: 'idx_event_log_module_time', table: 'event_log', columns: ['module', 'occurred_at'] },
+  { name: 'idx_notifications_recipient', table: 'notifications', columns: ['recipient_user_id', 'read_at'] },
+  { name: 'idx_notifications_outbox', table: 'notifications', columns: ['status', 'channel'] },
+  { name: 'idx_machines_htx', table: 'machines', columns: ['htx_id'] },
+  { name: 'idx_machines_type', table: 'machines', columns: ['machine_type_id'] },
+  { name: 'idx_machines_owner', table: 'machines', columns: ['owner_id'] },
+  { name: 'idx_machines_serial', table: 'machines', columns: ['serial_number'] },
+  { name: 'idx_machine_owners_htx', table: 'machine_owners', columns: ['htx_id'] },
+  { name: 'idx_cooperatives_province', table: 'cooperatives', columns: ['province_id', 'status'] },
+  { name: 'idx_cooperatives_commune', table: 'cooperatives', columns: ['commune_id'] },
+  { name: 'idx_facilities_province', table: 'facilities', columns: ['province_id'] },
+  { name: 'idx_admin_units_parent', table: 'admin_units', columns: ['parent_id', 'level'] },
+  { name: 'idx_attachments_entity', table: 'attachments', columns: ['entity_type', 'entity_id'] },
+  { name: 'idx_weighings_facility', table: 'weighings', columns: ['facility_id'] },
+  { name: 'idx_gps_logs_user', table: 'gps_logs', columns: ['user_id'] },
+  { name: 'idx_crop_status_htx', table: 'crop_status', columns: ['htx_id', 'season_id'] },
+  { name: 'idx_org_nodes_parent', table: 'org_nodes', columns: ['parent_id'] },
+  { name: 'idx_extension_officers_org', table: 'extension_officers', columns: ['org_node_id', 'on_duty'] },
+  // HTX
+  { name: 'idx_crop_cycles_plot', table: 'crop_cycles', columns: ['plot_id', 'status'] },
+  { name: 'idx_crop_cycles_season', table: 'crop_cycles', columns: ['season_id'] },
+  { name: 'idx_farm_logs_cycle', table: 'farm_logs', columns: ['crop_cycle_id', 'log_date'] },
+  { name: 'idx_farm_logs_approval', table: 'farm_logs', columns: ['approval_status'] },
+  { name: 'idx_harvest_cycle', table: 'harvest_declarations', columns: ['crop_cycle_id'] },
+  { name: 'idx_production_plans_cycle', table: 'production_plans', columns: ['crop_cycle_id'] },
+  { name: 'idx_plan_steps_plan', table: 'production_plan_steps', columns: ['plan_id', 'status'] },
+  { name: 'idx_step_assignments_step', table: 'plan_step_assignments', columns: ['plan_step_id'] },
+  { name: 'idx_step_assignments_farmer', table: 'plan_step_assignments', columns: ['farmer_id'] },
+  { name: 'idx_input_stock_htx', table: 'input_stock', columns: ['htx_id', 'item_id'] },
+  { name: 'idx_input_purchases_htx', table: 'input_purchases', columns: ['htx_id'] },
+  { name: 'idx_input_purchase_lines_purchase', table: 'input_purchase_lines', columns: ['purchase_id'] },
+  { name: 'idx_input_issues_htx', table: 'input_issues', columns: ['htx_id'] },
+  { name: 'idx_input_issues_cycle', table: 'input_issues', columns: ['crop_cycle_id'] },
+  { name: 'idx_input_issues_plot', table: 'input_issues', columns: ['plot_id'] },
+  { name: 'idx_protocol_steps_protocol', table: 'protocol_steps', columns: ['protocol_id'] },
+  // Khuyến nông
+  { name: 'idx_support_tasks_htx', table: 'support_tasks', columns: ['htx_id', 'status'] },
+  { name: 'idx_support_tasks_assignee', table: 'support_tasks', columns: ['assignee_id'] },
+  { name: 'idx_articles_status', table: 'knowledge_articles', columns: ['status', 'category'] },
+  { name: 'idx_articles_scope', table: 'knowledge_articles', columns: ['scope_node_id'] },
+  { name: 'idx_market_prices_commodity', table: 'market_prices', columns: ['commodity', 'price_date'] },
+  { name: 'idx_enrollments_course', table: 'training_enrollments', columns: ['course_id'] },
+  { name: 'idx_survey_responses_template', table: 'survey_responses', columns: ['template_id'] },
+  { name: 'idx_survey_answers_response', table: 'survey_answers', columns: ['response_id'] },
+  { name: 'idx_price_watchlist_user', table: 'price_watchlist', columns: ['user_id'] },
+  { name: 'idx_machinery_decl_htx', table: 'htx_machinery_declarations', columns: ['htx_id'] },
+  // Cơ giới hoá
+  { name: 'idx_cultivation_plans_htx', table: 'cultivation_plans', columns: ['htx_id', 'season_id'] },
+  { name: 'idx_norms_type', table: 'productivity_norms', columns: ['machine_type_id', 'effective_from'] },
+  { name: 'idx_rental_listings_machine', table: 'rental_listings', columns: ['machine_id'] },
+  { name: 'idx_rental_orders_renter', table: 'rental_orders', columns: ['renter_htx_id'] },
+  { name: 'idx_rental_orders_listing', table: 'rental_orders', columns: ['listing_id'] },
+  // ERP
+  { name: 'idx_stock_lots_facility', table: 'stock_lots', columns: ['facility_id', 'status'] },
+  { name: 'idx_stock_lots_htx', table: 'stock_lots', columns: ['htx_id'] },
+  { name: 'idx_goods_receipts_facility', table: 'goods_receipts', columns: ['facility_id'] },
+  { name: 'idx_goods_issues_facility', table: 'goods_issues', columns: ['facility_id', 'status'] },
+  { name: 'idx_ledger_partner', table: 'ledger_entries', columns: ['partner_id'] },
+  { name: 'idx_ledger_htx', table: 'ledger_entries', columns: ['htx_id'] },
+  { name: 'idx_ledger_ref', table: 'ledger_entries', columns: ['ref_id'] },
+  { name: 'idx_sales_orders_facility', table: 'sales_orders', columns: ['facility_id'] },
+  { name: 'idx_purchase_orders_htx', table: 'purchase_orders', columns: ['htx_id'] },
+  { name: 'idx_scenario_hubs_scenario', table: 'scenario_hubs', columns: ['scenario_id'] },
+  { name: 'idx_simulation_results_scenario', table: 'simulation_results', columns: ['scenario_id'] },
+  { name: 'idx_storage_zones_facility', table: 'storage_zones', columns: ['facility_id'] },
+  { name: 'idx_straw_tickets_contract', table: 'straw_purchase_tickets', columns: ['contract_id'] },
+  // Hiện trường
+  { name: 'idx_field_jobs_htx', table: 'field_jobs', columns: ['htx_id'] },
+  { name: 'idx_field_jobs_plot', table: 'field_jobs', columns: ['plot_id'] },
+  { name: 'idx_field_job_stages_job', table: 'field_job_stages', columns: ['job_id'] },
+  { name: 'idx_field_loadings_trip', table: 'field_loadings', columns: ['trip_id'] },
+  { name: 'idx_field_team_members_team', table: 'field_team_members', columns: ['team_id'] },
+  { name: 'idx_field_vehicles_team', table: 'field_vehicles', columns: ['team_id'] },
+  // GIS
+  { name: 'idx_transport_routes_province', table: 'transport_routes', columns: ['province_id'] },
+  { name: 'idx_waterway_structures_route', table: 'waterway_structures', columns: ['route_id'] },
+  { name: 'idx_weather_area', table: 'weather_observations', columns: ['area_id', 'observed_for'] },
+];
+
+function applyPerformanceIndexes(): { created: number; skipped: string[] } {
+  const handle = db();
+  const skipped: string[] = [];
+  let created = 0;
+  for (const index of PERFORMANCE_INDEXES) {
+    const schema = schemaOf(domainOf(index.table));
+    const existing = new Set((handle.prepare(`PRAGMA ${schema}.table_info(${index.table})`).all() as { name: string }[]).map((c) => c.name));
+    const missing = index.columns.filter((c) => !existing.has(c));
+    if (!existing.size || missing.length) { skipped.push(`${index.name} (thiếu ${missing.join(', ') || 'bảng'})`); continue; }
+    handle.exec(`CREATE INDEX IF NOT EXISTS ${schema}.${index.name} ON ${index.table}(${index.columns.join(', ')})`);
+    created += 1;
+  }
+  if (skipped.length) console.warn(`[db] bỏ qua ${skipped.length} chỉ mục vì cột chưa tồn tại: ${skipped.slice(0, 5).join('; ')}`);
+  return { created, skipped };
 }
 
 /**
