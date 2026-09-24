@@ -8,7 +8,7 @@
  * Nhãn trạng thái: "Dữ liệu tĩnh — chụp ngày <ngày tải>" (F-05, R-04).
  */
 import { join } from 'node:path';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { loadGrid, sampleGrid, sampleGridNear, type Grid } from '../raster/grid.ts';
 import type { LayerAdapter, PointValue, SourceInfo } from './types.ts';
 import { DEM_LEGEND, SOIL_PROPERTIES } from './palettes.ts';
@@ -19,6 +19,18 @@ const grids = new Map<string, Grid | null>();
 function grid(id: string): Grid | null {
   if (!grids.has(id)) grids.set(id, loadGrid(join(RASTER_DIR, id)));
   return grids.get(id) ?? null;
+}
+
+/**
+ * Siêu dữ liệu nguồn (nhà cung cấp, giấy phép, ngày chụp) đọc từ tệp `<id>.json` kèm theo — có cả khi lưới giá trị
+ * `.f32` (5 MB/lớp, không đưa vào repo) chưa được tải: giao diện vẫn ghi đúng nguồn và ngày chụp, chỉ thiếu giá trị tại điểm.
+ */
+function metaOf(id: string): Grid['meta'] | null {
+  const g = grid(id);
+  if (g) return g.meta;
+  const path = join(RASTER_DIR, `${id}.json`);
+  if (!existsSync(path)) return null;
+  try { return JSON.parse(readFileSync(path, 'utf8')) as Grid['meta']; } catch { return null; }
 }
 
 export function rasterPngPath(id: string): string | null {
@@ -34,16 +46,19 @@ function makeAdapter(spec: {
   return {
     source(): SourceInfo {
       const g = grid(spec.id);
+      const meta = metaOf(spec.id);
       const missing = !g;
       return {
         id: spec.id, layerName: spec.layerName,
-        providerName: g?.meta.source ?? 'chưa tải dữ liệu',
-        attribution: g ? (spec.id === 'terrain' ? '© Copernicus DEM' : '© ISRIC — World Soil Information / SoilGrids') : 'Chưa có dữ liệu — chạy npm run gis-demo:fetch',
-        attributionUrl: g?.meta.sourceUrl ?? '', license: g?.meta.license ?? '',
-        status: 'tinh', dataTimestamp: g?.meta.version ?? null, snapshotDate: g?.meta.fetchedAt ?? null,
+        providerName: meta?.source ?? 'chưa tải dữ liệu',
+        attribution: meta ? (spec.id === 'terrain' ? '© Copernicus DEM' : '© ISRIC — World Soil Information / SoilGrids') : 'Chưa có dữ liệu — chạy npm run gis-demo:fetch',
+        attributionUrl: meta?.sourceUrl ?? '', license: meta?.license ?? '',
+        status: 'tinh', dataTimestamp: meta?.version ?? null, snapshotDate: meta?.fetchedAt ?? null,
         unit: spec.unit, render: 'raster', legend: spec.legend, hasSeries: false,
-        caveat: missing ? 'Raster chưa được tải về máy — lớp này trống cho tới khi chạy lệnh tải.' : `${spec.caveat} ${g!.meta.note ?? ''}`.trim(),
-        extra: g ? { gridSize: [g.meta.width, g.meta.height], version: g.meta.version } : undefined,
+        caveat: missing
+          ? `Lưới giá trị (.f32) chưa được tải về máy — chỉ hiển thị thông tin nguồn, chưa tra được giá trị tại điểm; chạy npm run gis-demo:fetch. ${meta?.note ?? ''}`.trim()
+          : `${spec.caveat} ${g!.meta.note ?? ''}`.trim(),
+        extra: meta ? { gridSize: [meta.width, meta.height], version: meta.version, gridLoaded: !missing } : undefined,
       };
     },
     updatedAt() { return grid(spec.id)?.meta.fetchedAt ?? null; },
