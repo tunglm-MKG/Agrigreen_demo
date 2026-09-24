@@ -16,6 +16,7 @@
     "backup": "node scripts/backup.ts",
     "restore": "node scripts/restore.ts",
     "rotate-key": "node scripts/rotate-key.ts",
+    "reset-sadmin": "node scripts/reset-sadmin.ts",
     "gis-demo": "node gis-demo/src/server.ts",
     "gis-demo:fetch": "node gis-demo/src/fetch/fetchStatic.ts"
   },

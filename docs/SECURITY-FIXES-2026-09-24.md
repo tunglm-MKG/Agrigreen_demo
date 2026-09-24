@@ -44,6 +44,13 @@
 | L-07 | SPA fallback trả 200 cho mọi đường dẫn | **Đã xử lý** | Chỉ fallback khi `Accept: text/html` và đường dẫn không có phần mở rộng; còn lại 404 thật. |
 | L-08 | Hash SHA-256 cũ vô thời hạn | **Đã xử lý** | `LEGACY_HASH_DEADLINE` (mặc định 2026-12-31): sau hạn, đăng nhập bằng hash cũ vẫn được nhưng bị buộc đặt mật khẩu mới; `legacyHashCount()` để theo dõi. |
 
+## Lấy / đặt lại mật khẩu SAdmin
+
+- Bản đã chạy từ trước: đăng nhập bằng mật khẩu cũ một lần nữa, hệ thống bắt đặt mật khẩu mới ngay.
+- Cài mới có `SUPER_ADMIN_PASSWORD`: dùng đúng giá trị đó (Render sinh sẵn trong tab Environment; Fly: `fly secrets set`).
+- Cài mới không có biến: mật khẩu tạm nằm trong log khởi động, dòng `[auth] SAdmin được tạo với mật khẩu tạm: …` (chỉ in một lần).
+- Mất mật khẩu: trên máy chủ chạy `npm run reset-sadmin` (in mật khẩu tạm mới, bắt đổi) hoặc `SUPER_ADMIN_PASSWORD=... npm run reset-sadmin`; mọi phiên SAdmin đang mở bị huỷ và có ghi nhật ký.
+
 ## Việc ngoài mã nguồn — người vận hành phải làm
 
 1. **Đổi mật khẩu SAdmin trên mọi môi trường đang chạy** ngay lần đăng nhập tới (hệ thống sẽ bắt đổi); nếu chuỗi cũ được dùng lại ở dịch vụ khác, đổi ở đó trước. Đổi `DEMO_ACCESS_CODE`; rà `event_log` (`entity_type = login`) tìm đăng nhập lạ.
