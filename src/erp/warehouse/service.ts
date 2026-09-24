@@ -182,6 +182,7 @@ export function approveGoodsReceipt(id: string, actor: AuditActor = {}): Record<
   if (grn.status === 'da_duyet') throw new Error('Phiếu nhập đã được phê duyệt.');
 
   const item = one<{ id: string }>("SELECT id FROM items WHERE category = 'straw' LIMIT 1");
+  if (!item) throw new Error('Danh mục hàng hoá chưa có mặt hàng rơm (category = straw) — bổ sung trước khi duyệt phiếu nhập.');
   const lot = {
     id: uuid(),
     code: nextCode('stock_lots', 'LOT'),

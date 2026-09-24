@@ -16,6 +16,7 @@ import * as sysadmin from './platform/auth/admin.ts';
 import * as scopes from './platform/auth/scopes.ts';
 import * as sharedFlows from './platform/sync/sharedFlows.ts';
 import { databaseFiles } from './platform/db/db.ts';
+import { maskNationalId } from './platform/security/fieldCrypto.ts';
 import { SYSTEMS } from './platform/auth/rbac.ts';
 import * as audit from './platform/audit/audit.ts';
 import * as sync from './platform/sync/sync.ts';
@@ -373,7 +374,7 @@ export function buildApi(): Router {
     mdm.setCooperativeStatus(ctx.params.id, body(ctx).status, ctx.actor);
     return { ok: true };
   }, P.MDM_WRITE);
-  api.get('/mdm/farmers', (ctx) => mdm.listFarmers(ctx.query.get('htxId') ?? undefined), P.MDM_READ);
+  api.get('/mdm/farmers', (ctx) => mdm.listFarmers(ctx.query.get('htxId') ?? undefined).map((f) => ({ ...f, national_id: maskNationalId(f.national_id) })), P.MDM_READ);
   api.post('/mdm/farmers', (ctx) => mdm.createFarmer(body(ctx) as never, ctx.actor), P.MDM_WRITE);
   api.get('/mdm/plots', (ctx) => mdm.listPlots(ctx.query.get('htxId') ?? undefined), P.MDM_READ);
   // UAT DEF-KN-PLOT-01/02: mọi đường tạo thửa (kể cả cán bộ khuyến nông vẽ hộ) đều qua kiểm tra ≥ 4 điểm, không tự cắt, chồng lấn.

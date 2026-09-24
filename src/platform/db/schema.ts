@@ -9,7 +9,9 @@
  *    mở rộng được, không hard-code một dòng.
  *  - Mọi phân hệ đều audit-trail: bảng `event_log` append-only là nguồn sự thật.
  */
-import { all, db } from './db.ts';
+import { randomUUID } from 'node:crypto';
+import { all, db, MONEY_COLUMNS } from './db.ts';
+import { encryptPiiAtRest } from '../security/fieldCrypto.ts';
 import { qualifyStatement, splitStatements, schemaOf, domainOf } from './domains.ts';
 
 /**
@@ -19,9 +21,181 @@ import { qualifyStatement, splitStatements, schemaOf, domainOf } from './domains
  */
 export function migrate(): void {
   const handle = db();
-  for (const statement of splitStatements(SCHEMA)) handle.exec(qualifyStatement(statement));
+  const statements = splitStatements(SCHEMA);
+  for (const statement of statements) handle.exec(qualifyStatement(statement));
   applyColumnMigrations();
+  // Di trú dữ liệu TRƯỚC khi dựng lại bảng (cột evidence_json sẽ không còn trong định nghĩa mới).
+  migrateStageEvidence();
+  migrateCoverageThresholds();
+  const { rebuilt, skipped } = reconcileTables();
+  if (rebuilt.length) {
+    console.log(`[db] đã dựng lại ${rebuilt.length} bảng theo lược đồ mới: ${rebuilt.join(', ')}`);
+    // Dựng lại bảng làm mất chỉ mục tường minh → tạo lại toàn bộ (IF NOT EXISTS, rẻ).
+    for (const statement of statements) if (/^CREATE (UNIQUE )?INDEX/i.test(statement)) handle.exec(qualifyStatement(statement));
+  }
+  for (const item of skipped) console.warn(`[db] KHÔNG dựng lại được bảng ${item.table}: ${item.reason} — dữ liệu hiện có vi phạm ràng buộc mới, cần sửa tay.`);
   applyPerformanceIndexes();
+  normalizeMoneyColumns();
+  const encrypted = encryptPiiAtRest();
+  if (encrypted) console.log(`[db] đã mã hoá ${encrypted} số CCCD còn lưu rõ.`);
+}
+
+// ---------------------------------------------------------------------------
+// Dựng lại bảng khi định nghĩa trong SCHEMA khác với định nghĩa đang lưu trong tệp
+// (SQLite không có ALTER TABLE ADD CONSTRAINT / ALTER COLUMN). Quy trình 12 bước của
+// SQLite: tắt khoá ngoại → tạo bảng mới → chép cột chung → xoá bảng cũ → đổi tên.
+// Bảng nào dữ liệu cũ vi phạm ràng buộc mới thì bỏ qua và cảnh báo, không làm hỏng khởi động.
+// ---------------------------------------------------------------------------
+
+/** Chuẩn hoá văn bản CREATE TABLE để so sánh (bỏ IF NOT EXISTS, tên schema, dấu nháy, khoảng trắng, chữ hoa). */
+export function normalizeTableSql(sql: string): string {
+  return sql
+    .replace(/^\s*CREATE TABLE IF NOT EXISTS\s+/i, 'CREATE TABLE ')
+    .replace(/^CREATE TABLE\s+(\w+)\./i, 'CREATE TABLE ')
+    .replace(/"(\w+)"/g, '$1')
+    .replace(/\s+/g, ' ')
+    .replace(/\s*([(),])\s*/g, '$1')
+    .replace(/;\s*$/, '')
+    .trim()
+    .toLowerCase();
+}
+
+/**
+ * Định nghĩa mong muốn của một bảng = câu CREATE trong SCHEMA + các cột thêm bằng ALTER
+ * (applyColumnMigrations) chèn đúng chỗ SQLite chèn: sau cột cuối, trước ràng buộc bảng.
+ */
+export function desiredTableSql(statement: string): string {
+  const table = /^CREATE TABLE IF NOT EXISTS (\w+)/.exec(statement)![1];
+  let sql = qualifyStatement(statement);
+  const declared = new Set(columnNamesOf(sql));
+  const extras = COLUMN_ADDITIONS.filter((a) => a.table === table && !declared.has(a.column)).map((a) => `${a.column} ${a.definition}`);
+  if (!extras.length) return sql;
+  const constraintAt = sql.search(/\n\s*(FOREIGN KEY|PRIMARY KEY\s*\(|UNIQUE\s*\(|CHECK\s*\(|CONSTRAINT\b)/);
+  if (constraintAt >= 0) {
+    sql = sql.slice(0, constraintAt) + ' ' + extras.map((e) => `${e},`).join(' ') + sql.slice(constraintAt);
+  } else {
+    sql = sql.replace(/\s*\)\s*$/, `, ${extras.join(', ')})`);
+  }
+  return sql;
+}
+
+/** Tên cột theo thứ tự trong một câu CREATE TABLE (phân tích văn bản, đủ cho lược đồ của dự án). */
+function columnNamesOf(createSql: string): string[] {
+  const open = createSql.indexOf('(');
+  const body = createSql.slice(open + 1, createSql.lastIndexOf(')'));
+  const names: string[] = [];
+  let depth = 0; let current = '';
+  const parts: string[] = [];
+  for (const ch of body) {
+    if (ch === '(') depth += 1;
+    if (ch === ')') depth -= 1;
+    if (ch === ',' && depth === 0) { parts.push(current); current = ''; continue; }
+    current += ch;
+  }
+  parts.push(current);
+  for (const part of parts) {
+    const m = /^\s*(\w+)\s/.exec(part);
+    if (!m) continue;
+    if (/^(FOREIGN|PRIMARY|UNIQUE|CHECK|CONSTRAINT)$/i.test(m[1])) continue;
+    names.push(m[1]);
+  }
+  return names;
+}
+
+export function reconcileTables(): { rebuilt: string[]; skipped: { table: string; reason: string }[] } {
+  const handle = db();
+  const rebuilt: string[] = [];
+  const skipped: { table: string; reason: string }[] = [];
+  const pending: { table: string; schema: string; create: string }[] = [];
+  for (const statement of splitStatements(SCHEMA)) {
+    const m = /^CREATE TABLE IF NOT EXISTS (\w+)/.exec(statement);
+    if (!m) continue;
+    const table = m[1];
+    const schema = schemaOf(domainOf(table));
+    const stored = handle.prepare(`SELECT sql FROM ${schema}.sqlite_master WHERE type = 'table' AND name = ?`).get(table) as { sql: string } | undefined;
+    if (!stored) continue;
+    const desired = desiredTableSql(statement);
+    if (normalizeTableSql(stored.sql) === normalizeTableSql(desired)) continue;
+    pending.push({ table, schema, create: desired });
+  }
+  if (!pending.length) return { rebuilt, skipped };
+  handle.exec('PRAGMA foreign_keys = OFF');
+  try {
+    for (const item of pending) {
+      const temp = `__new_${item.table}`;
+      const createTemp = item.create.replace(/^CREATE TABLE IF NOT EXISTS (\w+)\.(\w+)/, `CREATE TABLE ${item.schema}.${temp}`);
+      handle.exec('BEGIN');
+      try {
+        handle.exec(`DROP TABLE IF EXISTS ${item.schema}.${temp}`);
+        handle.exec(createTemp);
+        const oldColumns = (handle.prepare(`PRAGMA ${item.schema}.table_info(${item.table})`).all() as { name: string }[]).map((c) => c.name);
+        const newColumns = new Set((handle.prepare(`PRAGMA ${item.schema}.table_info(${temp})`).all() as { name: string }[]).map((c) => c.name));
+        const common = oldColumns.filter((c) => newColumns.has(c)).join(', ');
+        handle.exec(`INSERT INTO ${item.schema}.${temp} (${common}) SELECT ${common} FROM ${item.schema}.${item.table}`);
+        handle.exec(`DROP TABLE ${item.schema}.${item.table}`);
+        handle.exec(`ALTER TABLE ${item.schema}.${temp} RENAME TO ${item.table}`);
+        handle.exec('COMMIT');
+        rebuilt.push(item.table);
+      } catch (error) {
+        handle.exec('ROLLBACK');
+        skipped.push({ table: item.table, reason: (error as Error).message });
+      }
+    }
+  } finally {
+    handle.exec('PRAGMA foreign_keys = ON');
+  }
+  return { rebuilt, skipped };
+}
+
+// ---------------------------------------------------------------------------
+// Di trú dữ liệu một lần (idempotent)
+// ---------------------------------------------------------------------------
+
+/** evidence_json (mảng JSON trong field_job_stages) → bảng field_stage_evidence, mỗi mục một dòng. */
+function migrateStageEvidence(): number {
+  const columns = all<{ name: string }>('PRAGMA field.table_info(field_job_stages)');
+  if (!columns.some((c) => c.name === 'evidence_json')) return 0;
+  const rows = all<{ id: string; evidence_json: string; recorded_by: string | null; completed_at: string | null }>(
+    "SELECT id, evidence_json, recorded_by, completed_at FROM field_job_stages WHERE evidence_json IS NOT NULL AND evidence_json NOT IN ('', '[]')");
+  let moved = 0;
+  for (const row of rows) {
+    let items: { kind?: string; url?: string; note?: string }[] = [];
+    try { items = JSON.parse(row.evidence_json); } catch { items = []; }
+    for (const item of items) {
+      if (!item || !item.kind) continue;
+      db().prepare('INSERT INTO field_stage_evidence (id, stage_id, kind, url, note, recorded_at, recorded_by) VALUES (?, ?, ?, ?, ?, ?, ?)')
+        .run(randomUUID(), row.id, String(item.kind), item.url ?? null, item.note ?? null, row.completed_at ?? new Date().toISOString(), row.recorded_by);
+      moved += 1;
+    }
+    db().prepare('UPDATE field_job_stages SET evidence_json = NULL WHERE id = ?').run(row.id);
+  }
+  return moved;
+}
+
+/** system_config['cgh.coverage_thresholds'] (mảng JSON) → bảng cgh_coverage_thresholds. */
+function migrateCoverageThresholds(): number {
+  const row = db().prepare("SELECT value_json FROM system_config WHERE key = 'cgh.coverage_thresholds'").get() as { value_json: string } | undefined;
+  if (!row) return 0;
+  let versions: { du: number; canChuY: number; thua: number; effectiveFrom: string; documentRef?: string }[] = [];
+  try { versions = JSON.parse(row.value_json); } catch { versions = []; }
+  let moved = 0;
+  for (const v of versions) {
+    if (!v?.effectiveFrom || !(v.canChuY < v.du && v.du < v.thua)) continue;
+    db().prepare('INSERT OR IGNORE INTO cgh_coverage_thresholds (id, effective_from, can_chu_y, du, thua, document_ref, created_at, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(randomUUID(), v.effectiveFrom, v.canChuY, v.du, v.thua, v.documentRef ?? null, new Date().toISOString(), 'migration');
+    moved += 1;
+  }
+  db().prepare("DELETE FROM system_config WHERE key = 'cgh.coverage_thresholds'").run();
+  return moved;
+}
+
+/** Tiền tệ lưu theo đồng (INTEGER). Dữ liệu cũ có phần lẻ → làm tròn một lần. */
+function normalizeMoneyColumns(): void {
+  for (const [table, columns] of Object.entries(MONEY_COLUMNS)) {
+    for (const column of columns) {
+      db().exec(`UPDATE ${table} SET ${column} = CAST(ROUND(${column}) AS INTEGER) WHERE ${column} IS NOT NULL AND ${column} != CAST(${column} AS INTEGER)`);
+    }
+  }
 }
 
 /**
@@ -141,8 +315,8 @@ function applyPerformanceIndexes(): { created: number; skipped: string[] } {
  * `CREATE TABLE IF NOT EXISTS` không thêm cột vào bảng cũ, nên các cột phát
  * sinh sau khi hệ thống đã chạy phải được thêm bằng ALTER TABLE có kiểm tra.
  */
-function applyColumnMigrations(): void {
-  const additions: { table: string; column: string; definition: string }[] = [
+/** Cột thêm bằng ALTER TABLE cho CSDL cũ. Cũng dùng để dựng "định nghĩa mong muốn" khi so khớp lược đồ (reconcileTables). */
+export const COLUMN_ADDITIONS: { table: string; column: string; definition: string }[] = [
     // Kích cỡ sà lan dùng cho chặng Hub→Nhà máy ngoài mùa thu hoạch (1000/2000 tấn).
     { table: 'scenario_hubs', column: 'barge_payload_tons', definition: 'REAL' },
     // Nhật ký canh tác nay có thể là XÁC NHẬN một bước trong kế hoạch sản xuất.
@@ -234,8 +408,10 @@ function applyColumnMigrations(): void {
     { table: 'extension_officers', column: 'duty_updated_at', definition: 'TEXT' },
     // Vụ canh tác gắn giống lúa từ danh mục (US-CAT-01, US-SEASON-01).
     { table: 'crop_cycles', column: 'variety_id', definition: 'TEXT' },
-  ];
-  for (const addition of additions) {
+];
+
+function applyColumnMigrations(): void {
+  for (const addition of COLUMN_ADDITIONS) {
     const columns = all<{ name: string }>(`PRAGMA table_info(${addition.table})`);
     if (!columns.length) continue;
     if (columns.some((column) => column.name === addition.column)) continue;
@@ -243,7 +419,7 @@ function applyColumnMigrations(): void {
   }
 }
 
-const SCHEMA = /* sql */ `
+export const SCHEMA = /* sql */ `
 -- =====================================================================
 -- 0. NỀN TẢNG: tài khoản, phân quyền, nhật ký
 -- =====================================================================
@@ -256,12 +432,13 @@ CREATE TABLE IF NOT EXISTS users (
   phone           TEXT,
   password_hash   TEXT NOT NULL,
   password_salt   TEXT NOT NULL,
-  must_change_pw  INTEGER NOT NULL DEFAULT 0,
-  status          TEXT NOT NULL DEFAULT 'active',   -- active | locked | pending
+  must_change_pw  INTEGER NOT NULL DEFAULT 0 CHECK (must_change_pw IN (0, 1)),
+  status          TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'locked', 'pending')),   -- active | locked | pending
   org_node_id     TEXT,                             -- vị trí trên cây tổ chức khuyến nông
   htx_id          TEXT,                             -- HTX liên kết (App HTX BR-02)
   created_at      TEXT NOT NULL,
-  updated_at      TEXT NOT NULL
+  updated_at      TEXT NOT NULL,
+  FOREIGN KEY (htx_id) REFERENCES cooperatives(id)
 );
 
 CREATE TABLE IF NOT EXISTS user_roles (
@@ -293,7 +470,7 @@ CREATE TABLE IF NOT EXISTS user_groups (
   description TEXT,
   -- Nhóm hệ thống (định nghĩa trong rbac.ts) không xoá và không đổi tên được;
   -- chỉ được ghi đè quyền. Nhóm tuỳ chỉnh thì sửa xoá thoải mái.
-  is_system   INTEGER NOT NULL DEFAULT 0,
+  is_system   INTEGER NOT NULL DEFAULT 0 CHECK (is_system IN (0, 1)),
   created_by  TEXT,
   created_at  TEXT NOT NULL,
   updated_at  TEXT NOT NULL
@@ -323,7 +500,7 @@ CREATE TABLE IF NOT EXISTS field_teams (
   base_lng      REAL,
   base_label    TEXT,
   province_id   TEXT,
-  status        TEXT NOT NULL DEFAULT 'hoat_dong',   -- hoat_dong | tam_nghi | giai_the
+  status        TEXT NOT NULL DEFAULT 'hoat_dong' CHECK (status IN ('hoat_dong', 'tam_nghi', 'giai_the')),   -- hoat_dong | tam_nghi | giai_the
   note          TEXT,
   created_at    TEXT NOT NULL,
   updated_at    TEXT NOT NULL
@@ -333,7 +510,7 @@ CREATE TABLE IF NOT EXISTS field_team_members (
   team_id     TEXT NOT NULL,
   full_name   TEXT NOT NULL,
   phone       TEXT,
-  role        TEXT NOT NULL DEFAULT 'cong_nhan',    -- doi_truong | lai_may | cong_nhan | lai_ghe
+  role        TEXT NOT NULL DEFAULT 'cong_nhan' CHECK (role IN ('doi_truong', 'lai_may', 'cong_nhan', 'lai_ghe')),    -- doi_truong | lai_may | cong_nhan | lai_ghe
   status      TEXT NOT NULL DEFAULT 'hoat_dong',
   created_at  TEXT NOT NULL,
   FOREIGN KEY (team_id) REFERENCES field_teams(id)
@@ -342,16 +519,17 @@ CREATE TABLE IF NOT EXISTS field_vehicles (
   id             TEXT PRIMARY KEY,
   code           TEXT UNIQUE NOT NULL,
   name           TEXT NOT NULL,
-  kind           TEXT NOT NULL,     -- may_cuon | may_keo | xe_tai | may_xuc | ghe | sa_lan
+  kind           TEXT NOT NULL CHECK (kind IN ('may_cuon', 'may_keo', 'xe_tai', 'may_xuc', 'ghe', 'sa_lan')),     -- may_cuon | may_keo | xe_tai | may_xuc | ghe | sa_lan
   plate_number   TEXT,
   team_id        TEXT,
   machine_id     TEXT,              -- liên kết danh mục máy cơ giới hoá (CGH) nếu có
   capacity_value REAL,              -- máy cuộn: tấn/ngày — quyết định năng lực xếp việc
   capacity_unit  TEXT,
-  status         TEXT NOT NULL DEFAULT 'san_sang',   -- san_sang | dang_dung | bao_duong | hong
+  status         TEXT NOT NULL DEFAULT 'san_sang' CHECK (status IN ('san_sang', 'dang_dung', 'bao_duong', 'hong')),   -- san_sang | dang_dung | bao_duong | hong
   note           TEXT,
   created_at     TEXT NOT NULL,
-  updated_at     TEXT NOT NULL
+  updated_at     TEXT NOT NULL,
+  FOREIGN KEY (team_id) REFERENCES field_teams(id)
 );
 -- Một việc thu gom = một thửa (hoặc một HTX) × một ngày gặt.
 CREATE TABLE IF NOT EXISTS field_jobs (
@@ -369,7 +547,7 @@ CREATE TABLE IF NOT EXISTS field_jobs (
   loading_lng             REAL,
   destination_facility_id TEXT,            -- Hub / nhà máy nhận rơm
   harvest_date            TEXT NOT NULL,
-  harvest_confirmed       INTEGER NOT NULL DEFAULT 0,   -- 1 = HTX đã khai báo sản lượng
+  harvest_confirmed       INTEGER NOT NULL DEFAULT 0 CHECK (harvest_confirmed IN (0, 1)),   -- 1 = HTX đã khai báo sản lượng
   expected_straw_tons     REAL NOT NULL DEFAULT 0,
   area_ha                 REAL,
   team_id                 TEXT,
@@ -378,10 +556,11 @@ CREATE TABLE IF NOT EXISTS field_jobs (
   assigned_by             TEXT,
   assigned_at             TEXT,
   priority                INTEGER NOT NULL DEFAULT 0,
-  status                  TEXT NOT NULL DEFAULT 'cho_phan_cong',
+  status                  TEXT NOT NULL DEFAULT 'cho_phan_cong' CHECK (status IN ('cho_phan_cong', 'da_phan_cong', 'dang_thuc_hien', 'hoan_thanh', 'huy')),
   note                    TEXT,
   created_at              TEXT NOT NULL,
-  updated_at              TEXT NOT NULL
+  updated_at              TEXT NOT NULL,
+  FOREIGN KEY (team_id) REFERENCES field_teams(id)
 );
 -- Ba công đoạn cố định của mỗi việc: cuon_rom → gom_rom → xuong_ghe.
 CREATE TABLE IF NOT EXISTS field_job_stages (
@@ -400,11 +579,25 @@ CREATE TABLE IF NOT EXISTS field_job_stages (
   lat           REAL,
   lng           REAL,
   note          TEXT,
-  evidence_json TEXT,
-  status        TEXT NOT NULL DEFAULT 'cho_thuc_hien',
+  status        TEXT NOT NULL DEFAULT 'cho_thuc_hien' CHECK (status IN ('cho_thuc_hien', 'dang_thuc_hien', 'hoan_thanh', 'huy')),
   UNIQUE (job_id, stage),
-  FOREIGN KEY (job_id) REFERENCES field_jobs(id)
+  FOREIGN KEY (job_id) REFERENCES field_jobs(id),
+  FOREIGN KEY (vehicle_id) REFERENCES field_vehicles(id)
 );
+-- Bằng chứng công đoạn: mỗi mục một dòng (thay cột evidence_json — nguyên tắc 5, rà soát 24/09/2026).
+-- Ảnh có tệp đính kèm nằm ở bảng attachments (entity_type = field_job_stage); bảng này giữ
+-- loại bằng chứng, ghi chú và liên kết ngoài do người ghi nhận khai.
+CREATE TABLE IF NOT EXISTS field_stage_evidence (
+  id           TEXT PRIMARY KEY,
+  stage_id     TEXT NOT NULL,
+  kind         TEXT NOT NULL,
+  url          TEXT,
+  note         TEXT,
+  recorded_at  TEXT NOT NULL,
+  recorded_by  TEXT,
+  FOREIGN KEY (stage_id) REFERENCES field_job_stages(id)
+);
+CREATE INDEX IF NOT EXISTS idx_field_stage_evidence_stage ON field_stage_evidence(stage_id);
 -- Mỗi lượt xuống ghe là một chuyến TMS (trip_id) — cầu nối hiện trường ↔ vận tải.
 CREATE TABLE IF NOT EXISTS field_loadings (
   id                      TEXT PRIMARY KEY,
@@ -458,8 +651,8 @@ CREATE TABLE IF NOT EXISTS notifications (
   id                TEXT PRIMARY KEY,
   group_id          TEXT NOT NULL,   -- một thông báo → nhiều dòng (mỗi kênh một dòng)
   recipient_user_id TEXT NOT NULL,
-  channel           TEXT NOT NULL,   -- inapp | zalo | sms
-  severity          TEXT NOT NULL,   -- info | warn | critical
+  channel           TEXT NOT NULL CHECK (channel IN ('inapp', 'zalo', 'sms', 'email')),   -- inapp | zalo | sms
+  severity          TEXT NOT NULL CHECK (severity IN ('info', 'warn', 'critical')),   -- info | warn | critical
   title             TEXT NOT NULL,
   body              TEXT NOT NULL,
   link              TEXT,
@@ -467,12 +660,13 @@ CREATE TABLE IF NOT EXISTS notifications (
   entity_type       TEXT,
   entity_id         TEXT,
   dedupe_key        TEXT,
-  status            TEXT NOT NULL,   -- cho_gui | da_gui | loi | cho_cau_hinh
+  status            TEXT NOT NULL CHECK (status IN ('cho_gui', 'da_gui', 'loi', 'cho_cau_hinh', 'khong_co_email')),   -- cho_gui | da_gui | loi | cho_cau_hinh
   attempts          INTEGER NOT NULL DEFAULT 0,
   last_error        TEXT,
   created_at        TEXT NOT NULL,
   sent_at           TEXT,
-  read_at           TEXT
+  read_at           TEXT,
+  FOREIGN KEY (recipient_user_id) REFERENCES users(id)
 );
 CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications(recipient_user_id, channel, read_at);
 CREATE INDEX IF NOT EXISTS idx_notifications_status ON notifications(status, channel);
@@ -502,9 +696,9 @@ CREATE TABLE IF NOT EXISTS straw_contracts (
   to_date          TEXT NOT NULL,
   committed_tons   REAL NOT NULL,
   price_basis      TEXT NOT NULL,      -- theo_tan_can | theo_cuon
-  unit_price       REAL NOT NULL,      -- đ/tấn hoặc đ/cuộn
+  unit_price       INTEGER NOT NULL,      -- đ/tấn hoặc đ/cuộn
   max_moisture_pct REAL,
-  status           TEXT NOT NULL DEFAULT 'hieu_luc',   -- hieu_luc | het_han | huy
+  status           TEXT NOT NULL DEFAULT 'hieu_luc' CHECK (status IN ('hieu_luc', 'het_han', 'huy')),   -- hieu_luc | het_han | huy
   note             TEXT,
   created_by       TEXT,
   created_at       TEXT NOT NULL,
@@ -518,13 +712,13 @@ CREATE TABLE IF NOT EXISTS straw_purchase_tickets (
   htx_id             TEXT,
   contract_id        TEXT,
   price_basis        TEXT,
-  unit_price         REAL,
+  unit_price         INTEGER,
   bales              INTEGER NOT NULL DEFAULT 0,
   estimated_tons     REAL NOT NULL DEFAULT 0,
   weighed_tons       REAL,                    -- chỉ khi MỌI ghe của việc đã cân
   unweighed_loadings INTEGER NOT NULL DEFAULT 0,
-  amount             REAL,
-  status             TEXT NOT NULL,           -- cho_can | cho_xac_nhan | da_xac_nhan | da_thanh_toan | huy
+  amount             INTEGER,
+  status             TEXT NOT NULL CHECK (status IN ('cho_can', 'cho_xac_nhan', 'da_xac_nhan', 'da_thanh_toan', 'huy')),           -- cho_can | cho_xac_nhan | da_xac_nhan | da_thanh_toan | huy
   ledger_entry_id    TEXT,
   due_date           TEXT,
   confirmed_by       TEXT,
@@ -533,7 +727,9 @@ CREATE TABLE IF NOT EXISTS straw_purchase_tickets (
   note               TEXT,
   created_at         TEXT NOT NULL,
   updated_at         TEXT NOT NULL,
-  FOREIGN KEY (job_id) REFERENCES field_jobs(id)
+  FOREIGN KEY (job_id) REFERENCES field_jobs(id),
+  FOREIGN KEY (contract_id) REFERENCES straw_contracts(id),
+  FOREIGN KEY (ledger_entry_id) REFERENCES ledger_entries(id)
 );
 CREATE TABLE IF NOT EXISTS vessels (
   id                  TEXT PRIMARY KEY,
@@ -547,7 +743,7 @@ CREATE TABLE IF NOT EXISTS vessels (
   straw_payload_tons  REAL,
   registration_expiry TEXT,
   rate_type           TEXT,                   -- per_ton | per_trip | per_ton_km
-  rate_vnd            REAL,
+  rate_vnd            INTEGER,
   status              TEXT NOT NULL DEFAULT 'hoat_dong',
   note                TEXT,
   created_at          TEXT NOT NULL,
@@ -597,7 +793,7 @@ CREATE TABLE IF NOT EXISTS event_log (
   action       TEXT NOT NULL,       -- create | update | delete | approve | export | sync
   before_json  TEXT,
   after_json   TEXT,
-  source       TEXT,                -- ui | api | integration | system
+  source       TEXT CHECK (source IS NULL OR source IN ('ui', 'api', 'integration', 'system')),                -- ui | api | integration | system
   note         TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_event_log_day ON event_log(substr(occurred_at, 1, 10));
@@ -678,12 +874,14 @@ CREATE TABLE IF NOT EXISTS cooperatives (       -- Danh mục HTX (dùng chung)
   -- thanh_vien_chu_dong  = thành viên tự chủ trên thửa của mình; Ban quản trị
   --                        chỉ điều phối máy móc, thiết bị dùng chung
   operating_model TEXT NOT NULL DEFAULT 'tap_trung',
-  origin         TEXT NOT NULL DEFAULT 'htx',   -- htx | khuyennong
+  origin         TEXT NOT NULL DEFAULT 'htx' CHECK (origin IN ('htx', 'khuyennong')),   -- htx | khuyennong
   claimed_at     TEXT,
   claimed_by     TEXT,
-  status         TEXT NOT NULL DEFAULT 'active',
+  status         TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'inactive')),
   created_at     TEXT NOT NULL,
-  updated_at     TEXT NOT NULL
+  updated_at     TEXT NOT NULL,
+  FOREIGN KEY (province_id) REFERENCES admin_units(id),
+  FOREIGN KEY (commune_id) REFERENCES admin_units(id)
 );
 
 CREATE TABLE IF NOT EXISTS farmers (            -- Hồ sơ nông hộ
@@ -695,7 +893,7 @@ CREATE TABLE IF NOT EXISTS farmers (            -- Hồ sơ nông hộ
   htx_id        TEXT NOT NULL,
   address       TEXT,
   reliability_score REAL DEFAULT 0,             -- điểm tin cậy 1-5 (Requirement nhóm 9)
-  status        TEXT NOT NULL DEFAULT 'active',
+  status        TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'inactive')),
   created_at    TEXT NOT NULL,
   FOREIGN KEY (htx_id) REFERENCES cooperatives(id)
 );
@@ -711,11 +909,12 @@ CREATE TABLE IF NOT EXISTS plots (              -- Thửa ruộng / lô ruộng 
   centroid_lat REAL,
   centroid_lng REAL,
   soil_type    TEXT,
-  status       TEXT NOT NULL DEFAULT 'chua_mo_vu', -- chua_mo_vu | dang_canh_tac | da_hoan_thanh_vu
+  status       TEXT NOT NULL DEFAULT 'chua_mo_vu' CHECK (status IN ('chua_mo_vu', 'dang_canh_tac', 'da_hoan_thanh_vu')), -- chua_mo_vu | dang_canh_tac | da_hoan_thanh_vu
   source       TEXT NOT NULL DEFAULT 'app_htx',
   created_at   TEXT NOT NULL,
   updated_at   TEXT NOT NULL,
-  FOREIGN KEY (htx_id) REFERENCES cooperatives(id)
+  FOREIGN KEY (htx_id) REFERENCES cooperatives(id),
+  FOREIGN KEY (farmer_id) REFERENCES farmers(id)
 );
 
 CREATE TABLE IF NOT EXISTS seasons (            -- Danh mục mùa vụ (Đông Xuân / Hè Thu / Thu Đông)
@@ -747,17 +946,18 @@ CREATE TABLE IF NOT EXISTS facilities (         -- Hub / Kho / Bãi / Nhà máy 
   id            TEXT PRIMARY KEY,
   code          TEXT NOT NULL UNIQUE,
   name          TEXT NOT NULL,
-  kind          TEXT NOT NULL,                  -- hub | warehouse | yard | plant
+  kind          TEXT NOT NULL CHECK (kind IN ('hub', 'warehouse', 'yard', 'plant')),                  -- hub | warehouse | yard | plant
   lat           REAL NOT NULL,
   lng           REAL NOT NULL,
   province_id   TEXT,
   capacity_tons REAL DEFAULT 0,
   current_stock_tons REAL DEFAULT 0,
   annual_demand_tons REAL DEFAULT 0,            -- tham số #12 cho nhà máy đầu ra
-  status        TEXT NOT NULL DEFAULT 'active', -- draft | active | closed
+  status        TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('draft', 'active', 'closed')), -- draft | active | closed
   origin_scenario_id TEXT,                      -- FN-19: Hub chuyển từ kịch bản sang vận hành
   created_at    TEXT NOT NULL,
-  updated_at    TEXT NOT NULL
+  updated_at    TEXT NOT NULL,
+  FOREIGN KEY (province_id) REFERENCES admin_units(id)
 );
 
 CREATE TABLE IF NOT EXISTS storage_zones (      -- Khu vực lưu trữ trong một bãi/kho
@@ -794,7 +994,7 @@ CREATE TABLE IF NOT EXISTS machine_types (      -- Danh mục chủng loại má
   code          TEXT NOT NULL UNIQUE,
   name          TEXT NOT NULL,
   stage         TEXT NOT NULL,                  -- khâu sản xuất: tự gán theo chủng loại
-  active        INTEGER NOT NULL DEFAULT 1
+  active        INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1))
 );
 
 CREATE TABLE IF NOT EXISTS machine_owners (     -- Hồ sơ chủ sở hữu máy (CGH FN-04)
@@ -813,20 +1013,21 @@ CREATE TABLE IF NOT EXISTS machines (           -- Hồ sơ máy móc - thiết 
   code            TEXT NOT NULL UNIQUE,         -- Mã máy tự sinh
   machine_type_id TEXT NOT NULL,
   owner_id        TEXT NOT NULL,
-  htx_id          TEXT,
+  htx_id          TEXT NOT NULL,
   brand           TEXT,
   model           TEXT,
   serial_number   TEXT,
   chassis_number  TEXT,
   year_made       INTEGER,
   capacity_ha_per_season REAL DEFAULT 0,
-  condition       TEXT NOT NULL DEFAULT 'hoat_dong', -- hoat_dong | bao_tri | hong | ngung_hoat_dong
-  condition_source TEXT NOT NULL DEFAULT 'nhap_tay', -- app_htx | nhap_tay  (QT-03)
-  condition_locked INTEGER NOT NULL DEFAULT 0,       -- bản ghi Admin đã "khóa" (QT-03 mục 3)
+  condition       TEXT NOT NULL DEFAULT 'hoat_dong' CHECK (condition IN ('hoat_dong', 'bao_tri', 'hong', 'ngung_hoat_dong')), -- hoat_dong | bao_tri | hong | ngung_hoat_dong
+  condition_source TEXT NOT NULL DEFAULT 'nhap_tay' CHECK (condition_source IN ('app_htx', 'nhap_tay')), -- app_htx | nhap_tay  (QT-03)
+  condition_locked INTEGER NOT NULL DEFAULT 0 CHECK (condition_locked IN (0, 1)),       -- bản ghi Admin đã "khóa" (QT-03 mục 3)
   condition_updated_at TEXT,
   created_at      TEXT NOT NULL,
   FOREIGN KEY (machine_type_id) REFERENCES machine_types(id),
-  FOREIGN KEY (owner_id) REFERENCES machine_owners(id)
+  FOREIGN KEY (owner_id) REFERENCES machine_owners(id),
+  FOREIGN KEY (htx_id) REFERENCES cooperatives(id)
 );
 
 -- CGH FN-02c: định mức năng suất (ha/máy/vụ) do DCRD ban hành, có ngày hiệu lực.
@@ -838,7 +1039,7 @@ CREATE TABLE IF NOT EXISTS productivity_norms (
   effective_from   TEXT NOT NULL,
   effective_to     TEXT,
   document_ref     TEXT,
-  active           INTEGER NOT NULL DEFAULT 1,
+  active           INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1)),
   FOREIGN KEY (machine_type_id) REFERENCES machine_types(id)
 );
 
@@ -851,7 +1052,7 @@ CREATE TABLE IF NOT EXISTS cultivation_plans (
   stage_start  TEXT,
   stage_end    TEXT,
   source       TEXT NOT NULL DEFAULT 'nhap_tay', -- app_htx | nhap_tay
-  locked       INTEGER NOT NULL DEFAULT 0,
+  locked       INTEGER NOT NULL DEFAULT 0 CHECK (locked IN (0, 1)),
   updated_at   TEXT NOT NULL,
   UNIQUE (htx_id, season_id)
 );
@@ -880,7 +1081,8 @@ CREATE TABLE IF NOT EXISTS commune_crop_seasons (
   source_file    TEXT,
   updated_at     TEXT NOT NULL,
   -- Hai huyện khác nhau trong cùng tỉnh có thể có xã trùng tên.
-  UNIQUE (season_id, province_code, district, commune)
+  UNIQUE (season_id, province_code, district, commune),
+  FOREIGN KEY (season_id) REFERENCES seasons(id)
 );
 
 -- Tiến độ thu hoạch theo từng mốc ngày (file điều tra ghi nhiều đợt trong vụ).
@@ -904,7 +1106,7 @@ CREATE TABLE IF NOT EXISTS gis_layers (
   code        TEXT NOT NULL UNIQUE,
   name        TEXT NOT NULL,
   category    TEXT NOT NULL,        -- base | infrastructure | natural | dynamic
-  visible_default INTEGER NOT NULL DEFAULT 1,
+  visible_default INTEGER NOT NULL DEFAULT 1 CHECK (visible_default IN (0, 1)),
   min_zoom    INTEGER NOT NULL DEFAULT 0,
   max_zoom    INTEGER NOT NULL DEFAULT 22,
   style_json  TEXT
@@ -993,7 +1195,8 @@ CREATE TABLE IF NOT EXISTS weather_observations (
   kind         TEXT NOT NULL DEFAULT 'forecast', -- forecast | realtime
   severity     TEXT,                 -- null | canh_bao | nguy_hiem
   headline     TEXT,
-  received_at  TEXT NOT NULL
+  received_at  TEXT NOT NULL,
+  FOREIGN KEY (area_id) REFERENCES admin_units(id)
 );
 
 -- GIS FN-12/FN-13: trạng thái mùa vụ & cảnh báo sản lượng (nhận từ App HTX).
@@ -1001,12 +1204,14 @@ CREATE TABLE IF NOT EXISTS crop_status (
   id             TEXT PRIMARY KEY,
   htx_id         TEXT NOT NULL,
   season_id      TEXT NOT NULL,
-  stage          TEXT NOT NULL,      -- lam_dat | gieo_sa | sinh_truong | chin | thu_hoach | sau_thu_hoach
+  stage          TEXT NOT NULL CHECK (stage IN ('lam_dat', 'gieo_sa', 'sinh_truong', 'chin', 'thu_hoach', 'sau_thu_hoach')),      -- lam_dat | gieo_sa | sinh_truong | chin | thu_hoach | sau_thu_hoach
   expected_harvest_date TEXT,
   expected_yield_tons REAL DEFAULT 0,
   straw_tons     REAL DEFAULT 0,
   updated_at     TEXT NOT NULL,
-  UNIQUE (htx_id, season_id)
+  UNIQUE (htx_id, season_id),
+  FOREIGN KEY (htx_id) REFERENCES cooperatives(id),
+  FOREIGN KEY (season_id) REFERENCES seasons(id)
 );
 
 -- =====================================================================
@@ -1031,25 +1236,26 @@ CREATE TABLE IF NOT EXISTS knowledge_articles ( -- FN-10/FN-11: thư viện kỹ
   summary      TEXT,
   body         TEXT,
   crop         TEXT,
-  status       TEXT NOT NULL DEFAULT 'draft', -- draft | published | archived
+  status       TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'published', 'archived')), -- draft | published | archived
   scope_node_id TEXT,
   published_at TEXT,
   author_id    TEXT,
   created_at   TEXT NOT NULL,
-  updated_at   TEXT NOT NULL
+  updated_at   TEXT NOT NULL,
+  FOREIGN KEY (scope_node_id) REFERENCES org_nodes(id)
 );
 
 CREATE TABLE IF NOT EXISTS support_tasks (      -- FN-14: nhiệm vụ hỗ trợ (tự sinh từ App HTX)
   id            TEXT PRIMARY KEY,
   code          TEXT NOT NULL UNIQUE,
-  htx_id        TEXT,
+  htx_id        TEXT NOT NULL,
   farmer_id     TEXT,
   plot_id       TEXT,
   title         TEXT NOT NULL,
   description   TEXT,
   category      TEXT NOT NULL DEFAULT 'ky_thuat', -- ky_thuat | sau_benh | thiet_bi | khac
   priority      TEXT NOT NULL DEFAULT 'binh_thuong',
-  status        TEXT NOT NULL DEFAULT 'moi',       -- moi | tiep_nhan | dang_xu_ly | hoan_thanh | dong
+  status        TEXT NOT NULL DEFAULT 'moi' CHECK (status IN ('moi', 'tiep_nhan', 'dang_xu_ly', 'hoan_thanh', 'dong')),       -- moi | tiep_nhan | dang_xu_ly | hoan_thanh | dong
   assignee_id   TEXT,
   origin        TEXT NOT NULL DEFAULT 'app_htx',
   created_at    TEXT NOT NULL,
@@ -1065,14 +1271,15 @@ CREATE TABLE IF NOT EXISTS extension_officers ( -- FN-15: danh bạ trực hỗ 
   phone       TEXT NOT NULL,
   org_node_id TEXT NOT NULL,
   specialty   TEXT,
-  on_duty     INTEGER NOT NULL DEFAULT 1
+  on_duty     INTEGER NOT NULL DEFAULT 1 CHECK (on_duty IN (0, 1)),
+  FOREIGN KEY (org_node_id) REFERENCES org_nodes(id)
 );
 
 CREATE TABLE IF NOT EXISTS market_prices (      -- FN-16/FN-17: giá cả thị trường
   id          TEXT PRIMARY KEY,
   commodity   TEXT NOT NULL,
   unit        TEXT NOT NULL DEFAULT 'VNĐ/kg',
-  price       REAL NOT NULL,
+  price       INTEGER NOT NULL,
   price_date  TEXT NOT NULL,
   region      TEXT,
   source      TEXT,
@@ -1088,7 +1295,8 @@ CREATE TABLE IF NOT EXISTS training_courses (   -- FN-12: quản trị đào t�
   location    TEXT,
   org_node_id TEXT,
   capacity    INTEGER DEFAULT 0,
-  status      TEXT NOT NULL DEFAULT 'planned'
+  status      TEXT NOT NULL DEFAULT 'planned',
+  FOREIGN KEY (org_node_id) REFERENCES org_nodes(id)
 );
 
 CREATE TABLE IF NOT EXISTS training_enrollments (
@@ -1114,7 +1322,7 @@ CREATE TABLE IF NOT EXISTS crop_cycles (        -- FN-10: khai báo mở vụ m�
   sowing_date    TEXT,
   expected_harvest_date TEXT,
   area_ha        REAL NOT NULL DEFAULT 0,
-  status         TEXT NOT NULL DEFAULT 'dang_canh_tac', -- dang_canh_tac | da_hoan_thanh_vu
+  status         TEXT NOT NULL DEFAULT 'dang_canh_tac' CHECK (status IN ('dang_canh_tac', 'da_hoan_thanh_vu')), -- dang_canh_tac | da_hoan_thanh_vu
   created_by     TEXT,
   created_at     TEXT NOT NULL,
   FOREIGN KEY (plot_id) REFERENCES plots(id),
@@ -1134,7 +1342,7 @@ CREATE TABLE IF NOT EXISTS farm_logs (          -- FN-11: nhật ký canh tác (
   lat           REAL,
   lng           REAL,
   recorded_by   TEXT,
-  synced        INTEGER NOT NULL DEFAULT 1,   -- hỗ trợ offline-first
+  synced        INTEGER NOT NULL DEFAULT 1 CHECK (synced IN (0, 1)),   -- hỗ trợ offline-first
   created_at    TEXT NOT NULL,
   FOREIGN KEY (crop_cycle_id) REFERENCES crop_cycles(id)
 );
@@ -1167,7 +1375,7 @@ CREATE TABLE IF NOT EXISTS production_protocols (
   -- htx      = quy trình riêng của một HTX (thường sao chép rồi chỉnh).
   scope         TEXT NOT NULL DEFAULT 'he_thong',
   htx_id        TEXT,
-  status        TEXT NOT NULL DEFAULT 'nhap',     -- nhap | ban_hanh | ngung
+  status        TEXT NOT NULL DEFAULT 'nhap' CHECK (status IN ('nhap', 'ban_hanh', 'ngung')),     -- nhap | ban_hanh | ngung
   document_ref  TEXT,
   description   TEXT,
   source_protocol_id TEXT,
@@ -1177,7 +1385,9 @@ CREATE TABLE IF NOT EXISTS production_protocols (
   created_at    TEXT NOT NULL,
   updated_at    TEXT NOT NULL,
   UNIQUE (code, version),
-  FOREIGN KEY (htx_id) REFERENCES cooperatives(id)
+  FOREIGN KEY (htx_id) REFERENCES cooperatives(id),
+  FOREIGN KEY (source_crop_cycle_id) REFERENCES crop_cycles(id),
+  FOREIGN KEY (source_protocol_id) REFERENCES production_protocols(id)
 );
 
 CREATE TABLE IF NOT EXISTS protocol_steps (
@@ -1190,7 +1400,7 @@ CREATE TABLE IF NOT EXISTS protocol_steps (
   -- Neo theo NGÀY XUỐNG GIỐNG của vụ: âm = trước khi sạ (làm đất), 0 = ngày sạ.
   offset_days   INTEGER NOT NULL DEFAULT 0,
   window_days   INTEGER NOT NULL DEFAULT 3,  -- lệch trong khoảng này coi là đúng hạn
-  mandatory     INTEGER NOT NULL DEFAULT 1,
+  mandatory     INTEGER NOT NULL DEFAULT 1 CHECK (mandatory IN (0, 1)),
   -- Danh sách loại bằng chứng bắt buộc, JSON: ["anh_hien_truong","hoa_don_vat_tu"]
   evidence_kinds TEXT,
   -- Thời gian cách ly sau phun thuốc (ngày) — VietGAP bắt buộc với thuốc BVTV.
@@ -1207,7 +1417,7 @@ CREATE TABLE IF NOT EXISTS production_plans (
   protocol_id      TEXT NOT NULL,
   protocol_version INTEGER NOT NULL,       -- ghim phiên bản tại thời điểm sinh kế hoạch
   anchor_date      TEXT NOT NULL,          -- ngày xuống giống dùng để tính lịch
-  status           TEXT NOT NULL DEFAULT 'dang_thuc_hien', -- dang_thuc_hien | hoan_thanh | huy
+  status           TEXT NOT NULL DEFAULT 'dang_thuc_hien' CHECK (status IN ('dang_thuc_hien', 'hoan_thanh', 'huy')), -- dang_thuc_hien | hoan_thanh | huy
   created_by       TEXT,
   created_at       TEXT NOT NULL,
   FOREIGN KEY (crop_cycle_id) REFERENCES crop_cycles(id),
@@ -1224,7 +1434,7 @@ CREATE TABLE IF NOT EXISTS production_plan_steps (
   stage            TEXT,
   planned_date     TEXT NOT NULL,
   window_days      INTEGER NOT NULL DEFAULT 3,
-  mandatory        INTEGER NOT NULL DEFAULT 1,
+  mandatory        INTEGER NOT NULL DEFAULT 1 CHECK (mandatory IN (0, 1)),
   evidence_kinds   TEXT,
   phi_days         INTEGER,
   control_point    TEXT,
@@ -1238,7 +1448,8 @@ CREATE TABLE IF NOT EXISTS production_plan_steps (
   confirmed_by     TEXT,
   confirmed_at     TEXT,
   FOREIGN KEY (plan_id) REFERENCES production_plans(id) ON DELETE CASCADE,
-  FOREIGN KEY (farm_log_id) REFERENCES farm_logs(id)
+  FOREIGN KEY (farm_log_id) REFERENCES farm_logs(id),
+  FOREIGN KEY (protocol_step_id) REFERENCES protocol_steps(id)
 );
 
 CREATE TABLE IF NOT EXISTS plan_step_evidence (
@@ -1303,13 +1514,13 @@ CREATE TABLE IF NOT EXISTS input_items (        -- Danh mục vật tư
   id            TEXT PRIMARY KEY,
   code          TEXT NOT NULL UNIQUE,
   name          TEXT NOT NULL,
-  category      TEXT NOT NULL,             -- phan_bon | thuoc_bvtv | giong | khac
+  category      TEXT NOT NULL CHECK (category IN ('phan_bon', 'thuoc_bvtv', 'giong', 'khac')),             -- phan_bon | thuoc_bvtv | giong | khac
   uom           TEXT NOT NULL DEFAULT 'kg',
   active_ingredient TEXT,                  -- hoạt chất (thuốc BVTV)
   -- Thời gian cách ly bắt buộc của hoạt chất — dùng để kiểm tra VietGAP.
   phi_days      INTEGER,
   -- Nằm trong danh mục được phép sử dụng hay không (VietGAP bắt buộc kiểm tra).
-  permitted     INTEGER NOT NULL DEFAULT 1,
+  permitted     INTEGER NOT NULL DEFAULT 1 CHECK (permitted IN (0, 1)),
   permit_ref    TEXT,
   htx_id        TEXT,                      -- NULL = danh mục dùng chung
   created_at    TEXT NOT NULL,
@@ -1325,7 +1536,7 @@ CREATE TABLE IF NOT EXISTS input_purchases (    -- Phiếu mua vật tư của H
   purchase_date TEXT NOT NULL,
   -- nhap | da_nhan (đã nhập kho) | huy
   status        TEXT NOT NULL DEFAULT 'nhap',
-  total_amount  REAL NOT NULL DEFAULT 0,
+  total_amount  INTEGER NOT NULL DEFAULT 0,
   note          TEXT,
   created_by    TEXT,
   created_at    TEXT NOT NULL,
@@ -1339,7 +1550,7 @@ CREATE TABLE IF NOT EXISTS input_purchase_lines (
   batch_no      TEXT,
   expiry_date   TEXT,
   qty           REAL NOT NULL,
-  unit_price    REAL NOT NULL DEFAULT 0,
+  unit_price    INTEGER NOT NULL DEFAULT 0,
   FOREIGN KEY (purchase_id) REFERENCES input_purchases(id) ON DELETE CASCADE,
   FOREIGN KEY (item_id) REFERENCES input_items(id)
 );
@@ -1351,11 +1562,12 @@ CREATE TABLE IF NOT EXISTS input_stock (        -- Tồn kho theo LÔ, không g�
   batch_no      TEXT,
   expiry_date   TEXT,
   qty_on_hand   REAL NOT NULL DEFAULT 0,
-  unit_cost     REAL NOT NULL DEFAULT 0,
+  unit_cost     INTEGER NOT NULL DEFAULT 0,
   purchase_id   TEXT,
   updated_at    TEXT NOT NULL,
   FOREIGN KEY (htx_id) REFERENCES cooperatives(id),
-  FOREIGN KEY (item_id) REFERENCES input_items(id)
+  FOREIGN KEY (item_id) REFERENCES input_items(id),
+  FOREIGN KEY (purchase_id) REFERENCES input_purchases(id)
 );
 
 CREATE TABLE IF NOT EXISTS input_issues (       -- Phiếu cấp phát xuống thửa ruộng
@@ -1365,7 +1577,7 @@ CREATE TABLE IF NOT EXISTS input_issues (       -- Phiếu cấp phát xuống t
   stock_id      TEXT NOT NULL,
   item_id       TEXT NOT NULL,
   plot_id       TEXT NOT NULL,
-  crop_cycle_id TEXT,
+  crop_cycle_id TEXT NOT NULL,
   plan_step_id  TEXT,                      -- gắn với bước kế hoạch để truy xuất
   farmer_id     TEXT,                      -- người nhận vật tư
   qty           REAL NOT NULL,
@@ -1376,7 +1588,9 @@ CREATE TABLE IF NOT EXISTS input_issues (       -- Phiếu cấp phát xuống t
   FOREIGN KEY (htx_id) REFERENCES cooperatives(id),
   FOREIGN KEY (stock_id) REFERENCES input_stock(id),
   FOREIGN KEY (item_id) REFERENCES input_items(id),
-  FOREIGN KEY (plot_id) REFERENCES plots(id)
+  FOREIGN KEY (plot_id) REFERENCES plots(id),
+  FOREIGN KEY (crop_cycle_id) REFERENCES crop_cycles(id),
+  FOREIGN KEY (plan_step_id) REFERENCES production_plan_steps(id)
 );
 
 -- =====================================================================
@@ -1396,10 +1610,11 @@ CREATE TABLE IF NOT EXISTS survey_templates (
   -- Phạm vi đối tượng: ho_dan | htx | ca_hai
   subject_scope TEXT NOT NULL DEFAULT 'ca_hai',
   org_node_id   TEXT,
-  status        TEXT NOT NULL DEFAULT 'nhap',   -- nhap | ban_hanh | ngung
+  status        TEXT NOT NULL DEFAULT 'nhap' CHECK (status IN ('nhap', 'ban_hanh', 'ngung')),   -- nhap | ban_hanh | ngung
   created_by    TEXT,
   created_at    TEXT NOT NULL,
-  updated_at    TEXT NOT NULL
+  updated_at    TEXT NOT NULL,
+  FOREIGN KEY (org_node_id) REFERENCES org_nodes(id)
 );
 
 CREATE TABLE IF NOT EXISTS survey_questions (
@@ -1412,7 +1627,7 @@ CREATE TABLE IF NOT EXISTS survey_questions (
   kind          TEXT NOT NULL DEFAULT 'text',
   uom           TEXT,
   options       TEXT,                      -- JSON mảng lựa chọn
-  required      INTEGER NOT NULL DEFAULT 0,
+  required      INTEGER NOT NULL DEFAULT 0 CHECK (required IN (0, 1)),
   help_text     TEXT,
   FOREIGN KEY (template_id) REFERENCES survey_templates(id) ON DELETE CASCADE
 );
@@ -1489,12 +1704,12 @@ CREATE TABLE IF NOT EXISTS rental_listings (
   code           TEXT NOT NULL UNIQUE,
   machine_id     TEXT NOT NULL,
   owner_id       TEXT NOT NULL,
-  price_per_ha   REAL NOT NULL DEFAULT 0,
-  price_per_day  REAL NOT NULL DEFAULT 0,
+  price_per_ha   INTEGER NOT NULL DEFAULT 0,
+  price_per_day  INTEGER NOT NULL DEFAULT 0,
   service_radius_km REAL NOT NULL DEFAULT 20,
   available_from TEXT,
   available_to   TEXT,
-  status         TEXT NOT NULL DEFAULT 'active',  -- active | paused | closed
+  status         TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'paused', 'closed')),  -- active | paused | closed
   created_at     TEXT NOT NULL,
   FOREIGN KEY (machine_id) REFERENCES machines(id)
 );
@@ -1508,9 +1723,9 @@ CREATE TABLE IF NOT EXISTS rental_orders (
   area_ha        REAL NOT NULL DEFAULT 0,
   scheduled_from TEXT NOT NULL,
   scheduled_to   TEXT NOT NULL,
-  amount         REAL NOT NULL DEFAULT 0,
-  platform_fee   REAL NOT NULL DEFAULT 0,
-  status         TEXT NOT NULL DEFAULT 'dat_lich', -- dat_lich | xac_nhan | thuc_hien | hoan_thanh | tranh_chap | huy
+  amount         INTEGER NOT NULL DEFAULT 0,
+  platform_fee   INTEGER NOT NULL DEFAULT 0,
+  status         TEXT NOT NULL DEFAULT 'dat_lich' CHECK (status IN ('dat_lich', 'xac_nhan', 'thuc_hien', 'hoan_thanh', 'tranh_chap', 'huy')), -- dat_lich | xac_nhan | thuc_hien | hoan_thanh | tranh_chap | huy
   escrow_status  TEXT NOT NULL DEFAULT 'chua_giu', -- chua_giu | dang_giu | da_giai_ngan | hoan_tien
   created_at     TEXT NOT NULL,
   updated_at     TEXT NOT NULL,
@@ -1522,7 +1737,7 @@ CREATE TABLE IF NOT EXISTS rental_disputes (
   order_id    TEXT NOT NULL,
   reason      TEXT NOT NULL,
   detail      TEXT,
-  status      TEXT NOT NULL DEFAULT 'mo',       -- mo | dang_xu_ly | dong
+  status      TEXT NOT NULL DEFAULT 'mo' CHECK (status IN ('mo', 'dang_xu_ly', 'dong')),       -- mo | dang_xu_ly | dong
   resolution  TEXT,
   opened_by   TEXT,
   created_at  TEXT NOT NULL,
@@ -1574,7 +1789,7 @@ CREATE TABLE IF NOT EXISTS candidate_hubs (      -- FN-02: Hub ứng viên
   lat         REAL NOT NULL,
   lng         REAL NOT NULL,
   province_id TEXT,
-  status      TEXT NOT NULL DEFAULT 'nhap',      -- nhap | da_mo_phong
+  status      TEXT NOT NULL DEFAULT 'nhap' CHECK (status IN ('nhap', 'da_mo_phong')),      -- nhap | da_mo_phong
   created_by  TEXT,
   created_at  TEXT NOT NULL,
   updated_at  TEXT NOT NULL
@@ -1589,14 +1804,15 @@ CREATE TABLE IF NOT EXISTS scenarios (           -- FN-14: kịch bản đầu t
   parameter_set_version INTEGER,                 -- BR-03/BR-04
   lifecycle_years    INTEGER NOT NULL DEFAULT 10,
   discounted         INTEGER NOT NULL DEFAULT 0, -- FN-12 BR-05: chế độ chiết khấu
-  status             TEXT NOT NULL DEFAULT 'tham_khao', -- tham_khao | chinh_thuc
+  status             TEXT NOT NULL DEFAULT 'tham_khao' CHECK (status IN ('tham_khao', 'chinh_thuc')), -- tham_khao | chinh_thuc
   baseline_mode      TEXT NOT NULL DEFAULT 'no_hub',    -- no_hub | scenario | manual
-  baseline_manual_cost_per_ton REAL,
+  baseline_manual_cost_per_ton INTEGER,
   baseline_scenario_id TEXT,
   simulated_at       TEXT,
   created_by         TEXT,
   created_at         TEXT NOT NULL,
-  updated_at         TEXT NOT NULL
+  updated_at         TEXT NOT NULL,
+  FOREIGN KEY (baseline_scenario_id) REFERENCES scenarios(id)
 );
 
 -- FN-02 BR-03: cấu hình riêng theo cặp Hub–Kịch bản.
@@ -1632,7 +1848,7 @@ CREATE TABLE IF NOT EXISTS sensitivity_results (
   parameter_set_version INTEGER NOT NULL,
   computed_at   TEXT NOT NULL,
   payload_json  TEXT NOT NULL,
-  stale         INTEGER NOT NULL DEFAULT 0,
+  stale         INTEGER NOT NULL DEFAULT 0 CHECK (stale IN (0, 1)),
   FOREIGN KEY (scenario_id) REFERENCES scenarios(id) ON DELETE CASCADE
 );
 
@@ -1644,7 +1860,8 @@ CREATE TABLE IF NOT EXISTS hub_handovers (
   facility_id  TEXT,
   payload_json TEXT NOT NULL,
   exported_by  TEXT,
-  exported_at  TEXT NOT NULL
+  exported_at  TEXT NOT NULL,
+  FOREIGN KEY (scenario_id) REFERENCES scenarios(id)
 );
 
 -- =====================================================================
@@ -1659,8 +1876,8 @@ CREATE TABLE IF NOT EXISTS purchase_orders (
   item_id       TEXT NOT NULL,
   season_id     TEXT,
   ordered_tons  REAL NOT NULL,
-  unit_price    REAL NOT NULL,
-  status        TEXT NOT NULL DEFAULT 'nhap',   -- nhap | duyet | dang_giao | hoan_thanh | huy
+  unit_price    INTEGER NOT NULL,
+  status        TEXT NOT NULL DEFAULT 'nhap' CHECK (status IN ('nhap', 'duyet', 'dang_giao', 'hoan_thanh', 'huy')),   -- nhap | duyet | dang_giao | hoan_thanh | huy
   expected_date TEXT,
   created_by    TEXT,
   created_at    TEXT NOT NULL,
@@ -1675,9 +1892,9 @@ CREATE TABLE IF NOT EXISTS sales_orders (
   facility_id   TEXT NOT NULL,
   item_id       TEXT NOT NULL,
   ordered_tons  REAL NOT NULL,
-  unit_price    REAL NOT NULL,
+  unit_price    INTEGER NOT NULL,
   delivery_date TEXT,
-  status        TEXT NOT NULL DEFAULT 'nhap',   -- nhap | xac_nhan | dang_giao | da_giao | hoan_tat
+  status        TEXT NOT NULL DEFAULT 'nhap' CHECK (status IN ('nhap', 'xac_nhan', 'dang_giao', 'da_giao', 'hoan_tat')),   -- nhap | xac_nhan | dang_giao | da_giao | hoan_tat
   created_at    TEXT NOT NULL
 );
 
@@ -1690,14 +1907,16 @@ CREATE TABLE IF NOT EXISTS inbound_notices (    -- WH FN-01: thông báo lô hà
   eta           TEXT,
   expected_tons REAL NOT NULL DEFAULT 0,
   status        TEXT NOT NULL DEFAULT 'cho_den',
-  created_at    TEXT NOT NULL
+  created_at    TEXT NOT NULL,
+  FOREIGN KEY (po_id) REFERENCES purchase_orders(id),
+  FOREIGN KEY (trip_id) REFERENCES trips(id)
 );
 
 CREATE TABLE IF NOT EXISTS weighings (          -- WH FN-02/FN-14/FN-30: cân điện tử
   id           TEXT PRIMARY KEY,
   code         TEXT NOT NULL UNIQUE,
   facility_id  TEXT NOT NULL,
-  direction    TEXT NOT NULL,        -- in | out
+  direction    TEXT NOT NULL CHECK (direction IN ('in', 'out')),        -- in | out
   vehicle_code TEXT,
   gross_kg     REAL NOT NULL,
   tare_kg      REAL NOT NULL,
@@ -1724,10 +1943,13 @@ CREATE TABLE IF NOT EXISTS goods_receipts (     -- WH FN-04: GRN
   harvest_date  TEXT,
   origin_lat    REAL,
   origin_lng    REAL,
-  status        TEXT NOT NULL DEFAULT 'cho_duyet', -- cho_duyet | da_duyet | tu_choi
+  status        TEXT NOT NULL DEFAULT 'cho_duyet' CHECK (status IN ('cho_duyet', 'da_duyet', 'tu_choi')), -- cho_duyet | da_duyet | tu_choi
   approved_by   TEXT,
   approved_at   TEXT,
-  created_at    TEXT NOT NULL
+  created_at    TEXT NOT NULL,
+  FOREIGN KEY (zone_id) REFERENCES storage_zones(id),
+  FOREIGN KEY (weighing_id) REFERENCES weighings(id),
+  FOREIGN KEY (po_id) REFERENCES purchase_orders(id)
 );
 
 CREATE TABLE IF NOT EXISTS goods_issues (       -- WH FN-13: phiếu xuất kho
@@ -1741,7 +1963,10 @@ CREATE TABLE IF NOT EXISTS goods_issues (       -- WH FN-13: phiếu xuất kho
   status       TEXT NOT NULL DEFAULT 'cho_duyet',
   approved_by  TEXT,
   approved_at  TEXT,
-  created_at   TEXT NOT NULL
+  created_at   TEXT NOT NULL,
+  FOREIGN KEY (weighing_id) REFERENCES weighings(id),
+  FOREIGN KEY (so_id) REFERENCES sales_orders(id),
+  FOREIGN KEY (trip_id) REFERENCES trips(id)
 );
 
 CREATE TABLE IF NOT EXISTS stock_lots (         -- Lô tồn kho, gắn nguồn gốc MRV
@@ -1752,13 +1977,15 @@ CREATE TABLE IF NOT EXISTS stock_lots (         -- Lô tồn kho, gắn nguồn 
   grn_id        TEXT,
   htx_id        TEXT,
   plot_id       TEXT,
-  item_id       TEXT,
+  item_id       TEXT NOT NULL,
   quantity_tons REAL NOT NULL,
   remaining_tons REAL NOT NULL,
   received_at   TEXT NOT NULL,
   moisture_pct  REAL,
   risk_score    REAL NOT NULL DEFAULT 0,  -- WH FN-12: điểm rủi ro xuống cấp
-  status        TEXT NOT NULL DEFAULT 'ton'
+  status        TEXT NOT NULL DEFAULT 'ton',
+  FOREIGN KEY (zone_id) REFERENCES storage_zones(id),
+  FOREIGN KEY (grn_id) REFERENCES goods_receipts(id)
 );
 
 CREATE TABLE IF NOT EXISTS env_readings (       -- WH FN-08/FN-31: cảm biến IoT
@@ -1768,7 +1995,8 @@ CREATE TABLE IF NOT EXISTS env_readings (       -- WH FN-08/FN-31: cảm biến 
   sensor_id   TEXT NOT NULL,
   humidity_pct REAL,
   temp_c      REAL,
-  recorded_at TEXT NOT NULL
+  recorded_at TEXT NOT NULL,
+  FOREIGN KEY (zone_id) REFERENCES storage_zones(id)
 );
 CREATE INDEX IF NOT EXISTS idx_env_zone_time ON env_readings(zone_id, recorded_at);
 
@@ -1786,13 +2014,14 @@ CREATE TABLE IF NOT EXISTS env_alerts (         -- WH FN-10
   id          TEXT PRIMARY KEY,
   facility_id TEXT NOT NULL,
   zone_id     TEXT,
-  level       TEXT NOT NULL,        -- canh_bao | nguy_hiem
+  level       TEXT NOT NULL CHECK (level IN ('canh_bao', 'nguy_hiem')),        -- canh_bao | nguy_hiem
   metric      TEXT NOT NULL,        -- humidity | temperature
   value       REAL NOT NULL,
   threshold   REAL NOT NULL,
   message     TEXT NOT NULL,
   raised_at   TEXT NOT NULL,
-  acknowledged_at TEXT
+  acknowledged_at TEXT,
+  FOREIGN KEY (zone_id) REFERENCES storage_zones(id)
 );
 
 CREATE TABLE IF NOT EXISTS stocktakes (         -- WH FN-20..23
@@ -1802,14 +2031,15 @@ CREATE TABLE IF NOT EXISTS stocktakes (         -- WH FN-20..23
   zone_id      TEXT,
   planned_for  TEXT NOT NULL,
   kind         TEXT NOT NULL DEFAULT 'dinh_ky',
-  status       TEXT NOT NULL DEFAULT 'ke_hoach', -- ke_hoach | dang_kiem | cho_duyet | da_duyet
+  status       TEXT NOT NULL DEFAULT 'ke_hoach' CHECK (status IN ('ke_hoach', 'dang_kiem', 'cho_duyet', 'da_duyet')), -- ke_hoach | dang_kiem | cho_duyet | da_duyet
   book_tons    REAL,
   counted_tons REAL,
   variance_tons REAL,
   reason       TEXT,
   approved_by  TEXT,
   approved_at  TEXT,
-  created_at   TEXT NOT NULL
+  created_at   TEXT NOT NULL,
+  FOREIGN KEY (zone_id) REFERENCES storage_zones(id)
 );
 
 CREATE TABLE IF NOT EXISTS trips (              -- TMS: chuyến vận chuyển
@@ -1827,12 +2057,12 @@ CREATE TABLE IF NOT EXISTS trips (              -- TMS: chuyến vận chuyển
   distance_km   REAL NOT NULL DEFAULT 0,
   planned_tons  REAL NOT NULL DEFAULT 0,
   actual_tons   REAL NOT NULL DEFAULT 0,
-  planned_cost  REAL NOT NULL DEFAULT 0,
-  actual_cost   REAL NOT NULL DEFAULT 0,
+  planned_cost  INTEGER NOT NULL DEFAULT 0,
+  actual_cost   INTEGER NOT NULL DEFAULT 0,
   co2_kg        REAL NOT NULL DEFAULT 0,
   departed_at   TEXT,
   arrived_at    TEXT,
-  status        TEXT NOT NULL DEFAULT 'ke_hoach', -- ke_hoach | dang_chay | hoan_thanh | huy
+  status        TEXT NOT NULL DEFAULT 'ke_hoach' CHECK (status IN ('ke_hoach', 'dang_chay', 'hoan_thanh', 'huy')), -- ke_hoach | dang_chay | hoan_thanh | huy
   ref_type      TEXT,
   ref_id        TEXT,
   created_at    TEXT NOT NULL
@@ -1852,16 +2082,16 @@ CREATE TABLE IF NOT EXISTS trip_documents (     -- ePOD / e-bill
 CREATE TABLE IF NOT EXISTS ledger_entries (     -- Finance: AR/AP + doanh thu nền tảng
   id          TEXT PRIMARY KEY,
   entry_date  TEXT NOT NULL,
-  account     TEXT NOT NULL,          -- AP | AR | REVENUE | EXPENSE | CAPEX
+  account     TEXT NOT NULL CHECK (account IN ('AP', 'AR', 'REVENUE', 'EXPENSE', 'CAPEX')),          -- AP | AR | REVENUE | EXPENSE | CAPEX
   partner_id  TEXT,
   htx_id      TEXT,
   ref_type    TEXT,
   ref_id      TEXT,
   facility_id TEXT,
-  amount      REAL NOT NULL,
+  amount      INTEGER NOT NULL,
   currency    TEXT NOT NULL DEFAULT 'VND',
   description TEXT,
-  status      TEXT NOT NULL DEFAULT 'ghi_so',  -- ghi_so | da_thanh_toan | qua_han
+  status      TEXT NOT NULL DEFAULT 'ghi_so' CHECK (status IN ('ghi_so', 'da_thanh_toan', 'qua_han')),  -- ghi_so | da_thanh_toan | qua_han
   due_date    TEXT,
   created_at  TEXT NOT NULL
 );
@@ -1872,9 +2102,9 @@ CREATE TABLE IF NOT EXISTS revenue_rules (      -- Finance Revenue Engine
   name         TEXT NOT NULL,
   kind         TEXT NOT NULL,         -- transaction_fee | subscription | carbon_share
   rate_pct     REAL,
-  fixed_amount REAL,
+  fixed_amount INTEGER,
   applies_to   TEXT,                  -- rental | straw_trade | carbon
-  active       INTEGER NOT NULL DEFAULT 1
+  active       INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1))
 );
 
 CREATE TABLE IF NOT EXISTS mrv_records (        -- Traceability & MRV Data Bridge
@@ -1958,6 +2188,20 @@ CREATE TABLE IF NOT EXISTS cgh_balance_snapshots (
 );
 CREATE INDEX IF NOT EXISTS idx_cgh_balance_season ON cgh_balance_snapshots(season_id, computed_at);
 
+-- US-CFG-03: ngưỡng cảnh báo cung–cầu có phiên bản theo ngày hiệu lực. Trước đây là một
+-- mảng JSON trong system_config (nguyên tắc 6, rà soát 24/09/2026) — nay mỗi phiên bản một dòng.
+CREATE TABLE IF NOT EXISTS cgh_coverage_thresholds (
+  id             TEXT PRIMARY KEY,
+  effective_from TEXT NOT NULL UNIQUE,
+  can_chu_y      REAL NOT NULL,
+  du             REAL NOT NULL,
+  thua           REAL NOT NULL,
+  document_ref   TEXT,
+  created_at     TEXT NOT NULL,
+  created_by     TEXT,
+  CHECK (can_chu_y < du AND du < thua)
+);
+
 -- KN US-DASH-03 / HTX US-DASH-03: lịch tự tổng hợp & gửi báo cáo định kỳ qua email.
 CREATE TABLE IF NOT EXISTS report_schedules (
   id          TEXT PRIMARY KEY,
@@ -1968,7 +2212,7 @@ CREATE TABLE IF NOT EXISTS report_schedules (
   emails      TEXT NOT NULL,          -- danh sách email, phân tách bằng dấu phẩy
   next_run_at TEXT NOT NULL,
   last_run_at TEXT,
-  active      INTEGER NOT NULL DEFAULT 1,
+  active      INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1)),
   created_by  TEXT,
   created_at  TEXT NOT NULL
 );

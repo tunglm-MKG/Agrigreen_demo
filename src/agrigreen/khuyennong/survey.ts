@@ -17,6 +17,7 @@
  */
 import { all, insert, one, run, transaction, update } from '../../platform/db/db.ts';
 import { nowIso, uuid } from '../../platform/util/ids.ts';
+import { encryptField, maskNationalId } from '../../platform/security/fieldCrypto.ts';
 import { logEvent, type AuditActor } from '../../platform/audit/audit.ts';
 
 export const SURVEY_FREQUENCIES = [
@@ -326,7 +327,7 @@ export function submitResponse(input: SurveyResponseInput, actor: AuditActor = {
       htx_id: input.htxId ?? null,
       subject_name: input.subjectName.trim(),
       phone: input.phone ?? null,
-      national_id: input.nationalId ?? null,
+      national_id: encryptField(input.nationalId),   // CCCD mã hoá khi lưu (NT 10)
       tax_code: input.taxCode ?? null,
       province_id: input.provinceId ?? null,
       commune_id: input.communeId ?? null,
@@ -389,6 +390,8 @@ export function getResponse(id: string): Record<string, unknown> | null {
     [id],
   );
   if (!response) return null;
+  // Người xem phiếu chỉ thấy 3 số cuối CCCD.
+  response.national_id = maskNationalId(response.national_id);
   const answers = all(
     `SELECT a.*, q.label, q.kind, q.uom, q.code AS question_code, q.sort_order
        FROM survey_answers a JOIN survey_questions q ON q.id = a.question_id

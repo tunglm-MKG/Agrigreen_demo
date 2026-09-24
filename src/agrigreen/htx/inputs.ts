@@ -308,11 +308,8 @@ export function issueToPlot(input: IssueInput, actor: AuditActor = {}): IssueRes
     "SELECT id, code FROM crop_cycles WHERE plot_id = ? AND status = 'dang_canh_tac' ORDER BY created_at DESC LIMIT 1",
     [input.plotId],
   );
-  if (!cycle) {
-    warnings.push(
-      `Thửa ${plot.code} không có vụ đang canh tác — phiếu cấp phát này sẽ không gắn được vào hồ sơ truy xuất của vụ nào.`,
-    );
-  }
+  // Phiếu cấp phát PHẢI gắn vụ để truy xuất nguồn gốc (crop_cycle_id NOT NULL — rà soát CSDL 24/09/2026).
+  if (!cycle) throw new Error(`Thửa ${plot.code} chưa có vụ đang canh tác — mở vụ trước khi cấp phát vật tư để phiếu gắn được vào hồ sơ truy xuất.`);
 
   // IN-05: thuốc BVTV có thời gian cách ly thì đối chiếu ngày thu hoạch dự kiến.
   if (item.phi_days && cycle) {
@@ -345,7 +342,7 @@ export function issueToPlot(input: IssueInput, actor: AuditActor = {}): IssueRes
       stock_id: stock.id,
       item_id: stock.item_id,
       plot_id: input.plotId,
-      crop_cycle_id: cycle?.id ?? null,
+      crop_cycle_id: cycle.id,
       plan_step_id: input.planStepId ?? null,
       farmer_id: input.farmerId ?? null,
       qty: input.qty,

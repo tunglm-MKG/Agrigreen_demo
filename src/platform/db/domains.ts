@@ -53,7 +53,7 @@ export const TABLE_DOMAIN: Record<string, Domain> = {
   input_purchase_lines: 'htx', input_stock: 'htx', input_issues: 'htx', harvest_declarations: 'htx', gps_logs: 'htx',
   // ---- cơ giới hoá ----
   productivity_norms: 'cgh', cultivation_plans: 'cgh', rental_listings: 'cgh', rental_orders: 'cgh', rental_disputes: 'cgh',
-  cgh_balance_snapshots: 'cgh',
+  cgh_balance_snapshots: 'cgh', cgh_coverage_thresholds: 'cgh',
   // ---- GIS ----
   gis_layers: 'gis', transport_routes: 'gis', waterway_structures: 'gis', distance_cache: 'gis',
   // ---- ERP ----
@@ -63,7 +63,7 @@ export const TABLE_DOMAIN: Record<string, Domain> = {
   env_alerts: 'erp', stocktakes: 'erp', trips: 'erp', trip_documents: 'erp', ledger_entries: 'erp', revenue_rules: 'erp', mrv_records: 'erp',
   straw_contracts: 'erp', straw_purchase_tickets: 'erp', vessels: 'erp',
   // ---- hiện trường ----
-  field_teams: 'field', field_team_members: 'field', field_vehicles: 'field', field_jobs: 'field', field_job_stages: 'field', field_loadings: 'field',
+  field_teams: 'field', field_team_members: 'field', field_vehicles: 'field', field_jobs: 'field', field_job_stages: 'field', field_stage_evidence: 'field', field_loadings: 'field',
 };
 
 export function domainOf(table: string): Domain {
@@ -86,9 +86,10 @@ export function tablesOf(domain: Domain): string[] {
 export const schemaOf = (domain: Domain): string => (domain === 'shared' ? 'main' : domain);
 
 /**
- * 15 quan hệ cha–con nằm ở hai tệp khác nhau — SQLite gỡ FOREIGN KEY của chúng khi tách miền
- * (xem qualifyStatement). `db.insert/update` kiểm danh sách này trước khi ghi, và
- * `integrity.findOrphans()` rà định kỳ (rà soát CSDL 24/09/2026, nguyên tắc 4).
+ * Quan hệ cha–con nằm ở hai tệp khác nhau — SQLite không cho khoá ngoại trỏ sang tệp khác
+ * (FOREIGN KEY khai trong SCHEMA bị qualifyStatement gỡ). `db.insert/update/upsert` kiểm danh
+ * sách này trước khi ghi, và `integrity.findOrphans()` rà định kỳ (rà soát CSDL 24/09/2026, NT 4).
+ * Quan hệ CÙNG miền được khai FOREIGN KEY thật trong SCHEMA và SQLite tự kiểm.
  */
 export const CROSS_DOMAIN_REFS: { table: string; column: string; parent: string }[] = [
   { table: 'crop_cycles', column: 'plot_id', parent: 'plots' },
@@ -106,6 +107,74 @@ export const CROSS_DOMAIN_REFS: { table: string; column: string; parent: string 
   { table: 'storage_zones', column: 'facility_id', parent: 'facilities' },
   { table: 'straw_contracts', column: 'htx_id', parent: 'cooperatives' },
   { table: 'straw_purchase_tickets', column: 'job_id', parent: 'field_jobs' },
+  { table: 'users', column: 'org_node_id', parent: 'org_nodes' },
+  { table: 'field_teams', column: 'leader_user_id', parent: 'users' },
+  { table: 'field_teams', column: 'province_id', parent: 'admin_units' },
+  { table: 'field_vehicles', column: 'machine_id', parent: 'machines' },
+  { table: 'field_jobs', column: 'crop_cycle_id', parent: 'crop_cycles' },
+  { table: 'field_jobs', column: 'plot_id', parent: 'plots' },
+  { table: 'field_jobs', column: 'htx_id', parent: 'cooperatives' },
+  { table: 'field_jobs', column: 'destination_facility_id', parent: 'facilities' },
+  { table: 'field_loadings', column: 'destination_facility_id', parent: 'facilities' },
+  { table: 'field_loadings', column: 'trip_id', parent: 'trips' },
+  { table: 'straw_purchase_tickets', column: 'htx_id', parent: 'cooperatives' },
+  { table: 'cultivation_plans', column: 'htx_id', parent: 'cooperatives' },
+  { table: 'cultivation_plans', column: 'season_id', parent: 'seasons' },
+  { table: 'transport_routes', column: 'province_id', parent: 'admin_units' },
+  { table: 'org_nodes', column: 'admin_unit_id', parent: 'admin_units' },
+  { table: 'knowledge_articles', column: 'author_id', parent: 'users' },
+  { table: 'support_tasks', column: 'htx_id', parent: 'cooperatives' },
+  { table: 'support_tasks', column: 'farmer_id', parent: 'farmers' },
+  { table: 'support_tasks', column: 'plot_id', parent: 'plots' },
+  { table: 'support_tasks', column: 'assignee_id', parent: 'users' },
+  { table: 'extension_officers', column: 'user_id', parent: 'users' },
+  { table: 'training_enrollments', column: 'htx_id', parent: 'cooperatives' },
+  { table: 'input_issues', column: 'farmer_id', parent: 'farmers' },
+  { table: 'survey_responses', column: 'farmer_id', parent: 'farmers' },
+  { table: 'survey_responses', column: 'htx_id', parent: 'cooperatives' },
+  { table: 'survey_responses', column: 'province_id', parent: 'admin_units' },
+  { table: 'survey_responses', column: 'commune_id', parent: 'admin_units' },
+  { table: 'survey_responses', column: 'hamlet_id', parent: 'admin_units' },
+  { table: 'gps_logs', column: 'user_id', parent: 'users' },
+  { table: 'rental_listings', column: 'owner_id', parent: 'machine_owners' },
+  { table: 'rental_orders', column: 'renter_htx_id', parent: 'cooperatives' },
+  { table: 'rental_orders', column: 'plot_id', parent: 'plots' },
+  { table: 'candidate_hubs', column: 'province_id', parent: 'admin_units' },
+  { table: 'hub_handovers', column: 'facility_id', parent: 'facilities' },
+  { table: 'facilities', column: 'origin_scenario_id', parent: 'scenarios' },
+  { table: 'scenarios', column: 'plant_id', parent: 'facilities' },
+  { table: 'purchase_orders', column: 'htx_id', parent: 'cooperatives' },
+  { table: 'purchase_orders', column: 'facility_id', parent: 'facilities' },
+  { table: 'purchase_orders', column: 'item_id', parent: 'items' },
+  { table: 'purchase_orders', column: 'season_id', parent: 'seasons' },
+  { table: 'sales_orders', column: 'partner_id', parent: 'partners' },
+  { table: 'sales_orders', column: 'facility_id', parent: 'facilities' },
+  { table: 'sales_orders', column: 'item_id', parent: 'items' },
+  { table: 'inbound_notices', column: 'facility_id', parent: 'facilities' },
+  { table: 'weighings', column: 'facility_id', parent: 'facilities' },
+  { table: 'goods_receipts', column: 'facility_id', parent: 'facilities' },
+  { table: 'goods_receipts', column: 'htx_id', parent: 'cooperatives' },
+  { table: 'goods_receipts', column: 'plot_id', parent: 'plots' },
+  { table: 'goods_receipts', column: 'season_id', parent: 'seasons' },
+  { table: 'goods_issues', column: 'facility_id', parent: 'facilities' },
+  { table: 'stock_lots', column: 'facility_id', parent: 'facilities' },
+  { table: 'stock_lots', column: 'htx_id', parent: 'cooperatives' },
+  { table: 'stock_lots', column: 'plot_id', parent: 'plots' },
+  { table: 'stock_lots', column: 'item_id', parent: 'items' },
+  { table: 'env_readings', column: 'facility_id', parent: 'facilities' },
+  { table: 'env_thresholds', column: 'facility_id', parent: 'facilities' },
+  { table: 'env_alerts', column: 'facility_id', parent: 'facilities' },
+  { table: 'stocktakes', column: 'facility_id', parent: 'facilities' },
+  { table: 'ledger_entries', column: 'partner_id', parent: 'partners' },
+  { table: 'ledger_entries', column: 'htx_id', parent: 'cooperatives' },
+  { table: 'ledger_entries', column: 'facility_id', parent: 'facilities' },
+  { table: 'mrv_records', column: 'htx_id', parent: 'cooperatives' },
+  { table: 'mrv_records', column: 'plot_id', parent: 'plots' },
+  { table: 'htx_machinery_declarations', column: 'htx_id', parent: 'cooperatives' },
+  { table: 'htx_machinery_declarations', column: 'machine_type_id', parent: 'machine_types' },
+  { table: 'price_watchlist', column: 'user_id', parent: 'users' },
+  { table: 'cgh_balance_snapshots', column: 'season_id', parent: 'seasons' },
+  { table: 'rice_varieties', column: 'default_protocol_id', parent: 'production_protocols' },
 ];
 const REFS_BY_TABLE = new Map<string, { column: string; parent: string }[]>();
 for (const ref of CROSS_DOMAIN_REFS) REFS_BY_TABLE.set(ref.table, [...(REFS_BY_TABLE.get(ref.table) ?? []), ref]);

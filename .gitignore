@@ -25,3 +25,8 @@ gis-demo/data/rasters/*.f32
 gis-demo/data/gis-demo.db*
 gis-demo/data/import/*.csv
 tmp/siwrr/
+# Khoá mã hoá cột CCCD — sao lưu riêng, không đưa vào repo.
+data/.keys/
+# Tệp CSDL cũ trước khi tách miền.
+archive/
+data/backups-truoc-nang-cap/

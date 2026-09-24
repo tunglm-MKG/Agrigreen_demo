@@ -10,6 +10,7 @@ import { PERMISSIONS as P, can as roleCan } from './platform/auth/rbac.ts';
 import { logEvent } from './platform/audit/audit.ts';
 import { backupAll, listBackups, verifyBackup } from './platform/db/backup.ts';
 import { findOrphans, indexSummary, integrityByDomain } from './platform/db/integrity.ts';
+import { maskNationalId } from './platform/security/fieldCrypto.ts';
 import * as users from './platform/auth/users.ts';
 import * as reporting from './erp/reporting/service.ts';
 import * as mdm from './mdm/service.ts';
@@ -78,7 +79,12 @@ function maskPhones<T extends Record<string, unknown>>(ctx: Context, rows: T[], 
     logEvent({ module: 'admin', entityType: 'pii_access', entityId: entityType, action: 'update', after: { rows: rows.length, path: ctx.req.url }, source: 'api' }, ctx.actor);
     return rows;
   }
-  return rows.map((row) => ('phone' in row ? { ...row, phone: maskPhone(row.phone), phone_masked: true } : row));
+  return rows.map((row) => {
+    const masked: Record<string, unknown> = { ...row };
+    if ('phone' in row) { masked.phone = maskPhone(row.phone); masked.phone_masked = true; }
+    if ('national_id' in row) masked.national_id = maskNationalId(row.national_id);
+    return masked as T & { phone_masked?: boolean };
+  });
 }
 
 export function registerBrdRoutes(api: Router): void {

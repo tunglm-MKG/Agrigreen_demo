@@ -101,7 +101,7 @@ test('Mật khẩu: hash mới là scrypt; hash SHA-256 cũ vẫn đăng nhập 
 });
 
 test('Tham chiếu xuyên miền: ghi bản ghi trỏ tới cha không tồn tại bị chặn; rà mồ côi phát hiện dữ liệu chèn lách', () => {
-  assert.equal(CROSS_DOMAIN_REFS.length, 15);
+  assert.ok(CROSS_DOMAIN_REFS.length >= 80, `đang ${CROSS_DOMAIN_REFS.length}`);
   assert.equal(integrity.findOrphans().reduce((a, r) => a + r.orphans, 0), 0, 'dữ liệu seed sạch');
   const season = one<{ id: string }>('SELECT id FROM seasons LIMIT 1')!;
   assert.throws(

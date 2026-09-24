@@ -35,6 +35,27 @@ export function configureDatabase(path: string): void {
   basePath = resolve(path);
 }
 
+/** Thư mục chứa các tệp CSDL (nơi đặt `.keys/`, `backups/`). */
+export function dataDirectory(): string { return dirname(basePath); }
+
+/**
+ * Cột tiền tệ lưu theo ĐỒNG (INTEGER) — VNĐ không có xu; số thực nhị phân làm lệch công nợ
+ * khi cộng dồn (rà soát 24/09/2026, nguyên tắc 7). Ghi qua insert/update/upsert được làm tròn.
+ */
+export const MONEY_COLUMNS: Record<string, string[]> = {
+  straw_contracts: ['unit_price'], straw_purchase_tickets: ['unit_price', 'amount'], vessels: ['rate_vnd'], market_prices: ['price'],
+  input_purchases: ['total_amount'], input_purchase_lines: ['unit_price'], input_stock: ['unit_cost'],
+  rental_listings: ['price_per_ha', 'price_per_day'], rental_orders: ['amount', 'platform_fee'], scenarios: ['baseline_manual_cost_per_ton'],
+  purchase_orders: ['unit_price'], sales_orders: ['unit_price'], trips: ['planned_cost', 'actual_cost'], ledger_entries: ['amount'], revenue_rules: ['fixed_amount'],
+};
+function roundMoney(table: string, values: Record<string, unknown>): Record<string, unknown> {
+  const money = MONEY_COLUMNS[table];
+  if (!money) return values;
+  const out = { ...values };
+  for (const column of money) if (typeof out[column] === 'number' && Number.isFinite(out[column] as number)) out[column] = Math.round(out[column] as number);
+  return out;
+}
+
 export function db(): DatabaseSync {
   if (!instance) {
     mkdirSync(dirname(basePath), { recursive: true });
@@ -132,7 +153,8 @@ function assertCrossDomainRefs(table: string, values: Record<string, unknown>): 
   }
 }
 
-export function insert(table: string, values: Record<string, unknown>): void {
+export function insert(table: string, input: Record<string, unknown>): void {
+  const values = roundMoney(table, input);
   assertCrossDomainRefs(table, values);
   const columns = Object.keys(values);
   const placeholders = columns.map(() => '?').join(', ');
@@ -143,7 +165,9 @@ export function insert(table: string, values: Record<string, unknown>): void {
 }
 
 /** Chèn hoặc ghi đè theo khoá chính. */
-export function upsert(table: string, values: Record<string, unknown>): void {
+export function upsert(table: string, input: Record<string, unknown>): void {
+  const values = roundMoney(table, input);
+  assertCrossDomainRefs(table, values);
   const columns = Object.keys(values);
   const placeholders = columns.map(() => '?').join(', ');
   run(
@@ -156,9 +180,10 @@ export function upsert(table: string, values: Record<string, unknown>): void {
 export function update(
   table: string,
   id: string,
-  values: Record<string, unknown>,
+  input: Record<string, unknown>,
   keyColumn = 'id',
 ): void {
+  const values = roundMoney(table, input);
   const columns = Object.keys(values);
   if (!columns.length) return;
   assertCrossDomainRefs(table, values);

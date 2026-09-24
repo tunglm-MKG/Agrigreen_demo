@@ -7,6 +7,7 @@
  */
 import { all, insert, one, run, transaction, update, parseJson } from '../platform/db/db.ts';
 import { nowIso, sequenceCode, uuid } from '../platform/util/ids.ts';
+import { decryptField, encryptField } from '../platform/security/fieldCrypto.ts';
 import { logEvent, type AuditActor } from '../platform/audit/audit.ts';
 import { centroid, haversineKm, polygonAreaHectares, type LatLng } from '../platform/geo/geo.ts';
 
@@ -124,7 +125,7 @@ export function createFarmer(
     code: nextSequence('farmers', 'NH'),
     full_name: input.fullName,
     phone: input.phone ?? null,
-    national_id: input.nationalId ?? null,
+    national_id: encryptField(input.nationalId),   // CCCD mã hoá AES-256-GCM khi lưu (NT 10)
     htx_id: input.htxId,
     address: input.address ?? null,
     reliability_score: 0,
@@ -132,16 +133,26 @@ export function createFarmer(
     created_at: nowIso(),
   };
   insert('farmers', record);
-  // Cập nhật số thành viên trên hồ sơ HTX (dữ liệu dùng chung, không nhân bản).
-  run('UPDATE cooperatives SET member_count = (SELECT COUNT(*) FROM farmers WHERE htx_id = ?) WHERE id = ?', [input.htxId, input.htxId]);
+  refreshMemberCount(input.htxId);
   logEvent({ module: 'mdm', entityType: 'farmers', entityId: record.id, action: 'create', after: record }, actor);
-  return record;
+  return { ...record, national_id: input.nationalId ?? null };
+}
+
+/** Số thành viên trên hồ sơ HTX = số nông hộ ĐANG HOẠT ĐỘNG (giảm khi hộ ngừng — NT 1). */
+export function refreshMemberCount(htxId: string): void {
+  run("UPDATE cooperatives SET member_count = (SELECT COUNT(*) FROM farmers WHERE htx_id = ? AND status = 'active') WHERE id = ?", [htxId, htxId]);
+}
+
+/** Giải mã CCCD cho tầng dịch vụ; API quyết định che hay lộ theo quyền. */
+export function withPlainNationalId<T extends Record<string, unknown>>(row: T): T {
+  return 'national_id' in row ? { ...row, national_id: decryptField(row.national_id) } : row;
 }
 
 export function listFarmers(htxId?: string): Record<string, unknown>[] {
-  return htxId
+  const rows = htxId
     ? all('SELECT * FROM farmers WHERE htx_id = ? ORDER BY full_name', [htxId])
     : all('SELECT * FROM farmers ORDER BY full_name LIMIT 500');
+  return rows.map(withPlainNationalId);
 }
 
 // ---------------------------------------------------------------------------

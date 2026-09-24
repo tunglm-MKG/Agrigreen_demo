@@ -524,7 +524,7 @@ registerPage('gis-admin', {
           ...health.integrity.map((d) => badge(`${d.domain}: ${d.result === 'ok' ? 'toàn vẹn' : d.result}`, d.result === 'ok' ? 'good' : 'bad')),
           badge(`${health.indexes.reduce((a, d) => a + d.explicit, 0)} chỉ mục`, 'neutral'),
         ]),
-        el('h4', { text: 'Tham chiếu xuyên miền (15 quan hệ không có khoá ngoại ở tầng SQLite)' }),
+        el('h4', { text: `Tham chiếu xuyên miền (${health.orphans.length} quan hệ không có khoá ngoại ở tầng SQLite — kiểm ở tầng ghi + rà hằng ngày)` }),
         health.orphans.some((o) => o.orphans > 0)
           ? table([{ key: 'table', label: 'Bảng con' }, { key: 'column', label: 'Cột' }, { key: 'parent', label: 'Bảng cha' }, { key: 'orphans', label: 'Mồ côi', align: 'right' }, { key: 'sample', label: 'Ví dụ', render: (r) => r.sample.join(', ') }], health.orphans.filter((o) => o.orphans > 0), { plain: true })
           : alert('Không có bản ghi mồ côi — mọi tham chiếu xuyên miền đều còn bản ghi cha.', 'good'),

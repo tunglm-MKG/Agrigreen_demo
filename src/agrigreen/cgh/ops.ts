@@ -25,9 +25,10 @@ import {
 // ---------------------------------------------------------------------------
 
 export function listThresholdVersions(): CoverageThresholds[] {
-  const row = one<{ value_json: string }>("SELECT value_json FROM system_config WHERE key = 'cgh.coverage_thresholds'");
-  const versions = row ? parseJson<CoverageThresholds[]>(row.value_json, []) : [];
-  return versions.length ? versions.sort((a, b) => b.effectiveFrom.localeCompare(a.effectiveFrom)) : [DEFAULT_COVERAGE_THRESHOLDS];
+  const rows = all<{ effective_from: string; can_chu_y: number; du: number; thua: number; document_ref: string | null }>(
+    'SELECT effective_from, can_chu_y, du, thua, document_ref FROM cgh_coverage_thresholds ORDER BY effective_from DESC');
+  const versions = rows.map((r) => ({ du: r.du, canChuY: r.can_chu_y, thua: r.thua, effectiveFrom: r.effective_from, documentRef: r.document_ref ?? undefined }));
+  return versions.length ? versions : [DEFAULT_COVERAGE_THRESHOLDS];
 }
 
 export function addThresholdVersion(input: CoverageThresholds, actor: AuditActor = {}): CoverageThresholds[] {
@@ -37,10 +38,12 @@ export function addThresholdVersion(input: CoverageThresholds, actor: AuditActor
   }
   if (!(canChuY < du && du < thua)) throw new Error('Các mốc % phải tăng dần: Cần chú ý < Đủ < Thừa (không chồng/hở khoảng phân loại).');
   if (!effectiveFrom) throw new Error('Vui lòng nhập Ngày hiệu lực của bộ ngưỡng.');
-  const versions = listThresholdVersions().filter((v) => v.effectiveFrom !== effectiveFrom);
-  const next = [...versions, { du, canChuY, thua, effectiveFrom, documentRef: input.documentRef }].sort((a, b) => b.effectiveFrom.localeCompare(a.effectiveFrom));
-  upsert('system_config', { key: 'cgh.coverage_thresholds', value_json: JSON.stringify(next), updated_at: nowIso(), updated_by: actor.name ?? null });
-  logEvent({ module: 'cgh', entityType: 'system_config', entityId: 'cgh.coverage_thresholds', action: 'update', before: versions, after: next }, actor);
+  const versions = listThresholdVersions();
+  // Cùng ngày hiệu lực → thay thế phiên bản đó (UNIQUE effective_from).
+  run('DELETE FROM cgh_coverage_thresholds WHERE effective_from = ?', [effectiveFrom]);
+  insert('cgh_coverage_thresholds', { id: uuid(), effective_from: effectiveFrom, can_chu_y: canChuY, du, thua, document_ref: input.documentRef ?? null, created_at: nowIso(), created_by: actor.name ?? null });
+  const next = listThresholdVersions();
+  logEvent({ module: 'cgh', entityType: 'cgh_coverage_thresholds', entityId: effectiveFrom, action: 'create', before: versions, after: next }, actor);
   return next;
 }
 

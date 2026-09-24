@@ -109,7 +109,23 @@ Ba việc ưu tiên 1–4 ở bảng dưới đã được triển khai và có 
 | Băm mật khẩu (NT 10) | scrypt (N=16384, r=8, p=1, 32 byte, tiền tố `scrypt$`), so khớp hằng thời gian. Hash SHA-256 cũ vẫn đăng nhập được và được băm lại bằng scrypt với salt mới ngay lần đăng nhập thành công đầu tiên — không cần đặt lại mật khẩu hàng loạt. | `src/platform/auth/users.ts` |
 | Khoá ngoại xuyên miền (NT 4) | `CROSS_DOMAIN_REFS` liệt kê 15 quan hệ; `insert()`/`update()` kiểm bản ghi cha trước khi ghi (lỗi tiếng Việt "Tham chiếu không tồn tại"); `findOrphans()` rà mồ côi, `dailyIntegrityScan()` chạy mỗi ngày ghi `event_log` khi phát hiện; kết quả hiển thị trên màn Sức khoẻ CSDL kèm `quick_check` từng tệp. | `src/platform/db/domains.ts`, `db.ts`, `integrity.ts`, `src/api-brd.ts` |
 
-Chưa làm: mã hoá cột `national_id`, khai FOREIGN KEY cho các cột `*_id` cùng miền còn thiếu, và các mục 5–8.
+Đợt hai (cùng ngày) — các mục còn lại, test trong `tests/db-constraints.test.ts` (348/348 đạt):
+
+| Việc | Cách làm | Tệp |
+| --- | --- | --- |
+| Dựng lại bảng cũ theo lược đồ mới (nền cho mọi mục dưới) | `reconcileTables()` so định nghĩa trong tệp với SCHEMA (+ cột thêm bằng ALTER, chèn đúng vị trí SQLite chèn); khác → quy trình 12 bước: tạo bảng mới, chép cột chung, xoá, đổi tên; tắt khoá ngoại trong lúc chạy; bảng có dữ liệu vi phạm thì bỏ qua kèm cảnh báo. Lần khởi động sau không dựng lại nữa. | `src/platform/db/schema.ts` |
+| Khoá ngoại cùng miền (NT 4) | 41 `FOREIGN KEY` mới trong SCHEMA (`users.htx_id`, `plots.farmer_id`, `cooperatives.province_id/commune_id`, `notifications.recipient_user_id`, `input_issues.crop_cycle_id`, `stock_lots.zone_id/grn_id`, `goods_receipts.po_id`, `scenarios.baseline_scenario_id`…). Bỏ qua có chủ đích: `event_log.actor_id`, `request_log.user_id` (nhật ký không được thất bại vì tài khoản đã xoá). | `schema.ts` |
+| Khoá ngoại xuyên miền (NT 4) | `CROSS_DOMAIN_REFS` mở rộng từ 15 lên 83 quan hệ (mọi cột `*_id` trỏ sang tệp khác: `support_tasks.htx_id`, `stock_lots.facility_id`, `ledger_entries.partner_id`, `survey_responses.*`, `field_jobs.*`…), kiểm ở `insert/update/upsert` và rà hằng ngày. | `domains.ts`, `db.ts` |
+| Tiền tệ về INTEGER đồng (NT 7) | 19 cột (`ledger_entries.amount`, `*.unit_price`, `rental_orders.platform_fee`, `trips.*_cost`…) đổi kiểu, dữ liệu cũ làm tròn một lần, `MONEY_COLUMNS` làm tròn khi ghi qua tầng dữ liệu. | `schema.ts`, `db.ts` |
+| CHECK (NT 7) | 17 cột boolean `CHECK (x IN (0,1))`; 43 cột enum/trạng thái `CHECK (x IN (...))` theo danh sách giá trị trong lược đồ (`users.status`, `machines.condition`, `plots.status`, `notifications.channel/severity/status`, `ledger_entries.account/status`, `rental_orders.status`…); `event_log.source` cho phép NULL. | `schema.ts` |
+| NOT NULL (NT 3) | `machines.htx_id`, `support_tasks.htx_id`, `input_issues.crop_cycle_id` (cấp phát xuống thửa chưa mở vụ nay bị từ chối thay vì cảnh báo), `stock_lots.item_id` (duyệt phiếu nhập báo lỗi rõ nếu thiếu mặt hàng rơm). | `schema.ts`, `htx/inputs.ts`, `warehouse/service.ts` |
+| `member_count` (NT 1) | `refreshMemberCount()` đếm nông hộ `status = 'active'`; gọi khi tạo, nhập hàng loạt và đổi trạng thái hộ; trạng thái hộ chỉ nhận `active`/`inactive`. | `mdm/service.ts`, `mdm/lifecycle.ts` |
+| Tính nguyên tử (NT 5) | `field_job_stages.evidence_json` bỏ; bảng `field_stage_evidence` (mỗi bằng chứng một dòng, FK về công đoạn); dữ liệu cũ di trú tự động khi khởi động; ảnh có tệp vẫn qua `attachments`. | `schema.ts`, `erp/field/service.ts` |
+| Chuẩn hoá cấu hình (NT 6) | Ngưỡng cung–cầu CGH từ mảng JSON trong `system_config` sang bảng `cgh_coverage_thresholds` (UNIQUE ngày hiệu lực, CHECK tăng dần); di trú tự động; API `/cgh/thresholds` giữ nguyên hình dạng. | `schema.ts`, `cgh/ops.ts`, `cgh/service.ts` |
+| Mã hoá CCCD (NT 10) | `farmers.national_id` và `survey_responses.national_id` mã hoá AES-256-GCM (tiền tố `enc1:`), khoá từ `DATA_ENCRYPTION_KEY` hoặc `data/.keys/data-encryption.key` tự sinh; bản ghi cũ được mã hoá khi khởi động; API che chỉ lộ 3 số cuối (lộ đủ khi có quyền + `reveal=1`, ghi `pii_access`); giá trị đã che gửi ngược lên không ghi đè. | `src/platform/security/fieldCrypto.ts`, `mdm/*`, `khuyennong/survey.ts`, `api*.ts` |
+| Vận hành tệp (NT 9, 11) | `mekonggreen.legacy-single-file.db` chuyển sang `archive/` (ngoài `data/`, gitignore); tài liệu quy trình vận hành tệp CSDL. | `docs/DB-OPERATIONS.md` |
+
+Chưa làm (ngoài phạm vi rà soát này): mã hoá cột `phone`/`email`, khoá ngoại cho các cột đa hình (`entity_id`, `ref_id`, `scope_id`), tách quyền ở tầng CSDL (SQLite không hỗ trợ).
 
 ## Việc đề xuất, theo thứ tự ưu tiên
 

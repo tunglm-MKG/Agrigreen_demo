@@ -10,6 +10,8 @@
  */
 import { all, insert, one, run, transaction, update, parseJson } from '../platform/db/db.ts';
 import { nowIso, sequenceCode, uuid } from '../platform/util/ids.ts';
+import { encryptField, isMasked } from '../platform/security/fieldCrypto.ts';
+import { refreshMemberCount, withPlainNationalId } from './service.ts';
 import { logEvent, type AuditActor } from '../platform/audit/audit.ts';
 import { centroid, pointInPolygon, polygonAreaHectares, type LatLng } from '../platform/geo/geo.ts';
 import { createCooperative, createFacility, createPlot, getPlot, type Plot } from './service.ts';
@@ -267,13 +269,18 @@ export function updateFarmer(id: string, patch: { fullName?: string; phone?: str
     if (dup) throw new Error('SĐT đã được sử dụng bởi nông hộ khác');
     values.phone = phone || null;
   }
-  if (patch.nationalId !== undefined) values.national_id = patch.nationalId || null;
+  // Giá trị đã che (•••123) gửi ngược lên từ form → coi như không đổi.
+  if (patch.nationalId !== undefined && !isMasked(patch.nationalId)) values.national_id = encryptField(patch.nationalId);
   if (patch.address !== undefined) values.address = patch.address || null;
-  if (patch.status !== undefined) values.status = patch.status;
+  if (patch.status !== undefined) {
+    if (!['active', 'inactive'].includes(patch.status)) throw new Error('Trạng thái nông hộ chỉ nhận active hoặc inactive.');
+    values.status = patch.status;
+  }
   update('farmers', id, values);
+  if (patch.status !== undefined) refreshMemberCount(String(before.htx_id));
   const after = one<Record<string, unknown>>('SELECT * FROM farmers WHERE id = ?', [id])!;
   logEvent({ module: 'mdm', entityType: 'farmers', entityId: id, action: 'update', before, after }, actor);
-  return after;
+  return withPlainNationalId(after);
 }
 
 /** Danh sách nông hộ kèm số thửa và diện tích thật (tính từ polygon). */
@@ -281,10 +288,10 @@ export function farmersWithPlots(htxId: string, search?: string): Record<string,
   const clauses = ['f.htx_id = ?'];
   const params: unknown[] = [htxId];
   if (search) { clauses.push('(f.full_name LIKE ? OR f.phone LIKE ? OR f.code LIKE ?)'); params.push(`%${search}%`, `%${search}%`, `%${search}%`); }
-  return all(
+  return all<Record<string, unknown>>(
     `SELECT f.*, (SELECT COUNT(*) FROM plots p WHERE p.farmer_id = f.id AND p.deleted_at IS NULL) AS plot_count,
             (SELECT COALESCE(SUM(p.area_ha), 0) FROM plots p WHERE p.farmer_id = f.id AND p.deleted_at IS NULL) AS area_ha
-     FROM farmers f WHERE ${clauses.join(' AND ')} ORDER BY f.full_name`, params);
+     FROM farmers f WHERE ${clauses.join(' AND ')} ORDER BY f.full_name`, params).map(withPlainNationalId);
 }
 
 export function importFarmers(htxId: string, rows: Record<string, unknown>[], actor: AuditActor = {}): { created: number; errors: { row: number; reason: string }[] } {
@@ -303,7 +310,7 @@ export function importFarmers(htxId: string, rows: Record<string, unknown>[], ac
       const count = one<{ n: number }>('SELECT COUNT(*) AS n FROM farmers')?.n ?? 0;
       insert('farmers', {
         id: uuid(), code: sequenceCode('NH', count + 1, 5), full_name: fullName, phone: phone || null,
-        national_id: row.nationalId ? String(row.nationalId) : null, htx_id: htxId, address: row.address ? String(row.address) : null,
+        national_id: encryptField(row.nationalId ? String(row.nationalId) : null), htx_id: htxId, address: row.address ? String(row.address) : null,
         reliability_score: 0, status: 'active', created_at: nowIso(),
       });
       created += 1;
@@ -311,7 +318,7 @@ export function importFarmers(htxId: string, rows: Record<string, unknown>[], ac
       errors.push({ row: index + 1, reason: (error as Error).message });
     }
   });
-  run('UPDATE cooperatives SET member_count = (SELECT COUNT(*) FROM farmers WHERE htx_id = ?) WHERE id = ?', [htxId, htxId]);
+  refreshMemberCount(htxId);
   logEvent({ module: 'mdm', entityType: 'farmers', action: 'create', after: { htxId, created, errors: errors.length }, note: 'bulk_import' }, actor);
   return { created, errors };
 }

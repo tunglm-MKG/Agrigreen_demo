@@ -30,14 +30,11 @@ export interface CoverageThresholds { du: number; canChuY: number; thua: number;
 export const DEFAULT_COVERAGE_THRESHOLDS: CoverageThresholds = { du: 85, canChuY: 60, thua: 120, effectiveFrom: '2026-01-01', documentRef: 'QĐ 128/QĐ-KTHT (minh hoạ)' };
 
 export function coverageThresholds(onDate = nowIso().slice(0, 10)): CoverageThresholds {
-  const row = one<{ value_json: string }>("SELECT value_json FROM system_config WHERE key = 'cgh.coverage_thresholds'");
+  // Áp đúng phiên bản hiệu lực tại thời điểm của vụ (AC-2 của US-CFG-02 áp tương tự cho ngưỡng).
+  const row = one<{ effective_from: string; can_chu_y: number; du: number; thua: number; document_ref: string | null }>(
+    'SELECT effective_from, can_chu_y, du, thua, document_ref FROM cgh_coverage_thresholds WHERE effective_from <= ? ORDER BY effective_from DESC LIMIT 1', [onDate]);
   if (!row) return DEFAULT_COVERAGE_THRESHOLDS;
-  try {
-    const versions = JSON.parse(row.value_json) as CoverageThresholds[];
-    // Áp đúng phiên bản hiệu lực tại thời điểm của vụ (AC-2 của US-CFG-02 áp tương tự cho ngưỡng).
-    const applicable = [...versions].filter((v) => v.effectiveFrom <= onDate).sort((a, b) => b.effectiveFrom.localeCompare(a.effectiveFrom))[0];
-    return applicable ?? DEFAULT_COVERAGE_THRESHOLDS;
-  } catch { return DEFAULT_COVERAGE_THRESHOLDS; }
+  return { du: row.du, canChuY: row.can_chu_y, thua: row.thua, effectiveFrom: row.effective_from, documentRef: row.document_ref ?? undefined };
 }
 
 export function coverageBands(onDate?: string): { level: CoverageLevel; label: string; color: string }[] {

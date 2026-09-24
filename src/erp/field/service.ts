@@ -403,7 +403,7 @@ export function createJob(
         id: uuid(), job_id: record.id, stage: stage.code, sort_order: stage.order,
         planned_start: null, planned_end: null, started_at: null, completed_at: null,
         quantity_tons: null, bales: null, vehicle_id: null, recorded_by: null,
-        lat: null, lng: null, note: null, evidence_json: null, status: 'cho_thuc_hien',
+        lat: null, lng: null, note: null, status: 'cho_thuc_hien',
       });
     }
   });
@@ -837,8 +837,11 @@ export function completeStage(
       vehicle_id: input.vehicleId ?? current.vehicle_id ?? null, recorded_by: actor.name ?? null,
       lat: input.lat ?? current.lat ?? null, lng: input.lng ?? current.lng ?? null,
       note: input.note ?? current.note ?? null,
-      evidence_json: evidence.length ? JSON.stringify(evidence) : current.evidence_json ?? null,
     });
+    // Bằng chứng: mỗi mục một dòng (bảng field_stage_evidence), ảnh có tệp đi qua attachments.
+    for (const item of evidence) {
+      insert('field_stage_evidence', { id: uuid(), stage_id: current.id, kind: String(item.kind), url: item.url ?? null, note: item.note ?? null, recorded_at: at, recorded_by: actor.name ?? null });
+    }
     const usedVehicle = input.vehicleId ?? (current.vehicle_id as string | null);
     if (usedVehicle) update('field_vehicles', usedVehicle, { status: 'san_sang', updated_at: nowIso() });
     if (stage === 'xuong_ghe') update('field_jobs', jobId, { status: 'hoan_thanh', updated_at: nowIso() });
@@ -1204,7 +1207,7 @@ export function jobDetail(jobId: string): Row {
     `SELECT s.*, v.code AS vehicle_code, v.name AS vehicle_name FROM field_job_stages s
      LEFT JOIN field_vehicles v ON v.id = s.vehicle_id WHERE s.job_id = ? ORDER BY s.sort_order`,
     [jobId],
-  ).map((stage) => ({ ...stage, label: stageMeta(String(stage.stage)).label, evidence: parseJson(stage.evidence_json, []) }));
+  ).map((stage) => ({ ...stage, label: stageMeta(String(stage.stage)).label, evidence: all('SELECT id, kind, url, note, recorded_at, recorded_by FROM field_stage_evidence WHERE stage_id = ? ORDER BY recorded_at', [stage.id]) }));
   const loadings = all<Row>(
     `SELECT l.*, f.name AS destination_name, tr.code AS trip_code, tr.status AS trip_status, tr.distance_km,
             g.code AS grn_code, g.status AS grn_status, n.code AS notice_code, n.status AS notice_status
