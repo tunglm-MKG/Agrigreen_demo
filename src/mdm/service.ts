@@ -569,3 +569,40 @@ function toPolygon(points: LatLng[]): { type: 'Polygon'; coordinates: [number, n
   if (first[0] !== last[0] || first[1] !== last[1]) ring.push(first);
   return { type: 'Polygon', coordinates: [ring] };
 }
+
+// ---------------------------------------------------------------------------
+// Tổng hợp (KPI) — tính phía server, bớt logic khỏi frontend
+// ---------------------------------------------------------------------------
+
+/** Thống kê nhanh nông hộ: đếm, có thửa, tổng diện tích, có SĐT. */
+export function farmerSummary(htxId?: string): Record<string, unknown> {
+  const where = htxId ? 'WHERE f.htx_id = ?' : '';
+  const params = htxId ? [htxId] : [];
+  const row = one<Record<string, unknown>>(`
+    SELECT COUNT(*) AS total,
+           SUM(CASE WHEN f.plot_count > 0 THEN 1 ELSE 0 END) AS with_plots,
+           COALESCE(SUM(f.area_ha), 0) AS total_area_ha,
+           SUM(CASE WHEN f.phone IS NOT NULL AND f.phone <> '' THEN 1 ELSE 0 END) AS with_phone
+    FROM (
+      SELECT fr.id, fr.phone,
+             (SELECT COUNT(*) FROM plots p WHERE p.farmer_id = fr.id AND p.deleted_at IS NULL) AS plot_count,
+             (SELECT COALESCE(SUM(p.area_ha), 0) FROM plots p WHERE p.farmer_id = fr.id AND p.deleted_at IS NULL) AS area_ha
+      FROM farmers fr ${where}
+    ) f
+  `, params);
+  return row ?? { total: 0, with_plots: 0, total_area_ha: 0, with_phone: 0 };
+}
+
+/** Thống kê nhanh thửa ruộng: đếm, tổng diện tích, chưa mở vụ, đã gán nông hộ. */
+export function plotSummary(htxId?: string): Record<string, unknown> {
+  const where = htxId ? 'WHERE htx_id = ? AND deleted_at IS NULL' : 'WHERE deleted_at IS NULL';
+  const params = htxId ? [htxId] : [];
+  const row = one<Record<string, unknown>>(`
+    SELECT COUNT(*) AS total,
+           COALESCE(SUM(area_ha), 0) AS total_area_ha,
+           SUM(CASE WHEN status = 'chua_mo_vu' THEN 1 ELSE 0 END) AS not_planted,
+           SUM(CASE WHEN farmer_id IS NOT NULL THEN 1 ELSE 0 END) AS assigned
+    FROM plots ${where}
+  `, params);
+  return row ?? { total: 0, total_area_ha: 0, not_planted: 0, assigned: 0 };
+}
