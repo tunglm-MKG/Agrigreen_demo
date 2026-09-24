@@ -26,7 +26,10 @@ export function digest(value: unknown): string {
   return createHash('sha256').update(JSON.stringify(value)).digest('hex').slice(0, 32);
 }
 
-/** Băm mật khẩu (scrypt-like đơn giản bằng sha256 + salt, đủ cho môi trường nội bộ). */
-export function hashPassword(password: string, salt: string): string {
-  return createHash('sha256').update(`${salt}:${password}`).digest('hex');
+/**
+ * Hàm băm CŨ (SHA-256 + salt) — CHỈ còn dùng để xác thực bản ghi tạo trước 24/09/2026 và trong test di trú.
+ * Mọi mật khẩu mới băm bằng scrypt (`users.hashSecret`); đăng nhập thành công bằng hash cũ được băm lại ngay.
+ */
+export function legacySha256Hash(password: string, salt: string): string {
+  return createHash('sha256').update(`${salt}:${password}`).digest('hex'); // codeql[js/insufficient-password-hash]
 }

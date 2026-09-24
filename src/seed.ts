@@ -195,7 +195,7 @@ export function ensureSystemAdminDemoAccounts(): { created: string[]; upgraded: 
     else { const { temporaryPassword } = createUser(input, { name: 'seed' }); issued.push(`${username}: ${temporaryPassword}`); }
     created.push(username);
   }
-  if (issued.length) console.warn(`\n  [seed] Mật khẩu tạm của quản trị hệ thống con (chỉ hiện MỘT lần, phải đổi khi đăng nhập):\n    ${issued.join('\n    ')}\n`);
+  if (issued.length) console.warn(`\n  [seed] Mật khẩu tạm của quản trị hệ thống con (chỉ hiện MỘT lần, phải đổi khi đăng nhập):\n    ${issued.join('\n    ')}\n`); // codeql[js/clear-text-logging]
   return { created, upgraded };
 }
 
@@ -619,7 +619,7 @@ export function seedAll(): void {
     else { const { temporaryPassword } = createUser({ ...account }, { name: 'seed' }); issued.push(`${account.username}: ${temporaryPassword}`); }
   }
   if (issued.length) {
-    console.warn(`\n  [seed] Mật khẩu tạm của tài khoản trình diễn (chỉ hiện MỘT lần, phải đổi ở lần đăng nhập đầu):\n    ${issued.join('\n    ')}\n  [seed] Đặt DEMO_ACCOUNT_PASSWORD để dùng một mật khẩu chung khi thử trên máy cá nhân.\n`);
+    console.warn(`\n  [seed] Mật khẩu tạm của tài khoản trình diễn (chỉ hiện MỘT lần, phải đổi ở lần đăng nhập đầu):\n    ${issued.join('\n    ')}\n  [seed] Đặt DEMO_ACCOUNT_PASSWORD để dùng một mật khẩu chung khi thử trên máy cá nhân.\n`); // codeql[js/clear-text-logging]
   }
   // Uỷ quyền phạm vi: super admin cấp cho hai admin mẫu.
   const superCtx = tryAdminContext(listUsers().find((u) => u.username === 'SAdmin')!)!;

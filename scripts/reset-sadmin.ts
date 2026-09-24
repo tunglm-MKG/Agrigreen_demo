@@ -20,6 +20,7 @@ const password = provided || generateTemporaryPassword(16);
 changePassword(row.id, password, { enforcePolicy: true });
 run('UPDATE users SET must_change_pw = ?, failed_attempts = 0, locked_until = NULL, status = ? WHERE id = ?', [provided ? 0 : 1, 'active', row.id]);
 logEvent({ module: 'admin', entityType: 'users', entityId: row.id, action: 'update', note: 'super_admin_reset_by_operator', source: 'system' }, { name: 'operator' });
-console.log(provided
+// Có chủ đích: người vận hành chạy trên máy chủ để nhận mật khẩu tạm; không lưu lại ở đâu khác.
+console.log(provided // codeql[js/clear-text-logging]
   ? 'Đã đặt mật khẩu SAdmin theo SUPER_ADMIN_PASSWORD. Mọi phiên cũ đã bị huỷ.'
   : `Mật khẩu tạm của SAdmin (chỉ hiện một lần, phải đổi khi đăng nhập): ${password}`);

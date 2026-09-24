@@ -24,7 +24,7 @@ const { schemaOf, domainOf, CROSS_DOMAIN_REFS } = await import('../src/platform/
 const backup = await import('../src/platform/db/backup.ts');
 const integrity = await import('../src/platform/db/integrity.ts');
 const users = await import('../src/platform/auth/users.ts');
-const { hashPassword } = await import('../src/platform/util/ids.ts');
+const { legacySha256Hash } = await import('../src/platform/util/ids.ts');
 
 migrate();
 seedAll();
@@ -94,7 +94,7 @@ test('Mật khẩu: hash mới là scrypt; hash SHA-256 cũ vẫn đăng nhập 
 
   // Giả lập tài khoản cũ còn hash sha256.
   const legacySalt = 'abcdef012345';
-  run('UPDATE users SET password_hash = ?, password_salt = ? WHERE id = ?', [hashPassword('MatKhau123', legacySalt), legacySalt, created.user.id]);
+  run('UPDATE users SET password_hash = ?, password_salt = ? WHERE id = ?', [legacySha256Hash('MatKhau123', legacySalt), legacySalt, created.user.id]);
   assert.ok(users.login('scrypt_user', 'MatKhau123')?.token, 'hash cũ vẫn xác thực được');
   const after = one<{ password_hash: string; password_salt: string }>('SELECT password_hash, password_salt FROM users WHERE id = ?', [created.user.id])!;
   assert.match(after.password_hash, /^scrypt\$/, 'đã nâng cấp sang scrypt');

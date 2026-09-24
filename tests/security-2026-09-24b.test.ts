@@ -25,7 +25,7 @@ const urlGuard = await import('../src/platform/security/urlGuard.ts');
 const crypto = await import('../src/platform/security/fieldCrypto.ts');
 const rate = await import('../src/platform/http/rateLimit.ts');
 const field = await import('../src/erp/field/service.ts');
-const { hashPassword } = await import('../src/platform/util/ids.ts');
+const { legacySha256Hash } = await import('../src/platform/util/ids.ts');
 
 migrate();
 seedAll();
@@ -258,7 +258,7 @@ test('L-04: yêu cầu ghi có Origin khác host bị 403; cùng host hoặc kh�
 
 test('L-08: quá hạn di trú, tài khoản còn hash SHA-256 cũ đăng nhập được nhưng bị buộc đổi mật khẩu', () => {
   const salt = 'abcdef012345';
-  run("UPDATE users SET password_hash = ?, password_salt = ?, must_change_pw = 0 WHERE username = 'khonhap'", [hashPassword('123456', salt), salt]);
+  run("UPDATE users SET password_hash = ?, password_salt = ?, must_change_pw = 0 WHERE username = 'khonhap'", [legacySha256Hash('123456', salt), salt]);
   assert.ok(users.legacyHashCount() >= 1);
   const session = users.login('khonhap', '123456');
   assert.ok(session?.token);

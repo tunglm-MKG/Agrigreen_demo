@@ -5,9 +5,9 @@
  * Warehouse FN-36. Không có cơ chế tự đăng ký công khai — mọi tài khoản do
  * Admin khởi tạo (App HTX BR-01).
  */
-import { randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
+import { randomBytes, randomInt, scryptSync, timingSafeEqual } from 'node:crypto';
 import { all, insert, one, run, transaction, update, upsert } from '../db/db.ts';
-import { hashPassword, nowIso, uuid } from '../util/ids.ts';
+import { legacySha256Hash, nowIso, uuid } from '../util/ids.ts';
 import { logEvent } from '../audit/audit.ts';
 import { permissionsFor, ROLE_LABELS, ROLES, SYSTEMS, isSystemAdminRole, ADMIN_ROLE_SYSTEM, type SystemCode } from './rbac.ts';
 
@@ -27,7 +27,7 @@ export function isLegacyHash(stored: string): boolean { return !stored.startsWit
 
 /** So khớp hằng thời gian; nhận cả hash cũ (sha256) lẫn hash mới (scrypt). */
 export function verifySecret(password: string, salt: string, stored: string): boolean {
-  const candidate = isLegacyHash(stored) ? hashPassword(password, salt) : hashSecret(password, salt);
+  const candidate = isLegacyHash(stored) ? legacySha256Hash(password, salt) : hashSecret(password, salt);
   const a = Buffer.from(candidate); const b = Buffer.from(stored);
   return a.length === b.length && timingSafeEqual(a, b);
 }
@@ -325,12 +325,12 @@ const TEMP_DIGIT = '23456789';
 
 /** Mật khẩu tạm luôn đạt chính sách: ≥ 2 chữ hoa, ≥ 2 chữ thường, ≥ 2 chữ số, xáo trộn ngẫu nhiên. */
 export function generateTemporaryPassword(length = 10): string {
-  const pick = (set: string) => set[randomBytes(1)[0] % set.length];
+  const pick = (set: string) => set[randomInt(set.length)];   // randomInt không thiên lệch (CodeQL js/biased-cryptographic-random)
   const chars = [pick(TEMP_UPPER), pick(TEMP_UPPER), pick(TEMP_LOWER), pick(TEMP_LOWER), pick(TEMP_DIGIT), pick(TEMP_DIGIT)];
   const pool = TEMP_UPPER + TEMP_LOWER + TEMP_DIGIT;
   while (chars.length < Math.max(8, length)) chars.push(pick(pool));
   for (let i = chars.length - 1; i > 0; i -= 1) {
-    const j = randomBytes(1)[0] % (i + 1);
+    const j = randomInt(i + 1);
     [chars[i], chars[j]] = [chars[j], chars[i]];
   }
   return chars.join('');
@@ -364,7 +364,8 @@ export function ensureSuperAdmin(initialPassword = process.env.SUPER_ADMIN_PASSW
   const mustChange = generated ? 1 : 0;
   const announce = (id: string) => {
     if (!generated) return;
-    console.warn(`\n  [auth] SAdmin được tạo với mật khẩu tạm: ${password}\n  [auth] Mật khẩu này chỉ hiện MỘT lần và phải đổi ở lần đăng nhập đầu. Đặt SUPER_ADMIN_PASSWORD để tự chọn.\n`);
+    // Có chủ đích: mật khẩu tạm chỉ tồn tại ở log khởi động MỘT lần và bị buộc đổi ở lần đăng nhập đầu (đánh giá bảo mật C-01).
+    console.warn(`\n  [auth] SAdmin được tạo với mật khẩu tạm: ${password}\n  [auth] Mật khẩu này chỉ hiện MỘT lần và phải đổi ở lần đăng nhập đầu. Đặt SUPER_ADMIN_PASSWORD để tự chọn.\n`); // codeql[js/clear-text-logging]
     logEvent({ module: 'admin', entityType: 'users', entityId: id, action: 'create', note: 'super_admin_temporary_password_issued', source: 'system' });
   };
   const ensureRole = (userId: string) => {

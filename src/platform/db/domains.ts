@@ -188,8 +188,9 @@ export function qualifyStatement(statement: string): string {
     // Gỡ FOREIGN KEY xuyên miền — SQLite không cho khoá ngoại trỏ sang tệp khác.
     body = body.replace(/^\s*FOREIGN KEY\s*\([^)]*\)\s*REFERENCES\s+(\w+)\s*\([^)]*\)\s*,?\s*(--.*)?$/gm, (line, ref: string) =>
       (domainOf(ref) === domain ? line : ''));
-    // Dấu phẩy treo trước dấu đóng ngoặc sau khi gỡ dòng cuối.
-    body = body.replace(/,(\s*(?:--[^\n]*\s*)*)\)\s*;?\s*$/, '$1)');
+    // Dấu phẩy treo trước dấu đóng ngoặc sau khi gỡ dòng cuối. splitStatements đã bỏ chú thích nên chỉ còn
+    // khoảng trắng giữa dấu phẩy và ')' — biểu thức đơn giản, không lồng quantifier (CodeQL js/redos).
+    body = body.replace(/,(\s*)\)\s*;?\s*$/, '$1)');
     return body;
   }
   const index = /CREATE (UNIQUE )?INDEX IF NOT EXISTS (\w+) ON (\w+)/.exec(statement);

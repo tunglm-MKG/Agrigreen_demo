@@ -783,7 +783,7 @@ export async function navigate(id, params) {
     await page.render(view, actions, params ?? {});
   } catch (error) {
     // Ghi stack ra console để dò lỗi; người dùng chỉ thấy thông điệp ngắn gọn.
-    console.error(`[${id}] không dựng được trang:`, error);
+    console.error('Không dựng được trang', String(id), error);
     view.className = 'view';
     view.replaceChildren(alert(`Không tải được trang: ${error.message}`, 'bad'));
   }

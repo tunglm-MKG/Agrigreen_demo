@@ -66,11 +66,21 @@ export function readWorkbook(buffer: Buffer): Workbook {
 // Phân tích từng phần XML
 // ---------------------------------------------------------------------------
 
+/** Bỏ mọi thẻ XML lồng trong <t>, lặp tới khi không còn gì để bỏ (CodeQL js/incomplete-multi-character-sanitization). */
+function stripTags(text: string): string {
+  let current = text;
+  for (;;) {
+    const next = current.replace(/<[^>]*>/g, '');
+    if (next === current) return next.replace(/[<>]/g, '');
+    current = next;
+  }
+}
+
 function parseSharedStrings(xml: string | null): string[] {
   if (!xml) return [];
   const result: string[] = [];
   for (const block of matchAll(xml, /<si\b[^>]*\/>|<si\b[^>]*(?<!\/)>[\s\S]*?<\/si>/g)) {
-    const parts = [...matchAll(block, /<t\b[^>]*>([\s\S]*?)<\/t>/g)].map((m) => decodeXml(m.replace(/<[^>]+>/g, '')));
+    const parts = [...matchAll(block, /<t\b[^>]*>([\s\S]*?)<\/t>/g)].map((m) => decodeXml(stripTags(m)));
     result.push(parts.join(''));
   }
   return result;
@@ -147,7 +157,7 @@ function parseCell(xml: string, sharedStrings: string[], dateStyles: Set<number>
   const styleIndex = Number(attr(xml, 's') ?? '-1');
 
   if (type === 'inlineStr') {
-    const parts = [...matchAll(xml, /<t\b[^>]*>([\s\S]*?)<\/t>/g)].map((m) => decodeXml(m.replace(/<[^>]+>/g, '')));
+    const parts = [...matchAll(xml, /<t\b[^>]*>([\s\S]*?)<\/t>/g)].map((m) => decodeXml(stripTags(m)));
     return { value: parts.join('') || null };
   }
 
