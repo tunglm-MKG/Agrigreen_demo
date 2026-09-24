@@ -64,7 +64,7 @@ export const SHARED_FLOWS: SharedFlow[] = [
 /** Bảng dùng chung không đi qua luồng (nội bộ nền tảng, không phải dữ liệu nghiệp vụ). */
 export const PLATFORM_INTERNAL_TABLES = new Set([
   'user_groups', 'group_permissions', 'sessions', 'event_log', 'daily_snapshots', 'retention_policy', 'sync_log',
-  'shared_sync_cursor', 'system_config', 'schema_migrations', 'rate_limits', 'request_log',
+  'shared_sync_cursor', 'system_config', 'schema_migrations', 'rate_limits', 'password_resets', 'request_log',
 ]);
 
 export function flowsFor(system: SystemCode): SharedFlow[] {

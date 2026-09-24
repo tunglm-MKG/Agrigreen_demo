@@ -10,6 +10,7 @@ import { migrate } from '../src/platform/db/schema.ts';
 import { one, run } from '../src/platform/db/db.ts';
 import { changePassword, generateTemporaryPassword, assertStrongPassword } from '../src/platform/auth/users.ts';
 import { logEvent } from '../src/platform/audit/audit.ts';
+import { describeResetMail, sendSuperAdminResetEmail } from '../src/platform/auth/passwordReset.ts';
 
 migrate();
 const row = one<{ id: string }>("SELECT id FROM users WHERE username = 'SAdmin'");
@@ -24,3 +25,5 @@ logEvent({ module: 'admin', entityType: 'users', entityId: row.id, action: 'upda
 console.log(provided // codeql[js/clear-text-logging]
   ? 'Đã đặt mật khẩu SAdmin theo SUPER_ADMIN_PASSWORD. Mọi phiên cũ đã bị huỷ.'
   : `Mật khẩu tạm của SAdmin (chỉ hiện một lần, phải đổi khi đăng nhập): ${password}`);
+// Yêu cầu 24/09/2026: mỗi lần đặt lại cũng gửi email đặt lại (liên kết một lần) tới SADMIN_RESET_EMAIL.
+console.log(describeResetMail(await sendSuperAdminResetEmail('operator_reset')));

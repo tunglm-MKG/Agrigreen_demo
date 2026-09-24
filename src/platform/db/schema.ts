@@ -46,7 +46,7 @@ export function migrate(): void {
 // ---------------------------------------------------------------------------
 // Phiên bản lược đồ (A07)
 // ---------------------------------------------------------------------------
-export const SCHEMA_VERSION = '2026.09.24-c';
+export const SCHEMA_VERSION = '2026.09.24-d';
 export function schemaChecksum(): string {
   return createHash('sha256').update(SCHEMA).update(JSON.stringify(COLUMN_ADDITIONS)).update(JSON.stringify(PERFORMANCE_INDEXES)).digest('hex');
 }
@@ -2223,6 +2223,19 @@ CREATE TABLE IF NOT EXISTS system_config (
 -- số bảng dựng lại/bỏ qua — đối chiếu được "cài mới" và "nâng cấp" có cùng lược đồ hay không.
 -- Đánh giá bảo mật 24/09/2026 (H-04, M-01): bộ đếm giới hạn tốc độ (cổng truy cập, đăng nhập theo IP) — bền qua
 -- khởi động lại và dùng chung giữa các tiến trình, thay cho Map trong RAM.
+-- Liên kết đặt lại mật khẩu một lần (email đặt lại SAdmin khi khởi động / reset-sadmin). Chỉ lưu digest.
+CREATE TABLE IF NOT EXISTS password_resets (
+  id           TEXT PRIMARY KEY,
+  user_id      TEXT NOT NULL,
+  token_digest TEXT NOT NULL UNIQUE,
+  reason       TEXT NOT NULL CHECK (reason IN ('startup', 'operator_reset', 'created', 'admin_request')),
+  created_at   TEXT NOT NULL,
+  expires_at   TEXT NOT NULL,
+  used_at      TEXT,
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_password_resets_user ON password_resets(user_id, used_at);
+
 CREATE TABLE IF NOT EXISTS rate_limits (
   bucket       TEXT PRIMARY KEY,
   count        INTEGER NOT NULL DEFAULT 0,

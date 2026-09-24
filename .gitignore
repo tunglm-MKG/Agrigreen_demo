@@ -6,6 +6,9 @@ data/*.db-shm
 data/*.db-wal
 # Bản sao lưu SQLite (VACUUM INTO) — lưu ngoài repo.
 data/backups/
+# Thư outbox (.eml) khi chưa cấu hình SMTP — chứa liên kết đặt lại mật khẩu, không bao giờ đưa vào git.
+data/outbox/
+data/uploads/
 
 # Thư mục làm việc tạm của quá trình phát triển.
 tmp/

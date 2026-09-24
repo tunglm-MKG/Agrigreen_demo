@@ -11,6 +11,7 @@ import * as files from './platform/files/attachments.ts';
 import * as notifyService from './platform/notify/service.ts';
 import { PERMISSION_GROUPS, PERMISSIONS as P, ROLE_LABELS, ROLE_PERMISSIONS } from './platform/auth/rbac.ts';
 import * as users from './platform/auth/users.ts';
+import * as passwordReset from './platform/auth/passwordReset.ts';
 import { enforceHtxScope, isHtxBound, assertEntityAccess } from './platform/auth/htxScope.ts';
 import { enforceSuperAdminSystemContext } from './platform/auth/systemContext.ts';
 import { clientIp, hitRateLimit } from './platform/http/rateLimit.ts';
@@ -107,6 +108,23 @@ export function buildApi(): Router {
     if (session.mfaRequired) return { mfaRequired: true, token: session.token, user: { username: session.user.username, fullName: session.user.fullName } };
     return { mfaRequired: false, token: session.token, user: users.describeUser(session.user) };
     // unitOfWork: false — số lần sai và bộ đếm IP phải được LƯU kể cả khi handler ném lỗi.
+  }, undefined, { unitOfWork: false, sensitive: true });
+
+  // Đặt lại mật khẩu bằng liên kết một lần trong email (SAdmin sau khởi động / reset-sadmin). Công khai, giới hạn theo IP.
+  api.post('/auth/reset-password/complete', (ctx) => {
+    const limit = hitRateLimit(`pwreset:${clientIp(ctx.req)}`, 10, 15 * 60_000);
+    if (!limit.allowed) {
+      ctx.res.setHeader('Retry-After', String(limit.retryAfterSec));
+      throw new HttpError(429, `Quá nhiều lần thử. Thử lại sau ${Math.ceil(limit.retryAfterSec / 60)} phút.`);
+    }
+    const { token, password } = body(ctx);
+    try {
+      const done = passwordReset.completeReset(String(token ?? ''), String(password ?? ''), { ip: clientIp(ctx.req) });
+      return { ok: true, username: done.username };
+    } catch (error) {
+      if (error instanceof passwordReset.ResetError) throw badRequest(error.message, { code: error.code });
+      throw error;
+    }
   }, undefined, { unitOfWork: false, sensitive: true });
 
   api.post('/auth/logout', (ctx) => {

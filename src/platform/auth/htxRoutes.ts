@@ -196,6 +196,7 @@ export const HTX_ROUTE_ALLOWLIST = new Set<string>([
   'POST /assign/:id/respond',
   'POST /auth/login',
   'POST /auth/logout',
+  'POST /auth/reset-password/complete',
   'POST /auth/password',
   'POST /files',
   'POST /gis/import/preview',

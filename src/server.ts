@@ -29,6 +29,7 @@ import { purgeExpired } from './platform/http/idempotency.ts';
 import { seedVarietiesIfEmpty } from './mdm/varieties.ts';
 import { seedHtxFieldDemoIfEmpty, ensureXaScopeAssignments } from './seedDemoHtx.ts';
 import { ensureSuperAdmin } from './platform/auth/users.ts';
+import { describeResetMail, sendSuperAdminResetEmail } from './platform/auth/passwordReset.ts';
 import { backupAll } from './platform/db/backup.ts';
 import { dailyIntegrityScan } from './platform/db/integrity.ts';
 import { escalateOverdueTasks, scanWatchlists } from './agrigreen/khuyennong/ops.ts';
@@ -59,7 +60,11 @@ export async function start(port = Number(process.env.PORT ?? 4173)): Promise<vo
   else if (!dbOne('SELECT 1 FROM cooperatives LIMIT 1')) console.warn('[seed] CSDL trống nhưng NODE_ENV=production: KHÔNG nạp dữ liệu trình diễn (C-02). Tạo dữ liệu qua giao diện quản trị, hoặc đặt SEED_DEMO_DATA=1 nếu thật sự muốn bản demo.');
   syncSystemGroups();
   // Super Admin toàn hệ thống (SAdmin) — đổi tên tài khoản `admin` cũ nếu còn.
-  ensureSuperAdmin();
+  const sadmin = ensureSuperAdmin();
+  // Yêu cầu 24/09/2026: MỖI lần khởi động lại gửi email đặt lại mật khẩu SAdmin (liên kết một lần, không chứa mật khẩu)
+  // tới SADMIN_RESET_EMAIL. Chạy nền sau khi máy chủ lắng nghe để lỗi SMTP không làm chậm/đổ khởi động.
+  const sadminMailReason = sadmin.action === 'kept' || sadmin.action === 'rotation_required' ? 'startup' : 'created';
+  setTimeout(() => { void sendSuperAdminResetEmail(sadminMailReason).then((r) => console.log(describeResetMail(r))); }, 0);
   // Danh mục giống lúa mặc định cho CSDL đã có từ trước đợt cập nhật 09/2026.
   seedVarietiesIfEmpty();
   // Nông hộ, thửa, mùa vụ, nhật ký mẫu cho App HTX khi CSDL chưa có (chỉ chạy một lần) — cũng theo cờ demo.

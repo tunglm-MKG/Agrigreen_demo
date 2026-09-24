@@ -926,6 +926,15 @@ function closeSidebar() { if (document.getElementById('sidebar')?.classList.cont
 // ---------------------------------------------------------------------------
 
 export async function boot() {
+  // Liên kết đặt lại mật khẩu một lần trong email (SAdmin): xử lý trước khi xét phiên.
+  const resetToken = new URLSearchParams(location.search).get('reset');
+  if (resetToken) {
+    history.replaceState(null, '', location.pathname + location.hash);
+    document.getElementById('login').hidden = false;
+    document.getElementById('shell').hidden = true;
+    document.getElementById('portal-picker').hidden = true;
+    await resetPasswordDialog(resetToken);
+  }
   const me = await api('/auth/me').catch(() => ({ anonymous: true }));
   if (me?.anonymous) {
     document.documentElement.dataset.portal = '';
@@ -1060,6 +1069,37 @@ function buildPortalSwitch(allowed, current) {
 }
 
 /** Hộp thoại bắt buộc đổi mật khẩu tạm; chỉ đóng khi đổi thành công hoặc đăng xuất. */
+/** Đặt mật khẩu mới bằng liên kết một lần (token trong email). Sau khi xong, người dùng đăng nhập bình thường. */
+function resetPasswordDialog(token) {
+  return new Promise((resolve) => {
+    const pw = el('input', { type: 'password', placeholder: 'Mật khẩu mới', autocomplete: 'new-password' });
+    const pw2 = el('input', { type: 'password', placeholder: 'Nhập lại mật khẩu mới', autocomplete: 'new-password' });
+    const err = el('p', { class: 'login-error' });
+    const dialog = modal('Đặt lại mật khẩu', [
+      el('p', { text: 'Bạn mở liên kết đặt lại mật khẩu từ email. Đặt mật khẩu mới cho tài khoản; mọi phiên đăng nhập cũ của tài khoản sẽ bị huỷ.' }),
+      el('p', { class: 'muted', text: 'Mật khẩu mới: tối thiểu 8 ký tự, có chữ thường, chữ in hoa và chữ số. Liên kết chỉ dùng được một lần và có thời hạn.' }),
+      el('label', {}, ['Mật khẩu mới', pw]),
+      el('label', {}, ['Nhập lại mật khẩu mới', pw2]),
+      err,
+    ], [
+      el('button', { class: 'ghost', text: 'Bỏ qua', onclick: () => { dialog.close(); resolve(); } }),
+      el('button', { text: 'Đặt mật khẩu', onclick: async () => {
+        err.textContent = '';
+        if (pw.value !== pw2.value) { err.textContent = 'Hai lần nhập mật khẩu không khớp.'; return; }
+        try {
+          const r = await api('/auth/reset-password/complete', { body: { token, password: pw.value }, noReauth: true });
+          toast(`Đã đặt mật khẩu mới cho ${r.username}. Hãy đăng nhập.`);
+          const u = document.querySelector('#login-form input[name=username]');
+          if (u) u.value = r.username;
+          dialog.close();
+          resolve();
+        } catch (error) { err.textContent = error.message; }
+      } }),
+    ], { dismissible: false });
+    setTimeout(() => pw.focus(), 30);
+  });
+}
+
 function forcePasswordChange(me) {
   return new Promise((resolve) => {
     const pw = el('input', { type: 'password', placeholder: 'Mật khẩu mới', autocomplete: 'new-password' });
