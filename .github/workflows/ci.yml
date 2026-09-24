@@ -62,31 +62,7 @@ jobs:
           upload: never
           output: codeql-results
       - name: Chặn khi CodeQL còn cảnh báo mức error
-        run: |
-          node -e '
-            const fs = require("fs");
-            const dir = "codeql-results";
-            const files = fs.readdirSync(dir).filter((f) => f.endsWith(".sarif"));
-            let errors = 0, total = 0;
-            for (const f of files) {
-              const sarif = JSON.parse(fs.readFileSync(`${dir}/${f}`, "utf8"));
-              for (const run of sarif.runs ?? []) {
-                const rules = new Map();
-                for (const r of run.tool?.driver?.rules ?? []) rules.set(r.id, r);
-                for (const ext of run.tool?.extensions ?? []) for (const r of ext.rules ?? []) rules.set(r.id, r);
-                for (const res of run.results ?? []) {
-                  if (res.suppressions?.length) continue;
-                  total += 1;
-                  const sev = rules.get(res.ruleId)?.properties?.["problem.severity"] ?? res.level;
-                  const loc = res.locations?.[0]?.physicalLocation;
-                  console.log(`${sev}	${res.ruleId}	${loc?.artifactLocation?.uri}:${loc?.region?.startLine}	${res.message?.text?.slice(0, 120)}`);
-                  if (sev === "error") errors += 1;
-                }
-              }
-            }
-            console.log(`CodeQL: ${total} cảnh báo, ${errors} mức error`);
-            if (errors) process.exit(1);
-          '
+        run: node .github/scripts/codeql-gate.mjs codeql-results
       - name: Lưu báo cáo CodeQL
         if: always()
         uses: actions/upload-artifact@v4
