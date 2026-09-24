@@ -267,3 +267,112 @@ export function parseJson<T>(value: unknown, fallback: T): T {
     return fallback;
   }
 }
+
+// ---------------------------------------------------------------------------
+// Auto-logging mutation wrappers
+// ---------------------------------------------------------------------------
+// Kết hợp ghi dữ liệu + gọi logEvent() trong một bước duy nhất.
+// Dùng khi tầng nghiệp vụ muốn đảm bảo mọi thay đổi đều có nhật ký đầy đủ
+// (actor, module, trước/sau) mà không cần gọi logEvent riêng.
+//
+// DB trigger (triggers.ts) vẫn là lưới an toàn: nếu code dùng insert/update trực
+// tiếp mà quên logEvent, trigger ghi bản ghi source='system' note='db_trigger'.
+// Khi dùng wrapper dưới đây, trigger vẫn ghi nhưng bản ghi ứng dụng (có actor)
+// sẽ giúp truy vết ai làm gì rõ ràng hơn.
+// ---------------------------------------------------------------------------
+
+import { logEvent, type AuditActor, type AuditEntry } from '../audit/audit.ts';
+
+interface MutationMeta {
+  module: string;
+  actor?: AuditActor;
+  note?: string;
+  source?: AuditEntry['source'];
+}
+
+/**
+ * Insert một bản ghi VÀ tự động ghi nhật ký `create` vào `event_log`.
+ *
+ * ```ts
+ * insertWithLog('straw_contracts', data, { module: 'erp', actor: ctx.actor });
+ * ```
+ */
+export function insertWithLog(
+  table: string,
+  input: Record<string, unknown>,
+  meta: MutationMeta,
+): void {
+  insert(table, input);
+  logEvent(
+    {
+      module: meta.module,
+      entityType: table,
+      entityId: (input.id as string) ?? null,
+      action: 'create',
+      after: input,
+      source: meta.source,
+      note: meta.note,
+    },
+    meta.actor,
+  );
+}
+
+/**
+ * Update một bản ghi VÀ tự động ghi nhật ký `update` vào `event_log`.
+ * Tự đọc bản ghi cũ (before) trước khi ghi đè.
+ *
+ * ```ts
+ * updateWithLog('farmers', farmerId, changes, { module: 'htx', actor: ctx.actor });
+ * ```
+ */
+export function updateWithLog(
+  table: string,
+  id: string,
+  input: Record<string, unknown>,
+  meta: MutationMeta,
+  keyColumn = 'id',
+): void {
+  const before = one(`SELECT * FROM ${table} WHERE ${keyColumn} = ?`, [id]);
+  update(table, id, input, keyColumn);
+  logEvent(
+    {
+      module: meta.module,
+      entityType: table,
+      entityId: id,
+      action: 'update',
+      before,
+      after: { ...before, ...input },
+      source: meta.source,
+      note: meta.note,
+    },
+    meta.actor,
+  );
+}
+
+/**
+ * Upsert một bản ghi VÀ tự động ghi nhật ký `create` hoặc `update`.
+ * Kiểm tra sự tồn tại trước để chọn action phù hợp.
+ */
+export function upsertWithLog(
+  table: string,
+  input: Record<string, unknown>,
+  meta: MutationMeta,
+  keyColumn = 'id',
+): void {
+  const id = input[keyColumn] as string | undefined;
+  const before = id ? one(`SELECT * FROM ${table} WHERE ${keyColumn} = ?`, [id]) : null;
+  upsert(table, input);
+  logEvent(
+    {
+      module: meta.module,
+      entityType: table,
+      entityId: id ?? null,
+      action: before ? 'update' : 'create',
+      before: before ?? undefined,
+      after: input,
+      source: meta.source,
+      note: meta.note,
+    },
+    meta.actor,
+  );
+}
