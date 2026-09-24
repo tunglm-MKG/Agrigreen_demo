@@ -132,3 +132,17 @@ export function contractDetail(id: string): Row {
   if (!row) throw new Error('Không tìm thấy hợp đồng.');
   return decorate(row);
 }
+
+/** Tổng hợp KPI hợp đồng — cho giao diện hiển thị, không tính lại phía client. */
+export function contractSummary(filter: { htxId?: string } = {}): Record<string, unknown> {
+  const contracts = listContracts(filter);
+  const active = contracts.filter((c) => c.status === 'hieu_luc' && !c.expired);
+  return {
+    total: contracts.length,
+    active: active.length,
+    committedTons: active.reduce((s, c) => s + Number(c.committed_tons), 0),
+    deliveredTons: active.reduce((s, c) => s + Number(c.delivered_tons), 0),
+    deliveredBales: active.reduce((s, c) => s + Number(c.delivered_bales), 0),
+    expiringIn30Days: active.filter((c) => Number(c.daysLeft) <= 30).length,
+  };
+}
