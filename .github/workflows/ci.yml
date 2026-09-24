@@ -10,6 +10,8 @@ on:
 permissions:
   contents: read
   security-events: write
+  # codeql-action cần đọc thông tin workflow run để gửi trạng thái (lỗi "Resource not accessible by integration").
+  actions: read
 
 jobs:
   test:
@@ -36,10 +38,10 @@ jobs:
           fetch-depth: 0
       # gitleaks-action v2 đòi GITLEAKS_LICENSE với repo của tổ chức; CLI gitleaks (MIT) quét được toàn bộ lịch sử mà không cần license.
       - name: gitleaks detect (toàn bộ lịch sử git)
-        run: docker run --rm --user "$(id -u):$(id -g)" -v "$PWD:/repo" ghcr.io/gitleaks/gitleaks:v8.30.1 detect --source /repo --redact --exit-code 1 --report-format sarif --report-path /repo/gitleaks.sarif
+        run: docker run --rm --user "$(id -u):$(id -g)" -v "$PWD:/repo" ghcr.io/gitleaks/gitleaks:v8.30.1 detect --source /repo --config /repo/.gitleaks.toml --redact --exit-code 1 --report-format sarif --report-path /repo/gitleaks.sarif
       - name: Tải kết quả gitleaks lên Code scanning
         if: always()
-        uses: github/codeql-action/upload-sarif@v3
+        uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: gitleaks.sarif
           category: gitleaks
@@ -49,10 +51,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: github/codeql-action/init@v3
+      - uses: github/codeql-action/init@v4
         with:
           languages: javascript-typescript
-      - uses: github/codeql-action/analyze@v3
+      - uses: github/codeql-action/analyze@v4
 
   container:
     name: Quét Dockerfile (Trivy)

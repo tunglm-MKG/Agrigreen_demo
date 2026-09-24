@@ -1,0 +1,21 @@
+# Cấu hình gitleaks cho AgriGreen (đánh giá bảo mật 24/09/2026, M-08).
+# Mở rộng bộ luật mặc định; chỉ bỏ qua các giá trị CỐ ĐỊNH của kiểm thử/CI vốn không phải bí mật:
+#   - khoá mã hoá 64 hex "0123…cdef" mà mọi tệp test và CI đặt cho DATA_ENCRYPTION_KEY,
+#   - khoá Idempotency-Key giả lập "test-key-0001-…" trong tests/idempotency.test.ts,
+#   - mật khẩu test của SAdmin trong tests/ và CI.
+# Không bỏ qua theo thư mục src/ hay docs/: bí mật thật ở đó vẫn bị bắt.
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Giá trị cố định dùng cho kiểm thử và CI — không phải bí mật vận hành"
+regexes = [
+  '''0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef''',
+  '''test-key-\d{4}-[a-z]+''',
+  '''KiemThu-SAdmin-2026''',
+  '''CI-SAdmin-Chi-De-Test-2026''',
+]
+paths = [
+  '''^tests/idempotency\.test\.ts$''',
+]
