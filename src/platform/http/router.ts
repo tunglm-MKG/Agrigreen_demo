@@ -8,6 +8,9 @@ import { can } from '../auth/rbac.ts';
 import { logEvent } from '../audit/audit.ts';
 import { findReplay, storeResponse } from './idempotency.ts';
 import { unitOfWork, withWriteLock } from '../db/db.ts';
+import { randomUUID } from 'node:crypto';
+import { runWithRequestContext } from './requestContext.ts';
+import { clientIp } from './rateLimit.ts';
 
 export interface Context {
   req: IncomingMessage;
@@ -272,7 +275,11 @@ export class Router {
       return found.route.handler(ctx);
     };
     const mutating = method !== 'GET' && method !== 'HEAD';
-    const result = mutating ? (found.route.options.unitOfWork === false ? await withWriteLock(execute) : await unitOfWork(execute)) : await execute();
+    // SEC-08: mã truy vết cho mọi yêu cầu — trả về header và gắn vào mọi dòng nhật ký ghi trong lúc xử lý.
+    const requestId = randomUUID();
+    res.setHeader('X-Request-Id', requestId);
+    const context = { requestId, ip: clientIp(req), userId: user?.id ?? null, tenantId: user?.htxId ?? null, method, path: pathname };
+    const result = await runWithRequestContext(context, () => (mutating ? (found.route.options.unitOfWork === false ? withWriteLock(execute) : unitOfWork(execute)) : execute()));
     if (result !== undefined && !res.writableEnded) {
       if (idemKey && !found.route.options.sensitive) storeResponse(idemKey, user?.id ?? null, method, pathname, 200, result);
       sendJson(res, 200, result);

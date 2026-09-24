@@ -85,7 +85,8 @@ Trang đăng nhập **không** liệt kê tài khoản hay mật khẩu, và **m
 - **Super Admin** là `SAdmin`. Mật khẩu ban đầu lấy từ biến môi trường `SUPER_ADMIN_PASSWORD`; không đặt thì hệ thống sinh mật khẩu tạm ngẫu nhiên, in ra log máy chủ **một lần** và bắt đổi ở lần đăng nhập đầu. Bản cài từ trước 24/09/2026 sẽ bị buộc đổi mật khẩu SAdmin ở lần đăng nhập kế tiếp.
 - **Tài khoản trình diễn** (`supplychain`, `taichinh`, `banlanhdao`, `khonhap`, `dieuphoi`, `hientruong`, `htx01`, `nongdan`, `canbo_tw`, `canbo_xa`, `qtri_kn_ag`, `qtri_erp`, `cuc_ktht`, `vvb`…) chỉ được nạp khi **không** phải production (`NODE_ENV=production` tắt seed; bật lại tường minh bằng `SEED_DEMO_DATA=1`). Mật khẩu của chúng lấy từ `DEMO_ACCOUNT_PASSWORD` (dùng trên máy cá nhân/kiểm thử); không đặt thì mỗi tài khoản nhận mật khẩu tạm in trong log lần seed và phải đổi khi đăng nhập.
 - Mọi mật khẩu đặt mới phải có tối thiểu 8 ký tự gồm chữ thường, chữ in hoa và chữ số; mật khẩu tạm do hệ thống sinh luôn đạt chuẩn và có thể gửi qua email hoặc copy trực tiếp từ hộp thoại (chỉ hiện một lần, không lưu lại).
-- Đăng nhập bị giới hạn 20 lần / 10 phút theo địa chỉ IP, và khoá 15 phút theo tài khoản sau 5 lần sai.
+- Đăng nhập bị giới hạn 20 lần / 10 phút theo địa chỉ IP, và khoá 15 phút theo tài khoản sau 5 lần sai. Phiên hết hạn sau 12 giờ hoặc 60 phút không hoạt động; đăng xuất thu hồi phiên ở máy chủ.
+- **Xác thực hai lớp (TOTP)**: bắt buộc cho SAdmin và các nhóm quản trị hệ thống con ở production (`MFA_ENFORCE`), tuỳ chọn cho người khác; hành động nhạy cảm (tạo tài khoản, đổi quyền, đặt lại mật khẩu, cấu hình kênh…) đòi xác nhận lại mật khẩu sau 15 phút. Phản hồi đánh giá cấp độ 3: [docs/CAP-DO-3-2026-09-24.md](docs/CAP-DO-3-2026-09-24.md).
 
 ## 1B. Sáu cổng (portal) riêng biệt
 

@@ -12,6 +12,7 @@
  */
 import { all, insert, one, run, upsert, parseJson } from '../db/db.ts';
 import { digest, nowIso, today } from '../util/ids.ts';
+import { currentRequest } from '../http/requestContext.ts';
 
 export interface AuditActor {
   id?: string | null;
@@ -30,7 +31,9 @@ export interface AuditEntry {
 }
 
 export function logEvent(entry: AuditEntry, actor: AuditActor = {}): void {
-  insert('event_log', {
+  // SEC-08: mỗi dòng nhật ký mang mã truy vết, IP đã xác minh và tenant của yêu cầu đang xử lý (nếu có).
+  const request = currentRequest();
+  const record = {
     occurred_at: nowIso(),
     actor_id: actor.id ?? null,
     actor_name: actor.name ?? 'system',
@@ -42,7 +45,16 @@ export function logEvent(entry: AuditEntry, actor: AuditActor = {}): void {
     after_json: entry.after === undefined ? null : JSON.stringify(entry.after),
     source: entry.source ?? 'ui',
     note: entry.note ?? null,
-  });
+    request_id: request?.requestId ?? null,
+    actor_ip: request?.ip ?? null,
+    tenant_id: request?.tenantId ?? null,
+  };
+  insert('event_log', record);
+  // AUDIT_STREAM=stdout|stderr: phát bản sao JSON Lines cho bộ thu log tập trung/SOC (bản ghi bất biến ngoài quyền ứng dụng).
+  const stream = process.env.AUDIT_STREAM;
+  if (stream === 'stdout' || stream === 'stderr') {
+    process[stream].write(JSON.stringify({ type: 'audit', ...record, before_json: undefined, after_json: undefined, method: request?.method, path: request?.path }) + '\n');
+  }
 }
 
 export interface EventFilter {

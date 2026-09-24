@@ -19,6 +19,20 @@ export interface ZipEntry {
 }
 
 /** Đọc danh mục file bên trong gói ZIP. */
+/** Giới hạn chống "zip bomb" (SEC-07): số mục, kích thước từng mục, tổng kích thước giải nén và tỷ lệ nén. */
+export const ZIP_LIMITS = { maxEntries: 5000, maxEntryBytes: 64 * 1024 * 1024, maxTotalBytes: 256 * 1024 * 1024, maxRatio: 500 };
+
+export function assertZipSafe(entries: ZipEntry[]): void {
+  if (entries.length > ZIP_LIMITS.maxEntries) throw new Error(`Gói ZIP có ${entries.length} mục, vượt giới hạn ${ZIP_LIMITS.maxEntries}.`);
+  let total = 0;
+  for (const entry of entries) {
+    if (entry.uncompressedSize > ZIP_LIMITS.maxEntryBytes) throw new Error(`Mục "${entry.name}" giải nén ${(entry.uncompressedSize / 1_048_576).toFixed(0)} MB, vượt giới hạn ${ZIP_LIMITS.maxEntryBytes / 1_048_576} MB.`);
+    if (entry.compressedSize > 0 && entry.uncompressedSize / entry.compressedSize > ZIP_LIMITS.maxRatio) throw new Error(`Mục "${entry.name}" có tỷ lệ nén bất thường (${Math.round(entry.uncompressedSize / entry.compressedSize)}:1) — từ chối để tránh cạn bộ nhớ.`);
+    total += entry.uncompressedSize;
+  }
+  if (total > ZIP_LIMITS.maxTotalBytes) throw new Error(`Tổng dung lượng giải nén ${(total / 1_048_576).toFixed(0)} MB vượt giới hạn ${ZIP_LIMITS.maxTotalBytes / 1_048_576} MB.`);
+}
+
 export function readZipEntries(buffer: Buffer): ZipEntry[] {
   const eocd = findEndOfCentralDirectory(buffer);
   if (eocd < 0) throw new Error('File không phải định dạng ZIP hợp lệ (không tìm thấy End of Central Directory).');
@@ -40,6 +54,7 @@ export function readZipEntries(buffer: Buffer): ZipEntry[] {
     entries.push({ name, compressionMethod, compressedSize, uncompressedSize, localHeaderOffset });
     offset += 46 + nameLength + extraLength + commentLength;
   }
+  assertZipSafe(entries);
   return entries;
 }
 
@@ -52,7 +67,12 @@ export function readZipFile(buffer: Buffer, entry: ZipEntry): Buffer {
   const raw = buffer.subarray(start, start + entry.compressedSize);
 
   if (entry.compressionMethod === 0) return Buffer.from(raw);
-  if (entry.compressionMethod === 8) return inflateRawSync(raw);
+  if (entry.compressionMethod === 8) {
+    // Không tin kích thước khai báo: chặn đầu ra ngay khi vượt (maxOutputLength) và đối chiếu sau khi giải nén.
+    const out = inflateRawSync(raw, { maxOutputLength: Math.min(entry.uncompressedSize, ZIP_LIMITS.maxEntryBytes) + 1 });
+    if (out.length !== entry.uncompressedSize) throw new Error(`Mục "${entry.name}" giải nén ${out.length} byte, khác kích thước khai báo ${entry.uncompressedSize} — gói ZIP không đáng tin.`);
+    return out;
+  }
   throw new Error(`Phương thức nén ${entry.compressionMethod} chưa được hỗ trợ.`);
 }
 

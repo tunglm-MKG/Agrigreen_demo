@@ -5,10 +5,14 @@
  * Warehouse FN-36. Không có cơ chế tự đăng ký công khai — mọi tài khoản do
  * Admin khởi tạo (App HTX BR-01).
  */
-import { randomBytes, randomInt, scryptSync, timingSafeEqual } from 'node:crypto';
+import { createHash, randomBytes, randomInt, scrypt, scryptSync, timingSafeEqual } from 'node:crypto';
+import { promisify } from 'node:util';
+import { decryptField, encryptField } from '../security/fieldCrypto.ts';
+import { generateSecret, otpauthUri, verifyTotp } from './totp.ts';
+import { hitRateLimit } from '../http/rateLimit.ts';
 import { all, insert, one, run, transaction, update, upsert } from '../db/db.ts';
 import { legacySha256Hash, nowIso, uuid } from '../util/ids.ts';
-import { logEvent } from '../audit/audit.ts';
+import { logEvent, type AuditActor } from '../audit/audit.ts';
 import { permissionsFor, ROLE_LABELS, ROLES, SYSTEMS, isSystemAdminRole, ADMIN_ROLE_SYSTEM, type SystemCode } from './rbac.ts';
 
 // ---------------------------------------------------------------------------
@@ -24,6 +28,18 @@ export function hashSecret(password: string, salt: string): string {
 }
 
 export function isLegacyHash(stored: string): boolean { return !stored.startsWith(SCRYPT_PREFIX); }
+
+const scryptAsync = promisify(scrypt) as (password: string, salt: string, keylen: number, options: typeof SCRYPT_PARAMS) => Promise<Buffer>;
+/** Bản KHÔNG CHẶN event loop (SEC-05): scrypt chạy trên threadpool; hash cũ (sha256) rẻ nên kiểm đồng bộ. */
+export async function verifySecretAsync(password: string, salt: string, stored: string): Promise<boolean> {
+  if (isLegacyHash(stored)) return verifySecret(password, salt, stored);
+  const key = await scryptAsync(password, salt, 32, SCRYPT_PARAMS);
+  const a = Buffer.from(SCRYPT_PREFIX + key.toString('hex')); const b = Buffer.from(stored);
+  return a.length === b.length && timingSafeEqual(a, b);
+}
+
+/** Phiên lưu DIGEST của token (SEC-06): lộ bảng sessions không suy ra được bearer token. */
+export const tokenDigest = (token: string): string => createHash('sha256').update(token).digest('hex');
 
 /** So khớp hằng thời gian; nhận cả hash cũ (sha256) lẫn hash mới (scrypt). */
 export function verifySecret(password: string, salt: string, stored: string): boolean {
@@ -49,6 +65,12 @@ export interface User {
   activeSystem?: SystemCode | null;
   /** Token của phiên hiện tại (chỉ có khi được dựng từ token). */
   sessionToken?: string;
+  /** Xác thực hai lớp đã bật cho tài khoản. */
+  mfaEnabled: boolean;
+  /** Phiên đã đăng nhập mật khẩu nhưng CHƯA nhập mã hai lớp. */
+  mfaPending?: boolean;
+  /** Lần xác thực (mật khẩu / mã hai lớp / xác nhận lại) gần nhất của phiên — cho hành động nhạy cảm. */
+  authAt?: string | null;
 }
 
 interface UserRow {
@@ -64,6 +86,9 @@ interface UserRow {
   org_node_id: string | null;
   htx_id: string | null;
   province_id?: string | null;
+  mfa_secret?: string | null;
+  mfa_enabled?: number | null;
+  mfa_last_counter?: number | null;
 }
 
 function hydrate(row: UserRow): User {
@@ -82,6 +107,7 @@ function hydrate(row: UserRow): User {
     htxId: row.htx_id,
     provinceId: row.province_id ?? null,
     roles,
+    mfaEnabled: row.mfa_enabled === 1,
   };
 }
 
@@ -220,7 +246,7 @@ export function changePassword(id: string, newPassword: string, options: { enfor
     updated_at: nowIso(),
   });
   // Đánh giá bảo mật 24/09/2026 (L-03): đổi mật khẩu vì nghi lộ phiên → mọi phiên KHÁC bị huỷ ngay.
-  if (options.keepToken) run('DELETE FROM sessions WHERE user_id = ? AND token <> ?', [id, options.keepToken]);
+  if (options.keepToken) run('DELETE FROM sessions WHERE user_id = ? AND token <> ?', [id, tokenDigest(options.keepToken)]);
   else run('DELETE FROM sessions WHERE user_id = ?', [id]);
 }
 
@@ -251,9 +277,13 @@ export class LoginError extends Error {
  * Đăng nhập bằng TÊN ĐĂNG NHẬP hoặc SỐ ĐIỆN THOẠI (HTX US-LOGIN-01: nông dân nhớ số điện thoại
  * hơn tên tài khoản). Thông báo lỗi trung tính — không nói rõ sai tên hay sai mật khẩu (CGH US-ADM-01).
  */
-export function login(identifier: string, password: string): { token: string; user: User } | null {
+type LoginRow = UserRow & { failed_attempts?: number; locked_until?: string | null; lock_reason?: string | null };
+export interface LoginResult { token: string; user: User; mfaRequired: boolean }
+export interface LoginContext { ip?: string | null; userAgent?: string | null }
+
+function findLoginRow(identifier: string): LoginRow | null {
   const key = identifier.trim();
-  const row = one<UserRow & { failed_attempts?: number; locked_until?: string | null; lock_reason?: string | null }>(
+  const row = one<LoginRow>(
     // Nếu dữ liệu cũ còn trùng SĐT, ưu tiên tài khoản đang hoạt động để người hợp lệ không bị chặn bởi bản ghi đã khoá (UAT DEF-ADM-02).
     "SELECT * FROM users WHERE username = ? OR (phone IS NOT NULL AND phone = ?) ORDER BY (username = ?) DESC, (status = 'active') DESC LIMIT 1", [key, key.replace(/\s+/g, ''), key]);
   if (!row) return null;
@@ -265,21 +295,27 @@ export function login(identifier: string, password: string): { token: string; us
     const minutes = Math.max(1, Math.ceil((new Date(row.locked_until).getTime() - Date.now()) / 60_000));
     throw new LoginError(lockoutMessage(minutes), 'temporarily_locked');
   }
-  if (!verifySecret(password, row.password_salt, row.password_hash)) {
-    // Cửa sổ 15 phút: đã hết khoá tạm thì đếm lại từ đầu.
-    const attempts = (row.locked_until && row.locked_until <= now ? 0 : (row.failed_attempts ?? 0)) + 1;
-    const values: Record<string, unknown> = { failed_attempts: attempts, updated_at: now };
-    // "Sai QUÁ 5 lần" (UAT DEF-CGH-09): 5 lần sai chỉ báo sai, lần thứ 6 mới khoá.
-    if (attempts > LOCKOUT_ATTEMPTS) {
-      values.locked_until = new Date(Date.now() + LOCKOUT_MINUTES * 60_000).toISOString();
-      values.failed_attempts = 0;
-      logEvent({ module: 'admin', entityType: 'users', entityId: row.id, action: 'update', note: 'temporary_lockout', source: 'system' });
-    }
-    update('users', row.id, values);
-    if (attempts > LOCKOUT_ATTEMPTS) throw new LoginError(lockoutMessage(LOCKOUT_MINUTES), 'temporarily_locked');
-    return null;
-  }
+  return row;
+}
 
+function registerLoginFailure(row: LoginRow): null {
+  const now = nowIso();
+  // Cửa sổ 15 phút: đã hết khoá tạm thì đếm lại từ đầu.
+  const attempts = (row.locked_until && row.locked_until <= now ? 0 : (row.failed_attempts ?? 0)) + 1;
+  const values: Record<string, unknown> = { failed_attempts: attempts, updated_at: now };
+  // "Sai QUÁ 5 lần" (UAT DEF-CGH-09): 5 lần sai chỉ báo sai, lần thứ 6 mới khoá.
+  if (attempts > LOCKOUT_ATTEMPTS) {
+    values.locked_until = new Date(Date.now() + LOCKOUT_MINUTES * 60_000).toISOString();
+    values.failed_attempts = 0;
+    logEvent({ module: 'admin', entityType: 'users', entityId: row.id, action: 'update', note: 'temporary_lockout', source: 'system' });
+  }
+  update('users', row.id, values);
+  if (attempts > LOCKOUT_ATTEMPTS) throw new LoginError(lockoutMessage(LOCKOUT_MINUTES), 'temporarily_locked');
+  return null;
+}
+
+function openSession(row: LoginRow, password: string, context: LoginContext): LoginResult {
+  const now = nowIso();
   const upgrade: Record<string, unknown> = {};
   if (isLegacyHash(row.password_hash)) {
     // Nâng cấp trong suốt: mật khẩu vừa xác thực đúng → băm lại bằng scrypt với salt mới.
@@ -293,14 +329,123 @@ export function login(identifier: string, password: string): { token: string; us
   const token = randomBytes(24).toString('hex');
   const created = new Date();
   const expires = new Date(created.getTime() + SESSION_HOURS * 3600_000);
+  const mfaRequired = row.mfa_enabled === 1;
   insert('sessions', {
-    token,
+    token: tokenDigest(token),   // SEC-06: chỉ lưu digest
     user_id: row.id,
     created_at: created.toISOString(),
     expires_at: expires.toISOString(),
+    last_seen_at: created.toISOString(),
+    auth_at: mfaRequired ? null : created.toISOString(),
+    mfa_pending: mfaRequired ? 1 : 0,
+    ip: context.ip ?? null,
+    user_agent: context.userAgent ? String(context.userAgent).slice(0, 200) : null,
   });
-  logEvent({ module: 'admin', entityType: 'login', entityId: row.id, action: 'create', note: 'login', source: 'ui' }, { id: row.id, name: row.full_name });
-  return { token, user: hydrate(row) };
+  logEvent({ module: 'admin', entityType: 'login', entityId: row.id, action: 'create', note: mfaRequired ? 'login_password_ok_mfa_pending' : 'login', source: 'ui', after: { ip: context.ip ?? null } }, { id: row.id, name: row.full_name });
+  return { token, user: hydrate(row), mfaRequired };
+}
+
+/** Đăng nhập đồng bộ (test, script). Route HTTP dùng loginAsync để không chặn event loop khi băm scrypt. */
+export function login(identifier: string, password: string, context: LoginContext = {}): LoginResult | null {
+  const row = findLoginRow(identifier);
+  if (!row) return null;
+  if (!verifySecret(password, row.password_salt, row.password_hash)) return registerLoginFailure(row);
+  return openSession(row, password, context);
+}
+
+export async function loginAsync(identifier: string, password: string, context: LoginContext = {}): Promise<LoginResult | null> {
+  const row = findLoginRow(identifier);
+  if (!row) return null;
+  if (!(await verifySecretAsync(password, row.password_salt, row.password_hash))) return registerLoginFailure(row);
+  return openSession(row, password, context);
+}
+
+// ---------------------------------------------------------------------------
+// XÁC THỰC HAI LỚP (TOTP) — đánh giá cấp độ 3 (SEC-04/SEC-06): bắt buộc cho quản trị, tuỳ chọn cho người dùng khác.
+// Bí mật lưu mã hoá (fieldCrypto). MFA_ENFORCE=1 (hoặc production nếu không đặt =0) → quản trị chưa đăng ký bị
+// chặn mọi thao tác cho tới khi đăng ký xong.
+// ---------------------------------------------------------------------------
+export const isMfaEnforced = (): boolean => process.env.MFA_ENFORCE === '1' || (process.env.NODE_ENV === 'production' && process.env.MFA_ENFORCE !== '0');
+const isAdminRole = (role: string): boolean => role === ROLES.PLATFORM_ADMIN || isSystemAdminRole(role);
+
+export function mfaEnrollmentRequired(user: User): boolean {
+  if (!isMfaEnforced() || user.mfaEnabled) return false;
+  return user.roles.some(isAdminRole);
+}
+
+const MFA_ATTEMPTS = 10;
+const MFA_WINDOW_MS = 15 * 60_000;
+function mfaSecretOf(userId: string): { secret: string | null; enabled: boolean; lastCounter: number | null; username: string } {
+  const row = one<{ username: string; mfa_secret: string | null; mfa_enabled: number | null; mfa_last_counter: number | null }>('SELECT username, mfa_secret, mfa_enabled, mfa_last_counter FROM users WHERE id = ?', [userId]);
+  if (!row) throw new Error('Không tìm thấy tài khoản.');
+  return { secret: row.mfa_secret ? decryptField(row.mfa_secret) : null, enabled: row.mfa_enabled === 1, lastCounter: row.mfa_last_counter ?? null, username: row.username };
+}
+
+/** Bước 1 đăng ký: sinh bí mật mới (chưa bật); trả bí mật base32 và URI otpauth để nhập vào ứng dụng xác thực. */
+export function beginMfaEnrollment(userId: string, actor: AuditActor = {}): { secret: string; otpauthUri: string; issuer: string } {
+  const current = mfaSecretOf(userId);
+  const secret = generateSecret();
+  update('users', userId, { mfa_secret: encryptField(secret), mfa_enabled: 0, mfa_last_counter: null, updated_at: nowIso() });
+  logEvent({ module: 'admin', entityType: 'users', entityId: userId, action: 'update', note: 'mfa_enrollment_started', source: 'ui' }, actor);
+  const issuer = process.env.MFA_ISSUER ?? 'Mekong Green';
+  return { secret, otpauthUri: otpauthUri(issuer, current.username, secret), issuer };
+}
+
+/** Bước 2 đăng ký: mã đúng → bật MFA cho tài khoản. */
+export function confirmMfaEnrollment(userId: string, code: string, actor: AuditActor = {}): void {
+  const { secret } = mfaSecretOf(userId);
+  if (!secret) throw new Error('Chưa bắt đầu đăng ký xác thực hai lớp.');
+  const counter = verifyTotp(secret, code);
+  if (counter === null) throw new Error('Mã xác thực không đúng hoặc đã hết hạn — kiểm tra lại giờ trên điện thoại.');
+  update('users', userId, { mfa_enabled: 1, mfa_last_counter: counter, updated_at: nowIso() });
+  logEvent({ module: 'admin', entityType: 'users', entityId: userId, action: 'update', note: 'mfa_enabled', source: 'ui' }, actor);
+}
+
+/** Kiểm mã của tài khoản đã bật MFA (có giới hạn số lần thử và chống phát lại). */
+export function verifyMfa(userId: string, code: string): boolean {
+  const limit = hitRateLimit(`mfa:${userId}`, MFA_ATTEMPTS, MFA_WINDOW_MS);
+  if (!limit.allowed) throw new LoginError(`Nhập sai mã xác thực quá nhiều lần. Thử lại sau ${Math.ceil(limit.retryAfterSec / 60)} phút.`, 'temporarily_locked');
+  const { secret, enabled, lastCounter } = mfaSecretOf(userId);
+  if (!secret || !enabled) return false;
+  const counter = verifyTotp(secret, code, { lastCounter });
+  if (counter === null) return false;
+  update('users', userId, { mfa_last_counter: counter });
+  return true;
+}
+
+/** Hoàn tất đăng nhập hai lớp cho phiên đang chờ. */
+export function completeMfaLogin(token: string, user: User, code: string): void {
+  if (!verifyMfa(user.id, code)) {
+    logEvent({ module: 'admin', entityType: 'login', entityId: user.id, action: 'update', note: 'mfa_failed', source: 'ui' }, { id: user.id, name: user.fullName });
+    throw new LoginError('Mã xác thực không đúng.', 'mfa_invalid');
+  }
+  const now = nowIso();
+  run('UPDATE sessions SET mfa_pending = 0, auth_at = ? WHERE token = ?', [now, tokenDigest(token)]);
+  logEvent({ module: 'admin', entityType: 'login', entityId: user.id, action: 'create', note: 'login_mfa_ok', source: 'ui' }, { id: user.id, name: user.fullName });
+}
+
+/** Sau khi đăng ký MFA thành công, phiên hiện tại được đánh dấu đã qua hai lớp và làm mới mốc xác thực. */
+export function completeMfaLoginSilently(token: string): void {
+  run('UPDATE sessions SET mfa_pending = 0, auth_at = ? WHERE token = ?', [nowIso(), tokenDigest(token)]);
+}
+
+/** Tắt MFA (tự người dùng, đã xác nhận lại mật khẩu; hoặc quản trị đặt lại) — mọi phiên bị huỷ để đăng nhập lại. */
+export function resetMfa(userId: string, actor: AuditActor = {}, note = 'mfa_reset'): void {
+  update('users', userId, { mfa_secret: null, mfa_enabled: 0, mfa_last_counter: null, updated_at: nowIso() });
+  run('DELETE FROM sessions WHERE user_id = ?', [userId]);
+  logEvent({ module: 'admin', entityType: 'users', entityId: userId, action: 'update', note, source: 'ui' }, actor);
+}
+
+/** Xác nhận lại danh tính trước hành động nhạy cảm: mật khẩu (+ mã hai lớp nếu đã bật) → làm mới auth_at của phiên. */
+export async function reauthenticate(token: string, user: User, password: string, code?: string): Promise<void> {
+  const row = one<UserRow>('SELECT * FROM users WHERE id = ?', [user.id]);
+  if (!row || !(await verifySecretAsync(password, row.password_salt, row.password_hash))) {
+    hitRateLimit(`reauth:${user.id}`, MFA_ATTEMPTS, MFA_WINDOW_MS);
+    throw new LoginError('Mật khẩu không đúng.', 'reauth_failed');
+  }
+  if (row.mfa_enabled === 1 && !verifyMfa(user.id, code ?? '')) throw new LoginError('Mã xác thực hai lớp không đúng.', 'mfa_invalid');
+  run('UPDATE sessions SET auth_at = ? WHERE token = ?', [nowIso(), tokenDigest(token)]);
+  logEvent({ module: 'admin', entityType: 'login', entityId: user.id, action: 'update', note: 'reauthenticated', source: 'ui' }, { id: user.id, name: user.fullName });
 }
 
 /** CGH US-ADM-01 AC-1: mật khẩu mới phải đạt độ mạnh tối thiểu. Trả về danh sách tiêu chí chưa đạt. */
@@ -374,7 +519,8 @@ export function ensureSuperAdmin(initialPassword = process.env.SUPER_ADMIN_PASSW
   const existing = one<UserRow>('SELECT * FROM users WHERE username = ?', [SUPER_ADMIN_USERNAME]);
   if (existing) {
     ensureRole(existing.id);
-    if (existing.status !== 'active') update('users', existing.id, { status: 'active', locked_until: null, failed_attempts: 0, updated_at: timestamp });
+    // SEC-04: KHÔNG tự mở khoá SAdmin khi khởi động — tài khoản bị khoá phải được người vận hành xử lý (npm run reset-sadmin).
+    if (existing.status !== 'active') console.warn(`  [auth] SAdmin đang ở trạng thái "${existing.status}" — không tự mở khoá; dùng npm run reset-sadmin nếu cần khôi phục.`);
     if (!one('SELECT 1 FROM system_config WHERE key = ?', [SADMIN_ROTATION_MARKER])) {
       upsert('system_config', { key: SADMIN_ROTATION_MARKER, value_json: JSON.stringify({ at: timestamp, forced: generated }), updated_at: timestamp, updated_by: 'system' });
       if (generated) {
@@ -419,30 +565,45 @@ export function ensureSuperAdmin(initialPassword = process.env.SUPER_ADMIN_PASSW
 }
 
 export function logout(token: string): void {
-  run('DELETE FROM sessions WHERE token = ?', [token]);
+  run('DELETE FROM sessions WHERE token = ?', [tokenDigest(token)]);
 }
+
+/** Phiên hết hạn tuyệt đối sau SESSION_HOURS và hết hạn RẢNH sau SESSION_IDLE_MINUTES không hoạt động (SEC-06). */
+export const SESSION_IDLE_MINUTES = Number(process.env.SESSION_IDLE_MINUTES ?? 60);
 
 export function userFromToken(token: string | null | undefined): User | null {
   if (!token) return null;
-  const session = one<{ user_id: string; expires_at: string; active_system?: string | null }>(
-    'SELECT user_id, expires_at, active_system FROM sessions WHERE token = ?',
-    [token],
+  const digest = tokenDigest(token);
+  const session = one<{ user_id: string; expires_at: string; active_system?: string | null; last_seen_at?: string | null; auth_at?: string | null; mfa_pending?: number | null }>(
+    'SELECT user_id, expires_at, active_system, last_seen_at, auth_at, mfa_pending FROM sessions WHERE token = ?',
+    [digest],
   );
   if (!session) return null;
+  const nowMs = Date.now();
   if (session.expires_at < nowIso()) {
-    run('DELETE FROM sessions WHERE token = ?', [token]);
+    run('DELETE FROM sessions WHERE token = ?', [digest]);
     return null;
   }
+  const lastSeen = session.last_seen_at ? Date.parse(session.last_seen_at) : nowMs;
+  if (SESSION_IDLE_MINUTES > 0 && nowMs - lastSeen > SESSION_IDLE_MINUTES * 60_000) {
+    run('DELETE FROM sessions WHERE token = ?', [digest]);
+    return null;
+  }
+  // Ghi mốc hoạt động thưa (≥ 60 giây/lần) để không tốn một lệnh ghi cho mỗi yêu cầu.
+  if (nowMs - lastSeen >= 60_000 || !session.last_seen_at) run('UPDATE sessions SET last_seen_at = ? WHERE token = ?', [new Date(nowMs).toISOString(), digest]);
 
   const user = getUser(session.user_id);
   // Tài khoản bị khoá SAU khi phiên đã mở thì phiên đó phải chết theo. Không
   // kiểm tra ở đây thì người bị khoá vẫn dùng hệ thống bình thường tới khi
   // phiên hết hạn — tức là việc khoá gần như vô tác dụng đúng lúc cần nó nhất.
   if (!user || user.status !== 'active') {
-    run('DELETE FROM sessions WHERE token = ?', [token]);
+    run('DELETE FROM sessions WHERE token = ?', [digest]);
     return null;
   }
-  return { ...user, activeSystem: (session.active_system as SystemCode | null | undefined) ?? null, sessionToken: token };
+  return {
+    ...user, activeSystem: (session.active_system as SystemCode | null | undefined) ?? null, sessionToken: token,
+    authAt: session.auth_at ?? null, mfaPending: session.mfa_pending === 1,
+  };
 }
 
 /**
@@ -451,7 +612,7 @@ export function userFromToken(token: string | null | undefined): User | null {
  */
 export function setActiveSystem(token: string, system: SystemCode | null, actor: { id?: string | null; name?: string | null } = {}): void {
   if (system && !SYSTEMS.some((s) => s.code === system)) throw new Error('Hệ thống không hợp lệ.');
-  run('UPDATE sessions SET active_system = ? WHERE token = ?', [system, token]);
+  run('UPDATE sessions SET active_system = ? WHERE token = ?', [system, tokenDigest(token)]);
   logEvent({ module: 'admin', entityType: 'admin_session', entityId: actor.id ?? null, action: 'update', after: { activeSystem: system }, note: system ? 'enter_system' : 'leave_system', source: 'ui' }, actor);
 }
 
@@ -479,6 +640,11 @@ export function describeUser(user: User): Record<string, unknown> {
     adminScopes,
     superAdmin: permissions.has('*'),
     activeSystem: user.activeSystem ?? null,
+    mfaEnabled: user.mfaEnabled,
+    mfaPending: user.mfaPending ?? false,
+    mfaEnrollmentRequired: mfaEnrollmentRequired(user),
+    mfaEnforced: isMfaEnforced(),
+    authAt: user.authAt ?? null,
     systemAdminOf: user.roles.filter(isSystemAdminRole).map((role) => ADMIN_ROLE_SYSTEM[role]),
   };
 }

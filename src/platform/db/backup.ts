@@ -11,15 +11,16 @@
  * thực hiện khi máy chủ đã dừng (SQLite không cho thay tệp đang mở).
  */
 import { createHash } from 'node:crypto';
-import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
-import { basename, join, resolve } from 'node:path';
+import { copyFileSync, cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { basename, join, resolve, dirname } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { db, domainFile, schemaName } from './db.ts';
 import { DOMAINS, type Domain } from './domains.ts';
 import { nowIso } from '../util/ids.ts';
+import { encryptionKeyStatus } from '../security/fieldCrypto.ts';
 
 export interface BackupFileInfo { domain: Domain; file: string; bytes: number; sha256: string; tables: number; integrity: string }
-export interface BackupManifest { version: 1; createdAt: string; source: string; ok: boolean; files: BackupFileInfo[]; durationMs: number }
+export interface BackupManifest { version: 1; createdAt: string; source: string; ok: boolean; files: BackupFileInfo[]; durationMs: number; uploads?: { files: number; bytes: number } | null; encryptionKeyId?: string | null }
 
 const DEFAULT_KEEP = 14;
 export const DEFAULT_BACKUP_DIR = () => process.env.BACKUP_DIR ?? resolve(process.cwd(), 'data', 'backups');
@@ -60,9 +61,21 @@ export function backupAll(options: { dir?: string; keep?: number } = {}): { dir:
     const { tables, integrity } = inspectCopy(target);
     files.push({ domain: domain.code, file: basename(target), bytes: statSync(target).size, sha256: sha256File(target), tables, integrity });
   }
+  // SEC-09: bản sao lưu nhất quán gồm CSDL + tệp đính kèm; ghi định danh khoá mã hoá để biết cần khoá nào khi khôi phục
+  // (khoá KHÔNG nằm trong đợt sao lưu — quyền truy cập khoá tách khỏi quyền truy cập bản sao).
+  let uploads: { files: number; bytes: number } | null = null;
+  const uploadsDir = process.env.UPLOAD_DIR ?? resolve(dirname(domainFile('shared')), 'uploads');
+  if (process.env.BACKUP_INCLUDE_UPLOADS !== '0' && existsSync(uploadsDir)) {
+    cpSync(uploadsDir, join(dir, 'uploads'), { recursive: true });
+    let count = 0; let bytes = 0;
+    for (const name of readdirSync(join(dir, 'uploads'))) { const st = statSync(join(dir, 'uploads', name)); if (st.isFile()) { count += 1; bytes += st.size; } }
+    uploads = { files: count, bytes };
+  }
+  let encryptionKeyId: string | null = null;
+  try { encryptionKeyId = encryptionKeyStatus().kid; } catch { encryptionKeyId = null; }
   const manifest: BackupManifest = {
     version: 1, createdAt: nowIso(), source: domainFile('shared').replace(/\.shared\.db$/i, '.db'),
-    ok: files.every((f) => f.integrity === 'ok' && f.tables > 0), files, durationMs: Date.now() - started,
+    ok: files.every((f) => f.integrity === 'ok' && f.tables > 0), files, durationMs: Date.now() - started, uploads, encryptionKeyId,
   };
   writeFileSync(join(dir, 'manifest.json'), JSON.stringify(manifest, null, 2));
   const pruned = manifest.ok ? pruneBackups(root, options.keep ?? DEFAULT_KEEP) : [];
@@ -125,6 +138,12 @@ export function restoreBackup(dir: string, targetBase?: string): { restored: str
     for (const suffix of ['-wal', '-shm']) if (existsSync(target + suffix)) rmSync(target + suffix, { force: true });
     copyFileSync(join(dir, f.file), target);
     restored.push(target);
+  }
+  // Tệp đính kèm (nếu đợt sao lưu có): về UPLOAD_DIR hoặc cạnh bộ tệp đích.
+  if (existsSync(join(dir, 'uploads'))) {
+    const uploadsTarget = targetBase ? join(dirname(resolve(targetBase)), 'uploads') : (process.env.UPLOAD_DIR ?? resolve(dirname(domainFile('shared')), 'uploads'));
+    cpSync(join(dir, 'uploads'), uploadsTarget, { recursive: true });
+    restored.push(uploadsTarget);
   }
   return { restored };
 }

@@ -307,6 +307,16 @@ registerPage('sys-users', {
                     await refresh();
                   },
                 }),
+                el('button', {
+                      class: 'ghost small', text: '🔐 Đặt lại MFA',
+                      title: 'Xoá bí mật xác thực hai lớp khi người dùng mất điện thoại; mọi phiên bị huỷ, họ đăng ký lại ở lần đăng nhập tới.',
+                      onclick: async () => {
+                        if (!(await confirmDialog(`Đặt lại xác thực hai lớp cho ${row.username}? Mọi phiên của tài khoản bị huỷ.`, { danger: true }))) return;
+                        await guard(api(`/admin/users/${row.id}/mfa-reset`, { body: {} }));
+                        toast('Đã đặt lại xác thực hai lớp.');
+                        await refresh();
+                      },
+                    }),
                 row.activeSessions
                   ? el('button', {
                       class: 'ghost small', text: '⏏ Đăng xuất',

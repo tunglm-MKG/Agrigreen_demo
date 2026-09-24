@@ -450,6 +450,19 @@ export const COLUMN_ADDITIONS: { table: string; column: string; definition: stri
     { table: 'notifications', column: 'claimed_at', definition: 'TEXT' },
     // Quản trị nền tảng đang ở trong hệ thống con nào (cơ cấu phân quyền 09/2026).
     { table: 'sessions', column: 'active_system', definition: 'TEXT' },
+    // Đánh giá cấp độ 3 (SEC-06/08): phiên có mốc hoạt động (idle timeout), mốc xác thực (hành động nhạy cảm),
+    // trạng thái chờ mã hai lớp, IP/UA; người dùng có bí mật TOTP (mã hoá); nhật ký có mã truy vết, IP, tenant.
+    { table: 'sessions', column: 'last_seen_at', definition: 'TEXT' },
+    { table: 'sessions', column: 'auth_at', definition: 'TEXT' },
+    { table: 'sessions', column: 'mfa_pending', definition: 'INTEGER NOT NULL DEFAULT 0' },
+    { table: 'sessions', column: 'ip', definition: 'TEXT' },
+    { table: 'sessions', column: 'user_agent', definition: 'TEXT' },
+    { table: 'users', column: 'mfa_secret', definition: 'TEXT' },
+    { table: 'users', column: 'mfa_enabled', definition: 'INTEGER NOT NULL DEFAULT 0' },
+    { table: 'users', column: 'mfa_last_counter', definition: 'INTEGER' },
+    { table: 'event_log', column: 'request_id', definition: 'TEXT' },
+    { table: 'event_log', column: 'actor_ip', definition: 'TEXT' },
+    { table: 'event_log', column: 'tenant_id', definition: 'TEXT' },
 ];
 
 function applyColumnMigrations(): void {

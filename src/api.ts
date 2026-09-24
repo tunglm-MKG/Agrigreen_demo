@@ -67,13 +67,21 @@ const num = (value: unknown, fallback?: number): number => {
 };
 
 const LOGIN_MAX_PER_WINDOW = Number(process.env.LOGIN_MAX_PER_WINDOW ?? 20);
+const REAUTH_MINUTES = Number(process.env.REAUTH_MINUTES ?? 15);
+/** Route thay đổi quyền/danh tính/cấu hình nền tảng: đòi xác thực gần đây (SEC-06 "xác thực lại trước hành động nhạy cảm"). */
+const SENSITIVE_ROUTES = new Set([
+  'POST /admin/users', 'PUT /admin/users/:id/roles', 'POST /admin/users/:id/reset-password', 'POST /admin/users/:id/reset-pw',
+  'POST /admin/users/:id/revoke-sessions', 'POST /admin/users/:id/status', 'POST /admin/users/:id/set-status', 'POST /admin/users/:id/mfa-reset',
+  'POST /admin/groups', 'PUT /admin/groups/:code', 'DELETE /admin/groups/:code', 'PUT /admin/groups/:code/permission', 'POST /admin/groups/:code/reset',
+  'POST /admin/scopes', 'DELETE /admin/scopes/:id', 'PUT /notifications/channels', 'POST /auth/mfa/disable',
+]);
 const LOGIN_WINDOW_MS = 10 * 60_000;
 
 export function buildApi(): Router {
   const api = new Router();
 
   // ===================== Xác thực & phân quyền =====================
-  api.post('/auth/login', (ctx) => {
+  api.post('/auth/login', async (ctx) => {
     // M-01: giới hạn theo IP song song với khoá theo tài khoản — chặn password spraying.
     const limit = hitRateLimit(`login:${clientIp(ctx.req)}`, LOGIN_MAX_PER_WINDOW, LOGIN_WINDOW_MS);
     if (!limit.allowed) {
@@ -81,9 +89,10 @@ export function buildApi(): Router {
       throw new HttpError(429, `Quá nhiều lần đăng nhập từ địa chỉ này. Thử lại sau ${Math.ceil(limit.retryAfterSec / 60)} phút.`);
     }
     const { username, password } = body(ctx);
-    let session: ReturnType<typeof users.login>;
+    let session: Awaited<ReturnType<typeof users.loginAsync>>;
     try {
-      session = users.login(String(username ?? ''), String(password ?? ''));
+      // SEC-05: băm scrypt trên threadpool, không chặn event loop.
+      session = await users.loginAsync(String(username ?? ''), String(password ?? ''), { ip: clientIp(ctx.req), userAgent: String(ctx.req.headers['user-agent'] ?? '') });
     } catch (error) {
       // Khoá tạm / khoá hẳn: nói rõ lý do (GIS BR-09, HTX US-ACC-01 AC-5) — mã 423 Locked.
       if (error instanceof users.LoginError) throw new HttpError(423, error.message, { code: error.code });
@@ -94,16 +103,54 @@ export function buildApi(): Router {
     const flags = [`mg_session=${session.token}`, 'Path=/', 'HttpOnly', 'SameSite=Lax'];
     if (isSecureRequest(ctx.req)) flags.push('Secure');   // H-03: cookie phiên không đi qua HTTP
     ctx.res.setHeader('Set-Cookie', flags.join('; '));
-    return { token: session.token, user: users.describeUser(session.user) };
+    // Tài khoản đã bật hai lớp: phiên ở trạng thái chờ mã — chỉ /auth/mfa/verify mở được (guard bên dưới).
+    if (session.mfaRequired) return { mfaRequired: true, token: session.token, user: { username: session.user.username, fullName: session.user.fullName } };
+    return { mfaRequired: false, token: session.token, user: users.describeUser(session.user) };
     // unitOfWork: false — số lần sai và bộ đếm IP phải được LƯU kể cả khi handler ném lỗi.
   }, undefined, { unitOfWork: false, sensitive: true });
 
   api.post('/auth/logout', (ctx) => {
+    // SEC-06: thu hồi đúng credential đang dùng (cookie hoặc Bearer), không chỉ token trong body.
+    const used = extractToken(ctx.req);
+    if (used) users.logout(used);
     const token = ctx.body?.token ?? null;
-    if (token) users.logout(String(token));
+    if (token && token !== used) users.logout(String(token));
     ctx.res.setHeader('Set-Cookie', 'mg_session=; Path=/; Max-Age=0');
     return { ok: true };
   });
+
+  // ---- Xác thực hai lớp (TOTP) và xác nhận lại danh tính (đánh giá cấp độ 3, SEC-04/SEC-06) ----
+  const requireUserToken = (ctx: Context) => { if (!ctx.user?.sessionToken) throw unauthorized(); return ctx.user; };
+  api.post('/auth/mfa/setup', (ctx) => users.beginMfaEnrollment(requireUserToken(ctx).id, ctx.actor), undefined, { sensitive: true });
+  api.post('/auth/mfa/enable', (ctx) => {
+    const user = requireUserToken(ctx);
+    users.confirmMfaEnrollment(user.id, String(body(ctx).code ?? ''), ctx.actor);
+    // Phiên hiện tại được coi là đã xác thực hai lớp ngay sau khi đăng ký thành công.
+    users.completeMfaLoginSilently(user.sessionToken!);
+    return users.describeUser({ ...user, mfaEnabled: true, mfaPending: false });
+  }, undefined, { sensitive: true });
+  api.post('/auth/mfa/verify', (ctx) => {
+    const user = requireUserToken(ctx);
+    try { users.completeMfaLogin(user.sessionToken!, user, String(body(ctx).code ?? '')); } catch (error) {
+      if (error instanceof users.LoginError) throw new HttpError(error.code === 'temporarily_locked' ? 423 : 400, error.message, { code: error.code });
+      throw error;
+    }
+    return users.describeUser({ ...user, mfaPending: false, authAt: new Date().toISOString() });
+  }, undefined, { unitOfWork: false, sensitive: true });
+  api.post('/auth/mfa/disable', (ctx) => {
+    const user = requireUserToken(ctx);
+    if (users.mfaEnrollmentRequired({ ...user, mfaEnabled: false })) throw forbidden('Tài khoản quản trị bắt buộc dùng xác thực hai lớp — không tắt được.');
+    users.resetMfa(user.id, ctx.actor, 'mfa_disabled_by_user');
+    return { ok: true };
+  }, undefined, { sensitive: true });
+  api.post('/auth/reauth', async (ctx) => {
+    const user = requireUserToken(ctx);
+    try { await users.reauthenticate(user.sessionToken!, user, String(body(ctx).password ?? ''), body(ctx).code ? String(body(ctx).code) : undefined); } catch (error) {
+      if (error instanceof users.LoginError) throw new HttpError(400, error.message, { code: error.code });
+      throw error;
+    }
+    return { ok: true, authAt: new Date().toISOString() };
+  }, undefined, { unitOfWork: false, sensitive: true });
 
   api.get('/auth/me', (ctx) => (ctx.user ? users.describeUser(ctx.user) : { anonymous: true }));
 
@@ -324,6 +371,8 @@ export function buildApi(): Router {
   api.post('/admin/users/:id/set-status', (ctx) => { scopes.assertCanManage(adminCtx(ctx), ctx.params.id); return sysadmin.setStatus(ctx.params.id, body(ctx).status, ctx.actor); });
   api.post('/admin/users/:id/reset-pw', (ctx) => resetWithEmail(ctx));
   api.post('/admin/users/:id/revoke-sessions', (ctx) => { scopes.assertCanManage(adminCtx(ctx), ctx.params.id); return { revokedSessions: sysadmin.revokeSessions(ctx.params.id, ctx.actor) }; });
+  // Quản trị đặt lại MFA khi người dùng mất điện thoại: xoá bí mật, huỷ phiên; người dùng đăng ký lại ở lần đăng nhập tới.
+  api.post('/admin/users/:id/mfa-reset', (ctx) => { scopes.assertCanManage(adminCtx(ctx), ctx.params.id); users.resetMfa(ctx.params.id, ctx.actor, 'mfa_reset_by_admin'); return { ok: true }; });
   api.get('/admin/users', (ctx) => { const visible = scopes.visibleUserIds(adminCtx(ctx)); const list = users.listUsers(); return visible ? list.filter((u) => visible.has(u.id)) : list; });
   // Tạo tài khoản: trả mật khẩu tạm MỘT lần để quản trị viên copy; tuỳ chọn gửi email cho người dùng.
   api.post('/admin/users', (ctx) => {
@@ -1107,6 +1156,22 @@ export function buildApi(): Router {
   api.guard(enforceHtxScope);
   // Quản trị nền tảng chỉ thao tác nghiệp vụ trong hệ thống con đã "vào"; route quản trị luôn mở.
   api.guard(enforceSuperAdminSystemContext);
+  // Xác thực hai lớp (SEC-06): phiên chờ mã chỉ mở ba đường; quản trị chưa đăng ký MFA (khi bắt buộc) chỉ mở đường đăng ký.
+  api.guard((ctx, pathname) => {
+    if (!ctx.user) return;
+    if (ctx.user.mfaPending && !['/auth/mfa/verify', '/auth/logout', '/auth/me'].includes(pathname)) {
+      throw new HttpError(403, 'Hãy nhập mã xác thực hai lớp để tiếp tục.', { code: 'mfa_required' });
+    }
+    if (users.mfaEnrollmentRequired(ctx.user) && !['/auth/mfa/setup', '/auth/mfa/enable', '/auth/me', '/auth/logout', '/auth/password'].includes(pathname)) {
+      throw new HttpError(403, 'Tài khoản quản trị phải đăng ký xác thực hai lớp trước khi sử dụng hệ thống.', { code: 'mfa_enrollment_required' });
+    }
+  });
+  // Hành động nhạy cảm (SEC-06): phải xác thực (mật khẩu/mã hai lớp/xác nhận lại) trong REAUTH_MINUTES gần nhất.
+  api.guard((ctx) => {
+    if (!ctx.user || !SENSITIVE_ROUTES.has(`${ctx.req.method} ${ctx.routePath}`)) return;
+    const at = ctx.user.authAt ? Date.parse(ctx.user.authAt) : 0;
+    if (Date.now() - at > REAUTH_MINUTES * 60_000) throw new HttpError(403, 'Thao tác nhạy cảm — hãy xác nhận lại mật khẩu để tiếp tục.', { code: 'reauth_required' });
+  });
   // UAT DEF-AUTH-01: cờ "phải đổi mật khẩu" được THI HÀNH — mật khẩu tạm chỉ mở được ba đường: đổi mật khẩu, xem hồ sơ, đăng xuất.
   api.guard((ctx, pathname) => {
     if (ctx.user?.mustChangePassword && !['/auth/password', '/auth/me', '/auth/logout'].includes(pathname)) {

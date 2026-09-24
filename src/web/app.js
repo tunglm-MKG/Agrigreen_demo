@@ -119,9 +119,87 @@ export async function api(path, options = {}) {
   }
   if (!response.ok) {
     const message = payload?.error ?? `Lỗi ${response.status}`;
+    // Hành động nhạy cảm cần xác nhận lại mật khẩu (SEC-06): hỏi rồi gọi lại đúng một lần.
+    if (response.status === 403 && payload?.details?.code === 'reauth_required' && !options.noReauth) {
+      const ok = await reauthDialog(message);
+      if (ok) return api(path, { ...options, idempotencyKey: key ?? undefined, noReauth: true });
+    }
     throw new ApiError(message, response.status, payload?.details ?? null);
   }
   return payload;
+}
+
+/** Hộp thoại xác nhận lại mật khẩu (+ mã hai lớp nếu tài khoản đã bật). Trả true khi máy chủ chấp nhận. */
+export function reauthDialog(reason) {
+  return new Promise((resolve) => {
+    const pw = el('input', { type: 'password', placeholder: 'Mật khẩu hiện tại', autocomplete: 'current-password' });
+    const code = el('input', { type: 'text', inputmode: 'numeric', placeholder: 'Mã 6 số từ ứng dụng xác thực', autocomplete: 'one-time-code' });
+    const err = el('p', { class: 'login-error' });
+    let done = false;
+    const dialog = modal('Xác nhận lại danh tính', [
+      el('p', { text: reason || 'Thao tác này thay đổi quyền hoặc cấu hình — hãy xác nhận lại mật khẩu.' }),
+      el('label', {}, ['Mật khẩu', pw]),
+      state.user?.mfaEnabled ? el('label', {}, ['Mã xác thực hai lớp', code]) : null,
+      err,
+    ], [
+      el('button', { class: 'ghost', text: 'Huỷ', onclick: () => { done = true; dialog.close(); resolve(false); } }),
+      el('button', { text: 'Xác nhận', onclick: async () => {
+        err.textContent = '';
+        try {
+          await api('/auth/reauth', { body: { password: pw.value, code: code.value || undefined }, noReauth: true });
+          done = true; dialog.close(); resolve(true);
+        } catch (error) { err.textContent = error.message; }
+      } }),
+    ], { dismissible: false });
+    setTimeout(() => pw.focus(), 30);
+    void done;
+  });
+}
+
+/** Nhập mã hai lớp cho phiên đang chờ (sau khi mật khẩu đúng). */
+function mfaVerifyDialog(me) {
+  return new Promise((resolve) => {
+    const code = el('input', { type: 'text', inputmode: 'numeric', placeholder: '6 số', autocomplete: 'one-time-code' });
+    const err = el('p', { class: 'login-error' });
+    const dialog = modal('Xác thực hai lớp', [
+      el('p', { text: `Xin chào ${me.fullName ?? me.username}. Nhập mã 6 số trong ứng dụng xác thực (Google Authenticator, Microsoft Authenticator…).` }),
+      el('label', {}, ['Mã xác thực', code]),
+      err,
+    ], [
+      el('button', { class: 'ghost', text: 'Đăng xuất', onclick: async () => { await api('/auth/logout', { body: {} }).catch(() => {}); location.reload(); } }),
+      el('button', { text: 'Xác nhận', onclick: async () => {
+        err.textContent = '';
+        try { await api('/auth/mfa/verify', { body: { code: code.value } }); dialog.close(); resolve(); } catch (error) { err.textContent = error.message; }
+      } }),
+    ], { dismissible: false });
+    setTimeout(() => code.focus(), 30);
+  });
+}
+
+/** Đăng ký hai lớp bắt buộc cho tài khoản quản trị: hiện khoá để nhập tay, kiểm mã, bật. */
+function mfaEnrollDialog(me) {
+  return new Promise(async (resolve) => {
+    let setup;
+    try { setup = await api('/auth/mfa/setup', { body: {} }); } catch (error) { toast(error.message, true); return; }
+    const grouped = setup.secret.replace(/(.{4})/g, '$1 ').trim();
+    const code = el('input', { type: 'text', inputmode: 'numeric', placeholder: '6 số', autocomplete: 'one-time-code' });
+    const err = el('p', { class: 'login-error' });
+    const dialog = modal('Đăng ký xác thực hai lớp', [
+      el('p', { text: `Tài khoản quản trị bắt buộc dùng xác thực hai lớp. Mở ứng dụng xác thực trên điện thoại, chọn "Nhập khoá thủ công" với tên ${setup.issuer} và khoá dưới đây, rồi nhập mã 6 số để hoàn tất.` }),
+      el('p', {}, [el('code', { text: grouped, style: 'font-size:16px;letter-spacing:.06em' })]),
+      el('p', { class: 'muted', text: 'Hoặc dán liên kết otpauth vào ứng dụng hỗ trợ:' }),
+      el('p', {}, [el('code', { text: setup.otpauthUri, style: 'word-break:break-all;font-size:11px' })]),
+      el('label', {}, ['Mã xác thực từ ứng dụng', code]),
+      err,
+    ], [
+      el('button', { class: 'ghost', text: 'Đăng xuất', onclick: async () => { await api('/auth/logout', { body: {} }).catch(() => {}); location.reload(); } }),
+      el('button', { text: 'Bật xác thực hai lớp', onclick: async () => {
+        err.textContent = '';
+        try { await api('/auth/mfa/enable', { body: { code: code.value } }); toast('Đã bật xác thực hai lớp.'); dialog.close(); resolve(); } catch (error) { err.textContent = error.message; }
+      } }),
+    ], { dismissible: false });
+    setTimeout(() => code.focus(), 30);
+  });
 }
 
 /**
@@ -861,10 +939,22 @@ export async function boot() {
   document.getElementById('login').hidden = true;
 
   // UAT DEF-AUTH-01: mật khẩu tạm phải được đổi ngay lần đăng nhập đầu — máy chủ cũng chặn mọi API khác (403 must_change_password).
+  if (me.mfaPending) {
+    document.getElementById('shell').hidden = true;
+    document.getElementById('portal-picker').hidden = true;
+    await mfaVerifyDialog(me);
+    return boot();
+  }
   if (me.mustChangePassword) {
     document.getElementById('shell').hidden = true;
     document.getElementById('portal-picker').hidden = true;
     await forcePasswordChange(me);
+    return boot();
+  }
+  if (me.mfaEnrollmentRequired) {
+    document.getElementById('shell').hidden = true;
+    document.getElementById('portal-picker').hidden = true;
+    await mfaEnrollDialog(me);
     return boot();
   }
 
